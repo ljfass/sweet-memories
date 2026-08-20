@@ -1,0 +1,568 @@
+body {
+  overflow-x: hidden;
+  background: var(--page-bg);
+}
+
+button {
+  color: inherit;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.album-app {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  overflow: hidden;
+  color: var(--text-color);
+  background-color: var(--page-bg);
+  background-image: radial-gradient(var(--dot-color) 3px, transparent 3px);
+  background-position: 0 0;
+  background-size: 40px 40px;
+  transition:
+    color 1s ease,
+    background-color 1.5s ease,
+    background-image 1.5s ease;
+}
+
+.album-app main {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  min-height: 100vh;
+  padding: 1px 0 70px;
+}
+
+.album-header {
+  position: relative;
+  z-index: 2;
+  width: min(100% - 32px, 920px);
+  margin: 59px auto 0;
+  text-align: center;
+  animation: bounce-in 1s cubic-bezier(0.28, 0.84, 0.42, 1) both;
+}
+
+.album-header h1 {
+  margin-bottom: 15px;
+  color: var(--heading-color);
+  font-size: 3.5rem;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-wrap: balance;
+  text-shadow:
+    3px 3px 0 #ffffff,
+    6px 6px 0 rgb(255 140 163 / 20%);
+  transition:
+    color 1s ease,
+    text-shadow 1s ease;
+}
+
+.is-sleeping .album-header h1 {
+  text-shadow:
+    2px 2px 0 #1e293b,
+    4px 4px 0 rgb(0 0 0 / 50%);
+}
+
+.subtitle,
+.age-counter {
+  display: inline-block;
+  box-shadow: 0 4px 15px rgb(71 50 57 / 7%);
+}
+
+.subtitle {
+  max-width: 100%;
+  padding: 8px 25px;
+  border-radius: 999px;
+  color: var(--muted-color);
+  background: var(--surface-color);
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.5;
+  transition:
+    color 1s ease,
+    background-color 1s ease,
+    box-shadow 1s ease;
+}
+
+.age-counter {
+  margin-top: 20px;
+  padding: 10px 25px;
+  border: 2px dashed var(--border-color);
+  border-radius: 8px;
+  color: var(--muted-color);
+  background: var(--surface-translucent);
+  font-size: 1.1rem;
+  line-height: 1.75;
+  transition:
+    color 500ms ease,
+    background-color 500ms ease,
+    border-color 500ms ease,
+    box-shadow 500ms ease,
+    transform 500ms ease;
+}
+
+.age-counter strong {
+  display: inline-block;
+  min-width: 25px;
+  color: var(--accent-color);
+  font-size: 1.4rem;
+  font-variant-numeric: tabular-nums;
+  transition: color 1s ease;
+}
+
+.video-section {
+  position: relative;
+  z-index: 2;
+  width: min(90%, 800px);
+  margin: 40px auto 10px;
+  text-align: center;
+}
+
+.video-title {
+  margin-bottom: 20px;
+  color: var(--heading-color);
+  font-size: 2rem;
+  line-height: 1.25;
+  text-shadow:
+    2px 2px 0 #ffffff,
+    4px 4px 0 rgb(255 140 163 / 20%);
+  transition:
+    color 1s ease,
+    text-shadow 1s ease;
+}
+
+.is-sleeping .video-title {
+  text-shadow: 2px 2px 0 #1e293b;
+}
+
+.video-frame {
+  position: relative;
+  padding: 15px 15px 45px;
+  border-radius: 8px;
+  background: var(--surface-color);
+  box-shadow: var(--surface-shadow);
+  transform: rotate(-1deg);
+  transition:
+    transform var(--transition-speed) cubic-bezier(0.175, 0.885, 0.32, 1.275),
+    background-color 1s ease,
+    box-shadow 1s ease;
+}
+
+.video-frame video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 4px;
+  outline: none;
+  background: var(--media-bg);
+  object-fit: contain;
+  transition:
+    filter 1.5s ease,
+    background-color 1s ease;
+}
+
+.video-frame video:focus-visible {
+  outline: 3px solid var(--focus-color);
+  outline-offset: 4px;
+}
+
+.video-frame::after {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  color: var(--accent-color);
+  content: "REC ●";
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  transform: translateX(-50%);
+  animation: blink 2s ease-in-out infinite;
+}
+
+.is-sleeping .video-frame video,
+.is-sleeping .polaroid img {
+  filter: brightness(0.68) contrast(0.92);
+}
+
+.is-sleeping .video-frame::after {
+  content: "PAUSED";
+  animation: none;
+}
+
+.gallery {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: min(100%, 1200px);
+  margin: 0 auto;
+  padding: 40px 20px;
+  gap: 40px;
+}
+
+.polaroid {
+  position: relative;
+  width: 280px;
+  flex: 0 0 280px;
+  padding: 15px 15px 30px;
+  border-radius: 8px;
+  background: var(--surface-color);
+  box-shadow: var(--surface-shadow);
+  transform: rotate(var(--rotation)) translate(var(--offset-x), var(--offset-y));
+  transition:
+    transform var(--transition-speed) cubic-bezier(0.175, 0.885, 0.32, 1.275),
+    background-color 1s ease,
+    box-shadow 1s ease;
+}
+
+.polaroid::before {
+  position: absolute;
+  z-index: 2;
+  top: -10px;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--accent-soft), var(--accent-color));
+  box-shadow:
+    0 3px 5px rgb(0 0 0 / 20%),
+    inset 0 -2px 4px rgb(0 0 0 / 20%);
+  content: "";
+  transform: translateX(-50%);
+  transition: background 1s ease;
+}
+
+.polaroid picture {
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent-soft) 25%, var(--surface-color));
+}
+
+.polaroid img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter 1.5s ease;
+}
+
+.caption {
+  margin-top: 15px;
+  color: var(--text-color);
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  transition: color 1s ease;
+}
+
+.floating-controls audio {
+  display: none;
+}
+
+.icon-button {
+  position: fixed;
+  z-index: 99;
+  display: grid;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--text-color);
+  background: var(--surface-translucent);
+  box-shadow: var(--control-shadow);
+  cursor: pointer;
+  place-items: center;
+  transition:
+    color 400ms ease,
+    background-color 1s ease,
+    box-shadow 1s ease,
+    transform 400ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.icon-button svg {
+  width: 25px;
+  height: 25px;
+  stroke-width: 2.25;
+}
+
+.icon-button:focus-visible {
+  outline: 3px solid var(--focus-color);
+  outline-offset: 4px;
+}
+
+.sleep-toggle {
+  top: 25px;
+  right: 30px;
+}
+
+.music-btn {
+  right: 30px;
+  bottom: 30px;
+  color: #5d4048;
+  background: var(--accent-soft);
+}
+
+.is-sleeping .music-btn {
+  color: var(--text-color);
+}
+
+.music-btn.is-playing {
+  animation: spin 5s linear infinite;
+}
+
+.music-btn.is-loading svg {
+  animation: spin 1s linear infinite;
+}
+
+.sleep-overlay {
+  position: fixed;
+  z-index: 1000;
+  top: 50%;
+  left: 50%;
+  width: min(90vw, 720px);
+  color: #e2e8f0;
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  text-shadow: 0 0 20px rgb(255 255 255 / 40%);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: sleep-message-in 500ms ease-out both;
+}
+
+.ambient-effects {
+  position: fixed;
+  z-index: 1;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.click-effect,
+.falling-effect {
+  position: fixed;
+  display: block;
+  pointer-events: none;
+  user-select: none;
+  will-change: transform, opacity;
+}
+
+.click-effect {
+  z-index: 9999;
+  font-size: 24px;
+  animation: click-bloom 1s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+
+.falling-effect {
+  top: -24px;
+  color: var(--text-color);
+  opacity: 0.55;
+  text-shadow: 0 0 5px rgb(255 255 255 / 50%);
+  animation: fall var(--fall-duration) linear forwards;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .age-counter:hover {
+    background: var(--surface-color);
+    transform: scale(1.05);
+  }
+
+  .video-frame:hover {
+    box-shadow: var(--raised-shadow);
+    transform: rotate(0deg) scale(1.02);
+  }
+
+  .polaroid:hover {
+    z-index: 10;
+    box-shadow: var(--raised-shadow);
+    transform: rotate(0deg) translateY(-10px) scale(1.12);
+  }
+
+  .icon-button:hover {
+    transform: scale(1.12) rotate(-10deg);
+  }
+}
+
+@media (max-width: 768px) {
+  .album-app main {
+    padding-bottom: 64px;
+  }
+
+  .album-header {
+    width: min(100% - 32px, 560px);
+    margin-top: 64px;
+  }
+
+  .album-header h1 {
+    font-size: 2.5rem;
+  }
+
+  .subtitle {
+    padding: 8px 18px;
+    font-size: 1.05rem;
+  }
+
+  .age-counter {
+    max-width: 100%;
+    padding: 9px 16px;
+    font-size: 1rem;
+  }
+
+  .age-counter strong {
+    min-width: 20px;
+    font-size: 1.25rem;
+  }
+
+  .video-section {
+    width: calc(100% - 32px);
+    margin-top: 24px;
+  }
+
+  .video-title {
+    margin-bottom: 16px;
+    font-size: 1.75rem;
+  }
+
+  .video-frame {
+    padding: 10px 10px 40px;
+    transform: none;
+  }
+
+  .gallery {
+    flex-direction: column;
+    align-items: center;
+    padding: 28px 20px 34px;
+    gap: 34px;
+  }
+
+  .polaroid {
+    width: min(100%, 320px);
+    flex-basis: auto;
+    transform: none;
+  }
+
+  .sleep-toggle {
+    top: 15px;
+    right: 15px;
+  }
+
+  .music-btn {
+    right: 20px;
+    bottom: 20px;
+  }
+
+  .sleep-overlay {
+    font-size: 1.8rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .album-header h1 {
+    font-size: 2.15rem;
+  }
+
+  .subtitle {
+    font-size: 0.95rem;
+  }
+
+  .age-counter {
+    padding-inline: 10px;
+    font-size: 0.9rem;
+  }
+
+  .age-counter strong {
+    font-size: 1.1rem;
+  }
+
+  .video-title {
+    font-size: 1.55rem;
+  }
+
+  .sleep-overlay {
+    font-size: 1.45rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .polaroid,
+  .video-frame {
+    transform: none;
+  }
+}
+
+@keyframes bounce-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes sleep-message-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -42%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+@keyframes click-bloom {
+  to {
+    opacity: 0;
+    transform: translateY(-80px) scale(1.5) rotate(var(--rotation));
+  }
+}
+
+@keyframes fall {
+  to {
+    opacity: 0;
+    transform: translateY(105vh) rotate(360deg);
+  }
+}

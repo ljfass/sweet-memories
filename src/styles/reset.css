@@ -1,0 +1,39 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body,
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+audio,
+video {
+  font: inherit;
+}
+
+button {
+  border: 0;
+}
+
+picture,
+img,
+video {
+  display: block;
+  max-width: 100%;
+}

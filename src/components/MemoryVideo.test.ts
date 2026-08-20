@@ -14,6 +14,7 @@ describe('MemoryVideo', () => {
     expect(wrapper.get('section').attributes('aria-labelledby')).toBe(
       'memory-video-title',
     )
+    expect(wrapper.get('h2').classes()).toContain('video-title')
     expect(wrapper.get('h2').text()).toBe('🎥 成长放映室')
 
     const video = wrapper.get('video')

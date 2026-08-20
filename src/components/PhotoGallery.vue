@@ -8,7 +8,14 @@ defineProps<{
 </script>
 
 <template>
-  <section class="gallery" aria-label="成长照片墙">
-    <PhotoCard v-for="memory in memories" :key="memory.id" :memory="memory" />
+  <section
+    class="gallery"
+    aria-label="成长照片墙"
+  >
+    <PhotoCard
+      v-for="memory in memories"
+      :key="memory.id"
+      :memory="memory"
+    />
   </section>
 </template>

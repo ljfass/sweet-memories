@@ -16,7 +16,10 @@ const { isSleepMode, isOverlayVisible, toggleSleepMode } = useSleepMode()
 </script>
 
 <template>
-  <div class="album-app" :class="{ 'is-sleeping': isSleepMode }">
+  <div
+    class="album-app"
+    :class="{ 'is-sleeping': isSleepMode }"
+  >
     <FloatingControls
       :is-sleep-mode="isSleepMode"
       :is-overlay-visible="isOverlayVisible"
@@ -27,7 +30,10 @@ const { isSleepMode, isOverlayVisible, toggleSleepMode } = useSleepMode()
 
     <main aria-label="宝贝成长相册">
       <AlbumHeader />
-      <MemoryVideo :poster="videoPosterUrl" :src="videoUrl" />
+      <MemoryVideo
+        :poster="videoPosterUrl"
+        :src="videoUrl"
+      />
       <PhotoGallery :memories="memories" />
     </main>
   </div>

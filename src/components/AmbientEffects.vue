@@ -26,7 +26,10 @@ const fallingStyle = (effect: FallingEffect): CSSProperties => ({
 </script>
 
 <template>
-  <div class="ambient-effects" aria-hidden="true">
+  <div
+    class="ambient-effects"
+    aria-hidden="true"
+  >
     <span
       v-for="effect in clickEffects"
       :key="`click-${effect.id}`"

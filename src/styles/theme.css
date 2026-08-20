@@ -1,0 +1,45 @@
+:root {
+  color: #555057;
+  background: #fffaf0;
+  font-family:
+    "Comic Sans MS", "Chalkboard SE", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  letter-spacing: 0;
+
+  --page-bg: #fffaf0;
+  --dot-color: #ffd1dc;
+  --heading-color: #ff7894;
+  --text-color: #555057;
+  --muted-color: #746f75;
+  --surface-color: #ffffff;
+  --surface-translucent: rgb(255 255 255 / 88%);
+  --accent-color: #ff6b81;
+  --accent-soft: #ffb6c1;
+  --border-color: #ffb6c1;
+  --media-bg: #000000;
+  --focus-color: #0f766e;
+  --surface-shadow: 0 10px 25px rgb(71 50 57 / 10%);
+  --raised-shadow: 0 20px 40px rgb(71 50 57 / 17%);
+  --control-shadow: 0 4px 15px rgb(255 107 129 / 28%);
+  --transition-speed: 400ms;
+}
+
+.album-app.is-sleeping {
+  --page-bg: #0f172a;
+  --dot-color: #26354b;
+  --heading-color: #e2e8f0;
+  --text-color: #cbd5e1;
+  --muted-color: #9eacc0;
+  --surface-color: #1e293b;
+  --surface-translucent: rgb(30 41 59 / 88%);
+  --accent-color: #818cf8;
+  --accent-soft: #475569;
+  --border-color: #52627a;
+  --media-bg: #334155;
+  --focus-color: #f8c15c;
+  --surface-shadow: 0 12px 30px rgb(0 0 0 / 38%);
+  --raised-shadow: 0 20px 44px rgb(0 0 0 / 52%);
+  --control-shadow: 0 4px 15px rgb(0 0 0 / 48%);
+}

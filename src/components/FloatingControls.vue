@@ -38,8 +38,14 @@ const musicLabel = computed(() => {
       :aria-pressed="isSleepMode"
       @click="$emit('toggle-sleep')"
     >
-      <Sun v-if="isSleepMode" aria-hidden="true" />
-      <Moon v-else aria-hidden="true" />
+      <Sun
+        v-if="isSleepMode"
+        aria-hidden="true"
+      />
+      <Moon
+        v-else
+        aria-hidden="true"
+      />
     </button>
 
     <button
@@ -52,18 +58,44 @@ const musicLabel = computed(() => {
       :aria-pressed="isPlaying"
       @click="togglePlayback"
     >
-      <LoaderCircle v-if="isLoading" aria-hidden="true" />
-      <Music2 v-else aria-hidden="true" />
+      <LoaderCircle
+        v-if="isLoading"
+        aria-hidden="true"
+      />
+      <Music2
+        v-else
+        aria-hidden="true"
+      />
     </button>
 
-    <audio ref="audioElement" loop preload="none">
-      <source :src="audioSources.aac" type="audio/mp4" />
-      <source :src="audioSources.mp3" type="audio/mpeg" />
+    <audio
+      ref="audioElement"
+      loop
+      preload="none"
+    >
+      <source
+        :src="audioSources.aac"
+        type="audio/mp4"
+      >
+      <source
+        :src="audioSources.mp3"
+        type="audio/mpeg"
+      >
     </audio>
 
-    <p v-if="isOverlayVisible" class="sleep-overlay" role="status">
+    <p
+      v-if="isOverlayVisible"
+      class="sleep-overlay"
+      role="status"
+    >
       嘘，宝宝睡着了... 💤
     </p>
-    <p v-if="errorMessage" class="sr-only" role="status">{{ errorMessage }}</p>
+    <p
+      v-if="errorMessage"
+      class="sr-only"
+      role="status"
+    >
+      {{ errorMessage }}
+    </p>
   </div>
 </template>
