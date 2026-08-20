@@ -312,11 +312,42 @@ button {
   background: rgb(30 41 59 / 80%);
 }
 
-.music-btn {
+.music-control {
+  position: fixed;
+  z-index: 99;
   right: 30px;
   bottom: 30px;
+  width: 52px;
+  height: 52px;
+}
+
+.music-btn {
+  position: relative;
+  z-index: 2;
+  right: auto;
+  bottom: auto;
   color: #5d4048;
   background: var(--accent-soft);
+}
+
+.music-notes {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.music-note {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  font-size: 20px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+  animation: music-note-flow var(--note-duration) ease-out forwards;
 }
 
 .is-sleeping .music-btn {
@@ -482,7 +513,7 @@ button {
     font-size: 28px;
   }
 
-  .music-btn {
+  .music-control {
     right: 20px;
     bottom: 20px;
   }
@@ -559,6 +590,24 @@ button {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes music-note-flow {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.65) rotate(0deg);
+  }
+  14% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(
+        calc(-50% + var(--note-x)),
+        calc(-50% + var(--note-y))
+      )
+      scale(var(--note-scale)) rotate(var(--note-rotation));
   }
 }
 

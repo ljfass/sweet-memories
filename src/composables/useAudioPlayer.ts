@@ -31,6 +31,7 @@ export function useAudioPlayer(audioElement: Ref<HTMLAudioElement | null>) {
 
     if (status.value === 'playing') {
       audio.pause()
+      handlePause()
       return
     }
 

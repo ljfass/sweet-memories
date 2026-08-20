@@ -81,6 +81,10 @@ describe('FloatingControls', () => {
     expect(button.classes()).toContain('is-playing')
     expect(button.attributes('aria-pressed')).toBe('true')
     expect(button.attributes('aria-label')).toBe('暂停背景音乐')
+    expect(wrapper.find('.music-control').exists()).toBe(true)
+    expect(wrapper.get('.music-notes').attributes('aria-hidden')).toBe('true')
+    expect(wrapper.findAll('.music-note')).toHaveLength(1)
+    expect(wrapper.get('.music-note').text()).toMatch(/^[🎵🎶🎼]$/u)
   })
 
   it('exposes failed playback as an accessible status', async () => {
@@ -92,5 +96,6 @@ describe('FloatingControls', () => {
     await errorWrapper.get('[data-testid="music-toggle"]').trigger('click')
     await flushPromises()
     expect(errorWrapper.get('[role="status"]').text()).toBe('音乐暂时无法播放')
+    expect(errorWrapper.findAll('.music-note')).toHaveLength(0)
   })
 })

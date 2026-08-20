@@ -64,6 +64,7 @@ describe('useAudioPlayer', () => {
 
     await wrapper.get('[data-testid="toggle"]').trigger('click')
     expect(pause).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="status"]').text()).toBe('idle')
 
     await audio.trigger('pause')
     expect(wrapper.get('[data-testid="status"]').text()).toBe('idle')

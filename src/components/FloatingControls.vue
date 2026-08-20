@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { LoaderCircle, Music2 } from '@lucide/vue'
-import { computed, ref } from 'vue'
+import { computed, ref, type CSSProperties } from 'vue'
 import { useAudioPlayer } from '../composables/useAudioPlayer'
+import { useMusicNotes, type MusicNote } from '../composables/useMusicNotes'
 
 defineProps<{
   isSleepMode: boolean
@@ -20,6 +21,14 @@ const audioElement = ref<HTMLAudioElement | null>(null)
 const { status, errorMessage, togglePlayback } = useAudioPlayer(audioElement)
 const isPlaying = computed(() => status.value === 'playing')
 const isLoading = computed(() => status.value === 'loading')
+const { notes } = useMusicNotes(isPlaying)
+const noteStyle = (note: MusicNote): CSSProperties => ({
+  '--note-x': `${note.travelX}px`,
+  '--note-y': `${note.travelY}px`,
+  '--note-scale': note.scale,
+  '--note-rotation': `${note.rotation}deg`,
+  '--note-duration': `${note.durationMs}ms`,
+})
 const musicLabel = computed(() => {
   if (isPlaying.value) return '暂停背景音乐'
   if (isLoading.value) return '正在加载背景音乐'
@@ -46,25 +55,41 @@ const musicLabel = computed(() => {
       </span>
     </button>
 
-    <button
-      class="icon-button music-btn"
-      :class="{ 'is-playing': isPlaying, 'is-loading': isLoading }"
-      type="button"
-      data-testid="music-toggle"
-      :aria-label="musicLabel"
-      :title="musicLabel"
-      :aria-pressed="isPlaying"
-      @click="togglePlayback"
-    >
-      <LoaderCircle
-        v-if="isLoading"
+    <div class="music-control">
+      <div
+        class="music-notes"
         aria-hidden="true"
-      />
-      <Music2
-        v-else
-        aria-hidden="true"
-      />
-    </button>
+      >
+        <span
+          v-for="note in notes"
+          :key="note.id"
+          class="music-note"
+          :style="noteStyle(note)"
+        >
+          {{ note.glyph }}
+        </span>
+      </div>
+
+      <button
+        class="icon-button music-btn"
+        :class="{ 'is-playing': isPlaying, 'is-loading': isLoading }"
+        type="button"
+        data-testid="music-toggle"
+        :aria-label="musicLabel"
+        :title="musicLabel"
+        :aria-pressed="isPlaying"
+        @click="togglePlayback"
+      >
+        <LoaderCircle
+          v-if="isLoading"
+          aria-hidden="true"
+        />
+        <Music2
+          v-else
+          aria-hidden="true"
+        />
+      </button>
+    </div>
 
     <audio
       ref="audioElement"

@@ -33,4 +33,16 @@ describe('album visual fidelity styles', () => {
       /@media \(max-width: 768px\)[\s\S]*?\.sleep-toggle\s*{[^}]*width:\s*45px;[^}]*height:\s*45px;[^}]*}[\s\S]*?\.sleep-icon\s*{[^}]*font-size:\s*28px;/s,
     )
   })
+
+  it('anchors music notes and animates only transforms and opacity', () => {
+    expect(globalCss).toMatch(
+      /\.music-control\s*{[^}]*position:\s*fixed;[^}]*right:\s*30px;[^}]*bottom:\s*30px;/s,
+    )
+    expect(globalCss).toMatch(
+      /\.music-note\s*{[^}]*pointer-events:\s*none;[^}]*will-change:\s*transform, opacity;[^}]*animation:\s*music-note-flow/s,
+    )
+    expect(globalCss).toMatch(
+      /@keyframes music-note-flow\s*{[\s\S]*?transform:[^;]+;[\s\S]*?opacity:\s*0;/s,
+    )
+  })
 })
