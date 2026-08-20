@@ -67,12 +67,14 @@ button {
 
 .subtitle,
 .age-counter {
-  display: inline-block;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
   box-shadow: 0 4px 15px rgb(71 50 57 / 7%);
 }
 
 .subtitle {
-  max-width: 100%;
   padding: 8px 25px;
   border-radius: 999px;
   color: var(--muted-color);
@@ -172,7 +174,7 @@ button {
   bottom: 12px;
   left: 50%;
   color: var(--accent-color);
-  content: "REC ●";
+  content: "REC 🔴";
   font-size: 1.15rem;
   font-weight: 700;
   letter-spacing: 0;
@@ -296,6 +298,18 @@ button {
 .sleep-toggle {
   top: 25px;
   right: 30px;
+  width: 55px;
+  height: 55px;
+  background: rgb(255 255 255 / 60%);
+}
+
+.sleep-toggle svg {
+  width: 35px;
+  height: 35px;
+}
+
+.is-sleeping .sleep-toggle {
+  background: rgb(30 41 59 / 80%);
 }
 
 .music-btn {
@@ -460,6 +474,13 @@ button {
   .sleep-toggle {
     top: 15px;
     right: 15px;
+    width: 45px;
+    height: 45px;
+  }
+
+  .sleep-toggle svg {
+    width: 28px;
+    height: 28px;
   }
 
   .music-btn {

@@ -12,20 +12,27 @@
 
 ## File Map
 
-- Create: `src/styles/global.test.ts` - locks the user-visible CSS values that must match the reference.
+- Create: `scripts/global-styles.test.ts` - locks the user-visible CSS values that must match the reference without adding Node types to the browser application.
 - Modify: `src/styles/global.css` - applies the stacked header layout, recording indicator, and sleep-control dimensions/surfaces.
 
 ### Task 1: Add The Visual Fidelity Regression Test
 
 **Files:**
-- Create: `src/styles/global.test.ts`
-- Test: `src/styles/global.test.ts`
+- Create: `scripts/global-styles.test.ts`
+- Test: `scripts/global-styles.test.ts`
 
 - [ ] **Step 1: Write the failing CSS contract test**
 
 ```ts
+// @vitest-environment node
+
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import globalCss from './global.css?raw'
+
+const globalCss = readFileSync(
+  new URL('../src/styles/global.css', import.meta.url),
+  'utf8',
+)
 
 describe('album visual fidelity styles', () => {
   it('stacks and centers the subtitle and age counter', () => {
@@ -60,7 +67,7 @@ describe('album visual fidelity styles', () => {
 Run:
 
 ```bash
-pnpm test -- src/styles/global.test.ts
+pnpm test -- scripts/global-styles.test.ts
 ```
 
 Expected: three tests fail because the current stylesheet uses inline header blocks, `REC ●`, and different sleep-control values.
@@ -69,7 +76,7 @@ Expected: three tests fail because the current stylesheet uses inline header blo
 
 **Files:**
 - Modify: `src/styles/global.css`
-- Test: `src/styles/global.test.ts`
+- Test: `scripts/global-styles.test.ts`
 
 - [ ] **Step 1: Stack the header information blocks**
 
@@ -142,7 +149,7 @@ Inside `@media (max-width: 768px)`, use:
 Run:
 
 ```bash
-pnpm test -- src/styles/global.test.ts
+pnpm test -- scripts/global-styles.test.ts
 ```
 
 Expected: 3 tests pass.
@@ -164,6 +171,6 @@ Expected: lint and type checking pass, all tests pass, the production build succ
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/styles/global.test.ts src/styles/global.css
+git add scripts/global-styles.test.ts src/styles/global.css docs/superpowers/plans/2026-08-20-album-layout-detail-fixes.md
 git commit -m "fix: align album details with reference"
 ```
