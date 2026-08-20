@@ -1,5 +1,5 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
 import FloatingControls from './FloatingControls.vue'
 
 const audioSources = {
@@ -47,5 +47,48 @@ describe('FloatingControls', () => {
     })
 
     expect(wrapper.find('[role="status"]').exists()).toBe(false)
+  })
+
+  it('defers audio and orders the compact source before the fallback', () => {
+    const wrapper = mount(FloatingControls, {
+      props: { isSleepMode: false, isOverlayVisible: false, audioSources },
+    })
+    const audio = wrapper.get('audio')
+    const sources = audio.findAll('source')
+
+    expect(audio.attributes()).toMatchObject({ preload: 'none', loop: '' })
+    expect(sources.map((source) => source.attributes('src'))).toEqual([
+      audioSources.aac,
+      audioSources.mp3,
+    ])
+    expect(sources.map((source) => source.attributes('type'))).toEqual([
+      'audio/mp4',
+      'audio/mpeg',
+    ])
+  })
+
+  it('reflects successful playback state', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    const wrapper = mount(FloatingControls, {
+      props: { isSleepMode: false, isOverlayVisible: false, audioSources },
+    })
+    const button = wrapper.get('[data-testid="music-toggle"]')
+
+    await button.trigger('click')
+    await flushPromises()
+    expect(button.classes()).toContain('is-playing')
+    expect(button.attributes('aria-pressed')).toBe('true')
+    expect(button.attributes('aria-label')).toBe('暂停背景音乐')
+  })
+
+  it('exposes failed playback as an accessible status', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockRejectedValue(new Error('blocked'))
+    const errorWrapper = mount(FloatingControls, {
+      props: { isSleepMode: false, isOverlayVisible: false, audioSources },
+    })
+
+    await errorWrapper.get('[data-testid="music-toggle"]').trigger('click')
+    await flushPromises()
+    expect(errorWrapper.get('[role="status"]').text()).toBe('音乐暂时无法播放')
   })
 })
