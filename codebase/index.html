@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>宝贝的成长相册</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        background-color: #fffaf0;
+        background-image: radial-gradient(#ffd1dc 3px, transparent 3px);
+        background-size: 40px 40px;
+        font-family:
+          "Comic Sans MS", "Chalkboard SE", "PingFang SC", "Microsoft YaHei",
+          sans-serif;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        overflow-x: hidden;
+        padding-bottom: 50px;
+        cursor: pointer;
+        transition:
+          background-color 1.5s ease,
+          background-image 1.5s ease;
+      }
+
+      header {
+        margin-top: 60px;
+        text-align: center;
+        animation: bounceIn 1s cubic-bezier(0.28, 0.84, 0.42, 1);
+        position: relative;
+        z-index: 2;
+      }
+
+      @keyframes bounceIn {
+        0% {
+          transform: scale(0.5);
+          opacity: 0;
+        }
+        70% {
+          transform: scale(1.05);
+          opacity: 1;
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      h1 {
+        color: #ff8ca3;
+        font-size: 3.5rem;
+        text-shadow:
+          3px 3px 0px #fff,
+          6px 6px 0px rgba(255, 140, 163, 0.2);
+        letter-spacing: 2px;
+        margin-bottom: 15px;
+        transition:
+          color 1s,
+          text-shadow 1s;
+      }
+
+      .subtitle {
+        color: #777;
+        font-size: 1.2rem;
+        background: #fff;
+        padding: 8px 25px;
+        border-radius: 30px;
+        display: inline-block;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+        font-weight: bold;
+        transition: all 1s;
+      }
+
+      .age-counter {
+        margin-top: 20px;
+        background: rgba(255, 255, 255, 0.85);
+        padding: 10px 25px;
+        border-radius: 20px;
+        color: #666;
+        font-size: 1.1rem;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+        border: 2px dashed #ffb6c1;
+        display: inline-block;
+        transition: all 0.5s;
+      }
+
+      .age-counter:hover {
+        transform: scale(1.05);
+        background: #fff;
+      }
+
+      .age-counter b {
+        font-size: 1.4rem;
+        color: #ff6b81;
+        display: inline-block;
+        min-width: 25px;
+        transition: color 1s;
+      }
+
+      /* ----------------- 视频播放区域样式 ----------------- */
+      .video-section {
+        width: 90%;
+        max-width: 800px;
+        margin: 40px auto 10px auto;
+        position: relative;
+        z-index: 2;
+        text-align: center;
+      }
+
+      .video-title {
+        font-size: 2rem;
+        color: #ff8ca3;
+        margin-bottom: 20px;
+        font-weight: bold;
+        text-shadow:
+          2px 2px 0px #fff,
+          4px 4px 0px rgba(255, 140, 163, 0.2);
+        transition: all 1s;
+      }
+
+      .video-frame {
+        background: #fff;
+        padding: 15px 15px 45px 15px;
+        border-radius: 12px;
+        box-shadow: 0 15px 35px rgba(0, 0, 0, 0.08);
+        position: relative;
+        /* 给视频框加一点点倾斜，呼应拍立得风格 */
+        transform: rotate(-1deg);
+        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      }
+
+      .video-frame:hover {
+        transform: rotate(0deg) scale(1.02);
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+      }
+
+      .video-frame video {
+        width: 100%;
+        aspect-ratio: 16 / 9; /* 固定为标准 16:9 比例，避免竖屏视频导致页面过长 */
+        object-fit: contain; /* 保证视频完整显示不变形，空白处用背景色填充 */
+        border-radius: 6px;
+        background-color: #000; /* 视频背景改为纯黑，观感更好 */
+        outline: none;
+        display: block;
+        transition: filter 1.5s ease;
+      }
+
+      /* 视频底部装饰文字 */
+      .video-frame::after {
+        content: "REC 🔴";
+        position: absolute;
+        bottom: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 1.2rem;
+        color: #ff6b81;
+        font-weight: bold;
+        letter-spacing: 2px;
+        animation: blink 2s infinite;
+      }
+
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      /* ----------------- 照片墙区域样式 ----------------- */
+      .gallery {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 40px;
+        padding: 40px 20px;
+        max-width: 1200px;
+        position: relative;
+        z-index: 2;
+      }
+
+      .polaroid {
+        background: #fff;
+        padding: 15px 15px 30px 15px;
+        border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
+        transform: rotate(var(--rot)) translate(var(--x), var(--y));
+        transition:
+          all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275),
+          background 1s,
+          box-shadow 1s;
+        cursor: pointer;
+        width: 280px;
+        position: relative;
+      }
+
+      .polaroid:hover {
+        transform: rotate(0deg) scale(1.15) translateY(-10px);
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+        z-index: 10;
+      }
+
+      .polaroid::before {
+        content: "";
+        position: absolute;
+        top: -10px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 20px;
+        height: 20px;
+        background: radial-gradient(circle at 30% 30%, #ffb6c1, #ff6b81);
+        border-radius: 50%;
+        box-shadow:
+          0 3px 5px rgba(0, 0, 0, 0.2),
+          inset 0 -2px 4px rgba(0, 0, 0, 0.2);
+        z-index: 2;
+        transition: background 1s;
+      }
+
+      .polaroid img {
+        width: 100%;
+        height: 250px;
+        object-fit: cover;
+        background-color: #fff0f3;
+        border-radius: 4px;
+        transition: filter 1.5s ease;
+      }
+
+      .caption {
+        text-align: center;
+        margin-top: 15px;
+        font-size: 1.3rem;
+        color: #555;
+        font-weight: bold;
+        transition: color 1s;
+      }
+
+      /* 音乐播放按钮 */
+      .music-btn {
+        position: fixed;
+        bottom: 30px;
+        right: 30px;
+        width: 50px;
+        height: 50px;
+        background: #ffb6c1;
+        border-radius: 50%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        box-shadow: 0 4px 15px rgba(255, 182, 193, 0.5);
+        cursor: pointer;
+        z-index: 99;
+        animation: spin 5s linear infinite;
+        animation-play-state: paused;
+        font-size: 24px;
+        transition: background 1s;
+      }
+
+      .music-btn.playing {
+        animation-play-state: running;
+      }
+
+      @keyframes spin {
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* ----------------- 黑夜模式 (睡眠模式) 适配 ----------------- */
+      body.sleep-mode {
+        background-color: #0f172a;
+        background-image: radial-gradient(#1e293b 3px, transparent 3px);
+      }
+
+      body.sleep-mode h1 {
+        color: #e2e8f0;
+        text-shadow:
+          2px 2px 0px #1e293b,
+          4px 4px 0px rgba(0, 0, 0, 0.5);
+      }
+
+      body.sleep-mode .subtitle {
+        background: #1e293b;
+        color: #94a3b8;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+      }
+
+      body.sleep-mode .age-counter {
+        background: rgba(30, 41, 59, 0.8);
+        border-color: #475569;
+        color: #94a3b8;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+      }
+
+      body.sleep-mode .age-counter:hover {
+        background: rgba(30, 41, 59, 1);
+      }
+
+      body.sleep-mode .age-counter b {
+        color: #818cf8;
+      }
+
+      /* 视频区域在睡眠模式下的适配 */
+      body.sleep-mode .video-title {
+        color: #cbd5e1;
+        text-shadow: 2px 2px 0px #1e293b;
+      }
+
+      body.sleep-mode .video-frame {
+        background: #1e293b;
+        box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
+      }
+
+      body.sleep-mode .video-frame video {
+        filter: brightness(0.7) contrast(0.9);
+        background-color: #334155;
+      }
+
+      body.sleep-mode .video-frame::after {
+        color: #64748b;
+        content: "PAUSED ⏸️";
+        animation: none; /* 睡眠模式停止闪烁 */
+      }
+
+      body.sleep-mode .polaroid {
+        background: #1e293b;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+      }
+
+      body.sleep-mode .polaroid:hover {
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+      }
+
+      body.sleep-mode .polaroid img {
+        filter: brightness(0.65) contrast(0.9);
+        background-color: #334155;
+      }
+
+      body.sleep-mode .caption {
+        color: #cbd5e1;
+      }
+
+      body.sleep-mode .polaroid::before {
+        background: radial-gradient(circle at 30% 30%, #64748b, #334155);
+      }
+
+      body.sleep-mode .music-btn {
+        background: #334155;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+      }
+
+      /* ----------------- 睡眠模式切换按钮 ----------------- */
+      .sleep-toggle {
+        position: fixed;
+        top: 25px;
+        right: 30px;
+        font-size: 35px;
+        cursor: pointer;
+        z-index: 99;
+        transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        user-select: none;
+        background: rgba(255, 255, 255, 0.6);
+        border-radius: 50%;
+        width: 55px;
+        height: 55px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      }
+
+      body.sleep-mode .sleep-toggle {
+        background: rgba(30, 41, 59, 0.8);
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+      }
+
+      .sleep-toggle:hover {
+        transform: scale(1.15) rotate(-15deg);
+      }
+
+      .sleep-overlay {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 3rem;
+        color: #e2e8f0;
+        text-shadow: 0 0 20px rgba(255, 255, 255, 0.4);
+        z-index: 1000;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 1.5s ease-in-out;
+        font-weight: bold;
+        white-space: nowrap;
+      }
+      .sleep-overlay.show {
+        opacity: 1;
+      }
+
+      @media (max-width: 768px) {
+        h1 {
+          font-size: 2.5rem;
+        }
+        .video-section {
+          margin-top: 20px;
+        }
+        .polaroid {
+          width: 90%;
+          max-width: 320px;
+          transform: rotate(0) translate(0, 0) !important;
+          margin-bottom: 20px;
+        }
+        .polaroid:hover {
+          transform: scale(1.05) !important;
+        }
+        .gallery {
+          gap: 20px;
+          padding: 20px;
+          flex-direction: column;
+          align-items: center;
+        }
+        .music-btn {
+          bottom: 20px;
+          right: 20px;
+        }
+        .sleep-toggle {
+          top: 15px;
+          right: 15px;
+          width: 45px;
+          height: 45px;
+          font-size: 28px;
+        }
+        .sleep-overlay {
+          font-size: 1.8rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 睡眠模式切换按钮 -->
+    <div class="sleep-toggle" id="sleep-toggle" title="切换睡眠模式">🌙</div>
+    <!-- 哄睡提示浮层 -->
+    <div class="sleep-overlay" id="sleep-overlay">嘘，宝宝睡着了... 💤</div>
+
+    <header>
+      <h1>宝贝的快乐时光</h1>
+      <div class="subtitle">记录成长的每一个心动瞬间 👶✨</div>
+      <br />
+      <div class="age-counter" id="age-counter">
+        来到这个美丽世界已经 <br />
+        <b>0</b> 年 <b>0</b> 天 <b>0</b> 小时 <b>0</b> 分 <b>0</b> 秒
+      </div>
+    </header>
+
+    <!-- 视频播放区域 -->
+    <div class="video-section">
+      <div class="video-title">🎥 成长放映室</div>
+      <div class="video-frame">
+        <!-- 替换 src="baby-video.mp4" 为你真实的视频路径。 poster是播放前显示的封面图 -->
+        <video controls poster="./assets/images/7777.jpg">
+          <source src="./assets/1.mp4" type="video/mp4" />
+          您的浏览器不支持视频播放。
+        </video>
+      </div>
+    </div>
+
+    <!-- 照片墙区域 -->
+    <div class="gallery">
+      <div class="polaroid" style="--rot: -5deg; --x: 0px; --y: 10px">
+        <img src="./assets/images/1.jpg" alt="照片1" />
+        <div class="caption">刚出生的时候 🍼</div>
+      </div>
+
+      <div class="polaroid" style="--rot: 3deg; --x: 10px; --y: -5px">
+        <img src="./assets/images/2.jpg" alt="照片2" />
+        <div class="caption">第一次笑得这么开心 😄</div>
+      </div>
+
+      <div class="polaroid" style="--rot: -2deg; --x: -10px; --y: 0px">
+        <img src="./assets/images/3.jpg" alt="照片3" />
+        <div class="caption">满月啦 🎈</div>
+      </div>
+
+      <div class="polaroid" style="--rot: 4deg; --x: 5px; --y: 15px">
+        <img src="./assets/images/4.jpg" alt="照片4" />
+        <div class="caption">睡觉的样子最乖 💤</div>
+      </div>
+
+      <div class="polaroid" style="--rot: -4deg; --x: 0px; --y: -10px">
+        <img src="./assets/images/5.jpg" alt="照片5" />
+        <div class="caption">带去公园玩 🌳</div>
+      </div>
+    </div>
+
+    <!-- 迷你音乐播放器 -->
+    <div class="music-btn" id="music-btn" title="点击播放/暂停背景音乐">🎵</div>
+    <audio id="bg-music" loop>
+      <source src="./assets/1.mp3" type="audio/mpeg" />
+    </audio>
+
+    <script>
+      // ----------------- 睡眠模式切换逻辑 -----------------
+      const sleepToggle = document.getElementById("sleep-toggle");
+      const sleepOverlay = document.getElementById("sleep-overlay");
+
+      sleepToggle.addEventListener("click", (e) => {
+        e.stopPropagation();
+        document.body.classList.toggle("sleep-mode");
+
+        if (document.body.classList.contains("sleep-mode")) {
+          sleepToggle.innerText = "☀️";
+          sleepToggle.title = "太阳公公出来了 (起床模式)";
+
+          sleepOverlay.classList.add("show");
+          setTimeout(() => {
+            sleepOverlay.classList.remove("show");
+          }, 3000);
+        } else {
+          sleepToggle.innerText = "🌙";
+          sleepToggle.title = "嘘，哄睡模式";
+          sleepOverlay.classList.remove("show");
+        }
+      });
+
+      // ----------------- 年龄计时器 -----------------
+      const birthDate = new Date("2025-10-09T08:55:00");
+      function updateAge() {
+        const now = new Date();
+        const diff = now - birthDate;
+        if (diff > 0) {
+          const years = Math.floor(diff / (1000 * 60 * 60 * 24 * 365.25));
+          const days = Math.floor(
+            (diff % (1000 * 60 * 60 * 24 * 365.25)) / (1000 * 60 * 60 * 24),
+          );
+          const hours = Math.floor(
+            (diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60),
+          );
+          const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+          const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+          const counterElem = document.getElementById("age-counter");
+          if (counterElem) {
+            counterElem.innerHTML = `来到这个美丽世界已经 <br> <b>${years}</b> 年 <b>${days}</b> 天 <b>${hours}</b> 小时 <b>${minutes}</b> 分 <b>${seconds}</b> 秒`;
+          }
+        }
+      }
+      setInterval(updateAge, 1000);
+      updateAge();
+
+      // ----------------- 点击气泡特效 -----------------
+      document.addEventListener("click", function (e) {
+        // 点击交互元素时不触发气泡
+        if (
+          e.target.closest(".polaroid") ||
+          e.target.closest("#music-btn") ||
+          e.target.closest("#sleep-toggle") ||
+          e.target.closest(".video-frame")
+        ) {
+          return;
+        }
+
+        const icon = document.createElement("div");
+        const isSleep = document.body.classList.contains("sleep-mode");
+        const emojis = isSleep
+          ? ["💤", "✨", "🌙", "🌌", "🦉"]
+          : ["❤️", "🍼", "🧸", "🎈", "✨", "👣"];
+
+        icon.innerText = emojis[Math.floor(Math.random() * emojis.length)];
+        icon.style.position = "fixed";
+        icon.style.left = e.clientX - 15 + "px";
+        icon.style.top = e.clientY - 15 + "px";
+        icon.style.fontSize = "24px";
+        icon.style.pointerEvents = "none";
+        icon.style.zIndex = "9999";
+        icon.style.transition = "all 1s cubic-bezier(0.25, 0.46, 0.45, 0.94)";
+
+        document.body.appendChild(icon);
+        icon.getBoundingClientRect();
+
+        icon.style.transform = `translateY(-80px) scale(1.5) rotate(${Math.random() * 60 - 30}deg)`;
+        icon.style.opacity = "0";
+
+        setTimeout(() => {
+          icon.remove();
+        }, 1000);
+      });
+
+      // ----------------- 音乐播放 -----------------
+      const musicBtn = document.getElementById("music-btn");
+      const bgMusic = document.getElementById("bg-music");
+
+      musicBtn.addEventListener("click", () => {
+        if (bgMusic.paused) {
+          bgMusic
+            .play()
+            .then(() => {
+              musicBtn.classList.add("playing");
+            })
+            .catch(() => {
+              alert("提示：请放一首 lullaby.mp3 到同目录下才能播放哦！");
+            });
+        } else {
+          bgMusic.pause();
+          musicBtn.classList.remove("playing");
+        }
+      });
+
+      // ----------------- 背景特效 -----------------
+      function createStar() {
+        const star = document.createElement("div");
+        const isSleep = document.body.classList.contains("sleep-mode");
+
+        star.innerHTML = isSleep ? "・" : "✨";
+        if (isSleep) {
+          star.style.color = "#e2e8f0";
+          star.style.textShadow = "0 0 5px #fff";
+        }
+
+        star.style.position = "fixed";
+        star.style.left = Math.random() * 100 + "vw";
+        star.style.top = "-20px";
+        star.style.fontSize = Math.random() * 10 + 10 + "px";
+        star.style.opacity = Math.random() * 0.5 + 0.3;
+        star.style.pointerEvents = "none";
+        star.style.zIndex = "1";
+
+        const duration = Math.random() * 3 + 4;
+        star.style.transition = `transform ${duration}s linear, opacity ${duration}s linear`;
+
+        document.body.appendChild(star);
+
+        setTimeout(() => {
+          star.style.transform = `translateY(100vh) rotate(${Math.random() * 360}deg)`;
+          star.style.opacity = "0";
+        }, 50);
+
+        setTimeout(() => {
+          star.remove();
+        }, duration * 1000);
+      }
+      setInterval(createStar, 800);
+    </script>
+  </body>
+</html>
