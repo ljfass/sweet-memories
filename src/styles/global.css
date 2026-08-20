@@ -303,9 +303,9 @@ button {
   background: rgb(255 255 255 / 60%);
 }
 
-.sleep-toggle svg {
-  width: 35px;
-  height: 35px;
+.sleep-icon {
+  font-size: 35px;
+  line-height: 1;
 }
 
 .is-sleeping .sleep-toggle {
@@ -478,9 +478,8 @@ button {
     height: 45px;
   }
 
-  .sleep-toggle svg {
-    width: 28px;
-    height: 28px;
+  .sleep-icon {
+    font-size: 28px;
   }
 
   .music-btn {

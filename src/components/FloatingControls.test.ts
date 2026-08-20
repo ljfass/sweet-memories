@@ -20,6 +20,7 @@ describe('FloatingControls', () => {
       'aria-label': '开启哄睡模式',
       'aria-pressed': 'false',
     })
+    expect(sleepButton.get('.sleep-icon').text()).toBe('🌙')
 
     await sleepButton.trigger('click')
     expect(wrapper.emitted('toggle-sleep')).toHaveLength(1)
@@ -27,6 +28,7 @@ describe('FloatingControls', () => {
     await wrapper.setProps({ isSleepMode: true })
     expect(sleepButton.attributes('aria-label')).toBe('退出哄睡模式')
     expect(sleepButton.attributes('aria-pressed')).toBe('true')
+    expect(sleepButton.get('.sleep-icon').text()).toBe('☀️')
   })
 
   it('renders the music command and sleep status overlay', () => {

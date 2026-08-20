@@ -50,13 +50,13 @@ describe('album visual fidelity styles', () => {
       /\.sleep-toggle\s*{[^}]*width:\s*55px;[^}]*height:\s*55px;[^}]*background:\s*rgb\(255 255 255 \/ 60%\);/s,
     )
     expect(globalCss).toMatch(
-      /\.sleep-toggle svg\s*{[^}]*width:\s*35px;[^}]*height:\s*35px;/s,
+      /\.sleep-icon\s*{[^}]*font-size:\s*35px;[^}]*line-height:\s*1;/s,
     )
     expect(globalCss).toMatch(
       /\.is-sleeping \.sleep-toggle\s*{[^}]*background:\s*rgb\(30 41 59 \/ 80%\);/s,
     )
     expect(globalCss).toMatch(
-      /@media \(max-width: 768px\)[\s\S]*?\.sleep-toggle\s*{[^}]*width:\s*45px;[^}]*height:\s*45px;[^}]*}[\s\S]*?\.sleep-toggle svg\s*{[^}]*width:\s*28px;[^}]*height:\s*28px;/s,
+      /@media \(max-width: 768px\)[\s\S]*?\.sleep-toggle\s*{[^}]*width:\s*45px;[^}]*height:\s*45px;[^}]*}[\s\S]*?\.sleep-icon\s*{[^}]*font-size:\s*28px;/s,
     )
   })
 })
@@ -116,9 +116,9 @@ Update and extend the desktop rules:
   background: rgb(255 255 255 / 60%);
 }
 
-.sleep-toggle svg {
-  width: 35px;
-  height: 35px;
+.sleep-icon {
+  font-size: 35px;
+  line-height: 1;
 }
 
 .is-sleeping .sleep-toggle {
@@ -138,9 +138,8 @@ Inside `@media (max-width: 768px)`, use:
   height: 45px;
 }
 
-.sleep-toggle svg {
-  width: 28px;
-  height: 28px;
+.sleep-icon {
+  font-size: 28px;
 }
 ```
 

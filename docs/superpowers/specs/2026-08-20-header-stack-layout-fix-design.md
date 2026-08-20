@@ -12,10 +12,10 @@ the sleep control's dimensions and translucent surface to the original page.
 
 The existing Vue structure, copy, component boundaries, spacing, colors, and
 behavior remain unchanged. The fix only changes the shared CSS rule that
-currently allows `.subtitle` and `.age-counter` to sit on the same line and the
-video-frame pseudo-element's recording-indicator content. The sleep button keeps
-its semantic button element, accessible state, Lucide icon, and existing fixed
-position; only its visual sizing and surface opacity change.
+currently allows `.subtitle` and `.age-counter` to sit on the same line, the
+video-frame pseudo-element's recording-indicator content, and the sleep button's
+visual presentation. The sleep button keeps its semantic button element,
+accessible state, and existing fixed position.
 
 ## Layout
 
@@ -34,11 +34,12 @@ font size, blink animation, and sleep-mode `PAUSED` replacement remain unchanged
 ## Sleep Control
 
 The desktop sleep control will match the original `55px` circular button and
-`35px` icon footprint, with the original 60%-opaque white day surface. At the
+`35px` emoji footprint, with the original 60%-opaque white day surface. At the
 existing mobile breakpoint it will retain the original `45px` button and `28px`
-icon footprint. Sleep mode will use the original 80%-opaque dark surface. The
-current keyboard focus indicator, accessible label, pressed state, and Lucide
-Moon/Sun icon switching remain intact.
+emoji footprint. Day mode displays the original `🌙` command and sleep mode
+displays the original `☀️` command. Sleep mode uses the original 80%-opaque dark
+surface. The current keyboard focus indicator, accessible label, and pressed
+state remain intact.
 
 ## Verification
 

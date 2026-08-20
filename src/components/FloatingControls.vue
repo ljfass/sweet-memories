@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LoaderCircle, Moon, Music2, Sun } from '@lucide/vue'
+import { LoaderCircle, Music2 } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useAudioPlayer } from '../composables/useAudioPlayer'
 
@@ -38,14 +38,12 @@ const musicLabel = computed(() => {
       :aria-pressed="isSleepMode"
       @click="$emit('toggle-sleep')"
     >
-      <Sun
-        v-if="isSleepMode"
+      <span
+        class="sleep-icon"
         aria-hidden="true"
-      />
-      <Moon
-        v-else
-        aria-hidden="true"
-      />
+      >
+        {{ isSleepMode ? '☀️' : '🌙' }}
+      </span>
     </button>
 
     <button
