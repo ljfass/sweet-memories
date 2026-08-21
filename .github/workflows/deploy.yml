@@ -16,6 +16,7 @@ jobs:
   deploy:
     name: 检查并部署
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment:
       name: production
       url: ${{ vars.PRODUCTION_URL }}
@@ -24,7 +25,7 @@ jobs:
       REMOTE_ARCHIVE: /tmp/sweet-memories-${{ github.sha }}.tar.gz
     steps:
       - name: 检出 Tag 对应代码
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -40,7 +41,7 @@ jobs:
           fi
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
 
@@ -54,15 +55,19 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: 类型检查
+        id: typecheck
         run: pnpm typecheck
 
       - name: 代码检查
+        id: lint
         run: pnpm lint
 
       - name: 单元测试
+        id: test
         run: pnpm test
 
       - name: 部署脚本测试
+        id: test-deploy
         run: pnpm test:deploy
 
       - name: 生产构建
@@ -74,6 +79,7 @@ jobs:
         run: tar -C dist -czf "$RUNNER_TEMP/release.tar.gz" .
 
       - name: 校验部署配置
+        id: validate-config
         shell: bash
         env:
           ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
@@ -86,6 +92,14 @@ jobs:
           : "${ALIYUN_SSH_PORT:?缺少 ALIYUN_SSH_PORT}"
           : "${ALIYUN_USER:?缺少 ALIYUN_USER}"
           : "${PRODUCTION_URL:?缺少 PRODUCTION_URL}"
+          if [[ ! "$ALIYUN_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
+            echo 'ALIYUN_HOST 只能包含字母、数字、点和连字符。' >&2
+            exit 1
+          fi
+          if [[ ! "$ALIYUN_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            echo 'ALIYUN_USER 不是安全的用户名。' >&2
+            exit 1
+          fi
           if [[ ! "$ALIYUN_SSH_PORT" =~ ^[0-9]+$ ]]; then
             echo 'ALIYUN_SSH_PORT 必须是数字。' >&2
             exit 1
@@ -128,14 +142,19 @@ jobs:
             IdentitiesOnly yes
             StrictHostKeyChecking yes
             ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
           CONFIG
 
       - name: 上传发布产物
+        id: upload
+        timeout-minutes: 5
         run: scp "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_ARCHIVE"
 
       - name: 原子启用新版本
         id: activate
         continue-on-error: true
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
@@ -145,6 +164,7 @@ jobs:
       - name: 公网健康检查并在失败时回退
         id: health-check
         if: ${{ always() && steps.activate.outcome != 'skipped' }}
+        timeout-minutes: 5
         shell: bash
         env:
           PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
@@ -157,7 +177,9 @@ jobs:
             exit 1
           fi
           if curl --fail --silent --show-error \
-            --retry 5 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 \
+            --retry 5 --retry-delay 2 --retry-max-time 120 \
+            --retry-all-errors \
             "$PRODUCTION_URL" >/dev/null; then
             exit 0
           fi
@@ -166,8 +188,16 @@ jobs:
             < scripts/deploy/manage-release.sh
           exit 1
 
+      - name: 清理远程发布包
+        id: archive-cleanup
+        if: ${{ always() && steps.activate.outcome != 'skipped' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: ssh production rm -f -- "$REMOTE_ARCHIVE"
+
       - name: 清理旧版本
         id: cleanup
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
