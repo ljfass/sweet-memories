@@ -45,4 +45,22 @@ describe('album visual fidelity styles', () => {
       /@keyframes music-note-flow\s*{[\s\S]*?transform:[^;]+;[\s\S]*?opacity:\s*0;/s,
     )
   })
+
+  it('keeps make-way transforms on a responsive outer photo slot', () => {
+    expect(globalCss).toMatch(
+      /\.photo-slot\s*{[^}]*width:\s*280px;[^}]*flex:\s*0 0 280px;[^}]*transform-origin:\s*50% 50%;/s,
+    )
+    expect(globalCss).toMatch(
+      /\.gallery\.has-selection \.photo-slot\s*{[^}]*will-change:\s*transform;/s,
+    )
+    expect(globalCss).toMatch(
+      /\.polaroid-trigger:focus-visible\s*{[^}]*outline:\s*3px solid var\(--focus-color\);/s,
+    )
+    expect(globalCss).toMatch(
+      /\.gallery:not\(\.has-selection\) \.polaroid:hover\s*{[^}]*scale\(1\.12\);/s,
+    )
+    expect(globalCss).toMatch(
+      /@media \(max-width: 768px\)[\s\S]*?\.photo-slot\s*{[^}]*width:\s*min\(100%, 320px\);[^}]*flex-basis:\s*auto;/s,
+    )
+  })
 })

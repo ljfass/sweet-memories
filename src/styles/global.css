@@ -206,9 +206,14 @@ button {
 
 .photo-slot {
   position: relative;
+  z-index: 0;
   width: 280px;
   flex: 0 0 280px;
   transform-origin: 50% 50%;
+}
+
+.gallery.has-selection .photo-slot {
+  will-change: transform;
 }
 
 .polaroid {
@@ -223,6 +228,10 @@ button {
     transform var(--transition-speed) cubic-bezier(0.175, 0.885, 0.32, 1.275),
     background-color 1s ease,
     box-shadow 1s ease;
+}
+
+.photo-slot.is-selected .polaroid {
+  box-shadow: var(--raised-shadow);
 }
 
 .polaroid::before {
@@ -249,6 +258,16 @@ button {
   color: inherit;
   background: transparent;
   cursor: zoom-in;
+}
+
+.photo-slot.is-selected .polaroid-trigger {
+  cursor: zoom-out;
+}
+
+.polaroid-trigger:focus-visible {
+  border-radius: 4px;
+  outline: 3px solid var(--focus-color);
+  outline-offset: 5px;
 }
 
 .polaroid picture {
@@ -449,7 +468,7 @@ button {
     transform: rotate(0deg) scale(1.02);
   }
 
-  .polaroid:hover {
+  .gallery:not(.has-selection) .polaroid:hover {
     z-index: 10;
     box-shadow: var(--raised-shadow);
     transform: rotate(0deg) translateY(-10px) scale(1.12);
@@ -583,6 +602,10 @@ button {
   .polaroid,
   .video-frame {
     transform: none;
+  }
+
+  .gallery.has-selection .photo-slot {
+    will-change: auto;
   }
 }
 
