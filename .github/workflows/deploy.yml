@@ -1,0 +1,175 @@
+name: 发布生产环境
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sweet-memories-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 检查并部署
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    env:
+      SITE_ROOT: /var/www/huangjianfen.cn
+      REMOTE_ARCHIVE: /tmp/sweet-memories-${{ github.sha }}.tar.gz
+    steps:
+      - name: 检出 Tag 对应代码
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: 验证提交已经进入 main
+        id: validate-main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main --no-tags
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo 'Tag 指向的提交尚未进入 main，拒绝部署。' >&2
+            exit 1
+          fi
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: 安装项目指定的 pnpm
+        run: |
+          npm install --global pnpm@8.6.1
+          test "$(pnpm --version)" = '8.6.1'
+
+      - name: 安装依赖
+        id: install-dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: 代码检查
+        run: pnpm lint
+
+      - name: 单元测试
+        run: pnpm test
+
+      - name: 部署脚本测试
+        run: pnpm test:deploy
+
+      - name: 生产构建
+        id: build
+        run: pnpm build
+
+      - name: 打包构建产物
+        shell: bash
+        run: tar -C dist -czf "$RUNNER_TEMP/release.tar.gz" .
+
+      - name: 校验部署配置
+        shell: bash
+        env:
+          ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
+          ALIYUN_SSH_PORT: ${{ secrets.ALIYUN_SSH_PORT }}
+          ALIYUN_USER: ${{ secrets.ALIYUN_USER }}
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+        run: |
+          set -euo pipefail
+          : "${ALIYUN_HOST:?缺少 ALIYUN_HOST}"
+          : "${ALIYUN_SSH_PORT:?缺少 ALIYUN_SSH_PORT}"
+          : "${ALIYUN_USER:?缺少 ALIYUN_USER}"
+          : "${PRODUCTION_URL:?缺少 PRODUCTION_URL}"
+          if [[ ! "$ALIYUN_SSH_PORT" =~ ^[0-9]+$ ]]; then
+            echo 'ALIYUN_SSH_PORT 必须是数字。' >&2
+            exit 1
+          fi
+          if ((10#$ALIYUN_SSH_PORT < 1 || 10#$ALIYUN_SSH_PORT > 65535)); then
+            echo 'ALIYUN_SSH_PORT 必须在 1 到 65535 之间。' >&2
+            exit 1
+          fi
+          if [[ ! "$PRODUCTION_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+            echo 'PRODUCTION_URL 必须是 http(s) URL。' >&2
+            exit 1
+          fi
+
+      - name: 配置 SSH
+        id: configure-ssh
+        shell: bash
+        env:
+          ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
+          ALIYUN_SSH_PORT: ${{ secrets.ALIYUN_SSH_PORT }}
+          ALIYUN_USER: ${{ secrets.ALIYUN_USER }}
+          ALIYUN_SSH_PRIVATE_KEY: ${{ secrets.ALIYUN_SSH_PRIVATE_KEY }}
+          ALIYUN_KNOWN_HOSTS: ${{ secrets.ALIYUN_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${ALIYUN_SSH_PRIVATE_KEY:?缺少 ALIYUN_SSH_PRIVATE_KEY}"
+          : "${ALIYUN_KNOWN_HOSTS:?缺少 ALIYUN_KNOWN_HOSTS}"
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$ALIYUN_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_deploy"
+          printf '%s\n' "$ALIYUN_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/id_deploy" >/dev/null
+          cat > "$HOME/.ssh/config" <<CONFIG
+          Host production
+            HostName $ALIYUN_HOST
+            User $ALIYUN_USER
+            Port $ALIYUN_SSH_PORT
+            IdentityFile $HOME/.ssh/id_deploy
+            UserKnownHostsFile $HOME/.ssh/known_hosts
+            BatchMode yes
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            ConnectTimeout 15
+          CONFIG
+
+      - name: 上传发布产物
+        run: scp "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_ARCHIVE"
+
+      - name: 原子启用新版本
+        id: activate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh production bash -s -- activate "$SITE_ROOT" "$GITHUB_SHA" "$REMOTE_ARCHIVE" \
+            < scripts/deploy/manage-release.sh
+
+      - name: 公网健康检查并在失败时回退
+        id: health-check
+        if: ${{ always() && steps.activate.outcome != 'skipped' }}
+        shell: bash
+        env:
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+        run: |
+          set -euo pipefail
+          active_release="$(ssh production readlink -f "$SITE_ROOT/html")"
+          expected_release="$SITE_ROOT/releases/$GITHUB_SHA"
+          if [[ "$active_release" != "$expected_release" ]]; then
+            echo '线上版本不是本次部署提交，拒绝继续部署。' >&2
+            exit 1
+          fi
+          if curl --fail --silent --show-error \
+            --retry 5 --retry-delay 2 --retry-all-errors \
+            "$PRODUCTION_URL" >/dev/null; then
+            exit 0
+          fi
+          echo '公网健康检查失败，开始回退。' >&2
+          ssh production bash -s -- rollback "$SITE_ROOT" \
+            < scripts/deploy/manage-release.sh
+          exit 1
+
+      - name: 清理旧版本
+        id: cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh production bash -s -- cleanup "$SITE_ROOT" 5 \
+            < scripts/deploy/manage-release.sh
