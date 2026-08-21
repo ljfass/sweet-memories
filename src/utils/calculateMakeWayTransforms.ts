@@ -132,7 +132,7 @@ export function calculateMakeWayTransforms({
     const influence = clamp(1 - distance / influenceRange, 0, 1)
 
     let x = 0
-    let y = 0
+    let y: number
     let rotation = 0
 
     if (mode === 'mobile') {
