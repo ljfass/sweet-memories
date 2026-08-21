@@ -69,6 +69,18 @@ SSH_ADMIN=ubuntu
 先登录服务器：
 
 ```bash
+SSH_HOST=8.163.27.231
+# 如果服务器实际端口不是 22，请改成实际数字
+SSH_PORT=22
+# 请把 ubuntu 改成你实际使用的服务器管理员用户名
+SSH_ADMIN=ubuntu
+
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" || -z "$SSH_ADMIN" \
+  || ! "$SSH_PORT" =~ ^[0-9]+$ ]]; then
+  echo "停止：管理员 SSH 连接信息不完整。"
+  return 1 2>/dev/null || exit 1
+fi
+
 ssh -p "$SSH_PORT" "$SSH_ADMIN@$SSH_HOST"
 ```
 
@@ -196,6 +208,18 @@ ssh-keygen -lf "$DEPLOY_KEY.pub" -E sha256
 重新使用现有管理员账号登录服务器：
 
 ```bash
+SSH_HOST=8.163.27.231
+# 如果服务器实际端口不是 22，请改成实际数字
+SSH_PORT=22
+# 请把 ubuntu 改成你实际使用的服务器管理员用户名
+SSH_ADMIN=ubuntu
+
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" || -z "$SSH_ADMIN" \
+  || ! "$SSH_PORT" =~ ^[0-9]+$ ]]; then
+  echo "停止：管理员 SSH 连接信息不完整。"
+  return 1 2>/dev/null || exit 1
+fi
+
 ssh -p "$SSH_PORT" "$SSH_ADMIN@$SSH_HOST"
 ```
 
@@ -265,15 +289,15 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 SSH_HOST=8.163.27.231
 # 如果服务器预检显示的不是 22，请改成实际数字
 SSH_PORT=22
-HOST_KEY_FILE="$(mktemp "${TMPDIR:-/tmp}/sweet-memories-known-hosts.XXXXXX")"
+SCANNED_KNOWN_HOSTS="$(mktemp "${TMPDIR:-/tmp}/sweet-memories-known-hosts.XXXXXX")"
 
-ssh-keyscan -p "$SSH_PORT" -t ed25519 "$SSH_HOST" > "$HOST_KEY_FILE"
-if ! test -s "$HOST_KEY_FILE" \
-  || ! ssh-keygen -lf "$HOST_KEY_FILE" -E sha256; then
+ssh-keyscan -p "$SSH_PORT" -t ed25519 "$SSH_HOST" > "$SCANNED_KNOWN_HOSTS"
+if ! test -s "$SCANNED_KNOWN_HOSTS" \
+  || ! ssh-keygen -lf "$SCANNED_KNOWN_HOSTS" -E sha256; then
   echo "停止：没有获取到有效的 ED25519 主机公钥。"
   return 1 2>/dev/null || exit 1
 fi
-echo "待与服务器指纹比对的 known_hosts 临时文件：$HOST_KEY_FILE"
+echo "待与服务器指纹比对的临时文件：$SCANNED_KNOWN_HOSTS"
 ```
 
 逐字符比较本机输出和服务器输出中的 `SHA256:...`，并确认两边都是 `ED25519`：
@@ -281,18 +305,66 @@ echo "待与服务器指纹比对的 known_hosts 临时文件：$HOST_KEY_FILE"
 - 完全一致：可以继续。
 - 不一致或任一方无输出：立即停止，检查 IP、SSH 端口和服务器，不要保存到 GitHub。
 
-核验成功后，保留本机终端和 `$HOST_KEY_FILE`，后面配置 GitHub 时还要使用。
+确认指纹完全一致后，仍在同一个本机终端执行下面整段，把刚核验的临时记录防覆盖地安装到固定文件。以后即使关闭终端或重启 Mac，也统一使用这个固定文件：
+
+```bash
+KNOWN_HOSTS_FILE="$HOME/.ssh/sweet-memories-known_hosts"
+
+if [[ -z "${SCANNED_KNOWN_HOSTS:-}" \
+  || ! -f "$SCANNED_KNOWN_HOSTS" \
+  || -L "$SCANNED_KNOWN_HOSTS" ]]; then
+  echo "停止：找不到刚才人工核验过的临时主机记录。"
+  return 1 2>/dev/null || exit 1
+fi
+
+if [[ -e "$KNOWN_HOSTS_FILE" || -L "$KNOWN_HOSTS_FILE" ]]; then
+  echo "停止：$KNOWN_HOSTS_FILE 已存在，不会静默覆盖。请先确认它的来源和指纹。"
+  return 1 2>/dev/null || exit 1
+fi
+
+install -d -m 700 "$HOME/.ssh"
+install -m 600 "$SCANNED_KNOWN_HOSTS" "$KNOWN_HOSTS_FILE"
+cmp -s "$SCANNED_KNOWN_HOSTS" "$KNOWN_HOSTS_FILE"
+test -f "$KNOWN_HOSTS_FILE"
+test ! -L "$KNOWN_HOSTS_FILE"
+test "$(stat -f '%Lp' "$KNOWN_HOSTS_FILE")" = 600
+
+SCANNED_FINGERPRINT="$(ssh-keygen -lf "$SCANNED_KNOWN_HOSTS" -E sha256)"
+STORED_FINGERPRINT="$(ssh-keygen -lf "$KNOWN_HOSTS_FILE" -E sha256)"
+if [[ "$SCANNED_FINGERPRINT" != "$STORED_FINGERPRINT" ]]; then
+  echo "停止：固定文件内容或指纹复验失败。"
+  return 1 2>/dev/null || exit 1
+fi
+
+echo "固定 known_hosts 已安装并复验：$KNOWN_HOSTS_FILE"
+printf '%s\n' "$STORED_FINGERPRINT"
+```
+
+如果固定文件已经存在，说明本机可能做过配置，先用 `ssh-keygen -lf "$HOME/.ssh/sweet-memories-known_hosts" -E sha256` 检查，不要直接覆盖。服务器重装或 SSH host key 确实变化时，也必须重新从阿里云服务器控制台读取指纹、重新扫描并人工比对；确认新指纹后保留旧文件作为备份，再谨慎换成新记录，不能仅因连接报错就替换。
 
 ## 8. 先验证专用密钥能登录
 
 完成主机指纹核验后，在本机执行：
 
 ```bash
+SSH_HOST=8.163.27.231
+# 如果服务器实际端口不是 22，请改成实际数字
+SSH_PORT=22
 DEPLOY_KEY="$HOME/.ssh/sweet-memories-github-actions"
+KNOWN_HOSTS_FILE="$HOME/.ssh/sweet-memories-known_hosts"
+
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" \
+  || ! "$SSH_PORT" =~ ^[0-9]+$ \
+  || ! -f "$DEPLOY_KEY" || -L "$DEPLOY_KEY" \
+  || ! -s "$KNOWN_HOSTS_FILE" || -L "$KNOWN_HOSTS_FILE" ]]; then
+  echo "停止：deploy SSH 连接信息、私钥或固定 known_hosts 不完整。"
+  return 1 2>/dev/null || exit 1
+fi
+
 ssh -i "$DEPLOY_KEY" \
   -p "$SSH_PORT" \
   -o IdentitiesOnly=yes \
-  -o UserKnownHostsFile="$HOST_KEY_FILE" \
+  -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
   -o StrictHostKeyChecking=yes \
   deploy@"$SSH_HOST" \
   'whoami && id'
@@ -323,7 +395,24 @@ ssh -i "$DEPLOY_KEY" \
 使用现有管理员账号登录服务器：
 
 ```bash
-ssh -p "$SSH_PORT" "$SSH_ADMIN@$SSH_HOST"
+SSH_HOST=8.163.27.231
+# 如果服务器实际端口不是 22，请改成实际数字
+SSH_PORT=22
+# 请把 ubuntu 改成你实际使用的服务器管理员用户名
+SSH_ADMIN=ubuntu
+KNOWN_HOSTS_FILE="$HOME/.ssh/sweet-memories-known_hosts"
+
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" || -z "$SSH_ADMIN" \
+  || ! "$SSH_PORT" =~ ^[0-9]+$ \
+  || ! -s "$KNOWN_HOSTS_FILE" || -L "$KNOWN_HOSTS_FILE" ]]; then
+  echo "停止：管理员 SSH 连接信息或固定 known_hosts 不完整。"
+  return 1 2>/dev/null || exit 1
+fi
+
+ssh -p "$SSH_PORT" \
+  -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+  -o StrictHostKeyChecking=yes \
+  "$SSH_ADMIN@$SSH_HOST"
 ```
 
 然后一次性完整粘贴下面整段。它会在失败时尝试把刚移动的目录放回 `html`：
@@ -469,11 +558,24 @@ VERIFY_MIGRATION
 再在本机验证 `deploy` 对发布目录有写权限：
 
 ```bash
+SSH_HOST=8.163.27.231
+# 如果服务器实际端口不是 22，请改成实际数字
+SSH_PORT=22
 DEPLOY_KEY="$HOME/.ssh/sweet-memories-github-actions"
+KNOWN_HOSTS_FILE="$HOME/.ssh/sweet-memories-known_hosts"
+
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" \
+  || ! "$SSH_PORT" =~ ^[0-9]+$ \
+  || ! -f "$DEPLOY_KEY" || -L "$DEPLOY_KEY" \
+  || ! -s "$KNOWN_HOSTS_FILE" || -L "$KNOWN_HOSTS_FILE" ]]; then
+  echo "停止：deploy SSH 连接信息、私钥或固定 known_hosts 不完整。"
+  return 1 2>/dev/null || exit 1
+fi
+
 ssh -i "$DEPLOY_KEY" \
   -p "$SSH_PORT" \
   -o IdentitiesOnly=yes \
-  -o UserKnownHostsFile="$HOST_KEY_FILE" \
+  -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
   -o StrictHostKeyChecking=yes \
   deploy@"$SSH_HOST" \
   'test -w /var/www/huangjianfen.cn && test -w /var/www/huangjianfen.cn/releases && readlink -f /var/www/huangjianfen.cn/html && echo 可部署'
@@ -549,7 +651,7 @@ RECOVER_INITIAL
 | `ALIYUN_SSH_PORT` | 第 4 节确认的实际 SSH 端口，例如 `22` |
 | `ALIYUN_USER` | `deploy` |
 | `ALIYUN_SSH_PRIVATE_KEY` | 本机专用私钥 `$DEPLOY_KEY` 的完整多行内容，文件名没有 `.pub` |
-| `ALIYUN_KNOWN_HOSTS` | 第 7 节已核验的 `$HOST_KEY_FILE` 完整内容 |
+| `ALIYUN_KNOWN_HOSTS` | 第 7 节已核验并固定保存的 `$KNOWN_HOSTS_FILE` 完整内容 |
 
 只在 GitHub Secret 输入框中查看专用私钥：
 
@@ -566,7 +668,13 @@ fi
 只在 GitHub Secret 输入框中使用已核验的主机记录：
 
 ```bash
-cat "$HOST_KEY_FILE"
+KNOWN_HOSTS_FILE="$HOME/.ssh/sweet-memories-known_hosts"
+if [[ ! -s "$KNOWN_HOSTS_FILE" || -L "$KNOWN_HOSTS_FILE" ]]; then
+  echo "停止：固定 known_hosts 不存在、为空或是软链接。"
+  return 1 2>/dev/null || exit 1
+fi
+ssh-keygen -lf "$KNOWN_HOSTS_FILE" -E sha256
+cat "$KNOWN_HOSTS_FILE"
 ```
 
 `ALIYUN_SSH_PRIVATE_KEY` 必须包含专用私钥文件从起始标记到结束标记的完整多行内容。`ALIYUN_KNOWN_HOSTS` 的主机和端口格式由 `ssh-keyscan` 自动生成，不要手改。`pbcopy` 是 macOS 自带命令，它不会把私钥打印到终端；粘贴完成后不要再把剪贴板内容发往其他地方。
@@ -704,11 +812,24 @@ echo "远程 Tag 已确认指向 $LOCAL_TAG_SHA，现在可以打开 GitHub Acti
 工作流成功后，用专用密钥登录服务器：
 
 ```bash
+SSH_HOST=8.163.27.231
+# 如果服务器实际端口不是 22，请改成实际数字
+SSH_PORT=22
 DEPLOY_KEY="$HOME/.ssh/sweet-memories-github-actions"
+KNOWN_HOSTS_FILE="$HOME/.ssh/sweet-memories-known_hosts"
+
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" \
+  || ! "$SSH_PORT" =~ ^[0-9]+$ \
+  || ! -f "$DEPLOY_KEY" || -L "$DEPLOY_KEY" \
+  || ! -s "$KNOWN_HOSTS_FILE" || -L "$KNOWN_HOSTS_FILE" ]]; then
+  echo "停止：deploy SSH 连接信息、私钥或固定 known_hosts 不完整。"
+  return 1 2>/dev/null || exit 1
+fi
+
 ssh -i "$DEPLOY_KEY" \
   -p "$SSH_PORT" \
   -o IdentitiesOnly=yes \
-  -o UserKnownHostsFile="$HOST_KEY_FILE" \
+  -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
   -o StrictHostKeyChecking=yes \
   deploy@"$SSH_HOST"
 ```
@@ -791,7 +912,7 @@ VERIFY_RELEASE
 
 原因通常是主机、端口或 `ALIYUN_KNOWN_HOSTS` 不匹配，也可能是服务器重装后主机密钥真的发生了变化。
 
-处理：重新从服务器控制台读取 ED25519 指纹，再按第 7 节重新扫描并逐字符比对。只有确认一致后才更新 Secret。绝不能关闭 `StrictHostKeyChecking`，也不要把空的 known_hosts 放入 GitHub。
+处理：重新从服务器控制台读取 ED25519 指纹，再按第 7 节重新扫描并逐字符比对。只有确认一致后，才谨慎更新本机固定的 `sweet-memories-known_hosts` 和 GitHub Secret，并保留旧文件用于核查。绝不能关闭 `StrictHostKeyChecking`，也不要把空的 known_hosts 放入 GitHub。
 
 ### 连接超时或安全组错误
 
@@ -913,30 +1034,64 @@ echo "远程 Tag 已确认指向 $LOCAL_TAG_SHA，现在可以打开 GitHub Acti
 - 如果健康检查通过但之后发现严重功能问题，可以在本机项目根目录使用仓库中的发布脚本回退一次。先确认 `previous` 是已知可用版本：
 
 ```bash
+SSH_HOST=8.163.27.231
+# 如果服务器实际端口不是 22，请改成实际数字
+SSH_PORT=22
 DEPLOY_KEY="$HOME/.ssh/sweet-memories-github-actions"
+KNOWN_HOSTS_FILE="$HOME/.ssh/sweet-memories-known_hosts"
+
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" \
+  || ! "$SSH_PORT" =~ ^[0-9]+$ \
+  || ! -f "$DEPLOY_KEY" || -L "$DEPLOY_KEY" \
+  || ! -s "$KNOWN_HOSTS_FILE" || -L "$KNOWN_HOSTS_FILE" ]]; then
+  echo "停止：deploy SSH 连接信息、私钥或固定 known_hosts 不完整。"
+  return 1 2>/dev/null || exit 1
+fi
+
 ssh -i "$DEPLOY_KEY" \
   -p "$SSH_PORT" \
   -o IdentitiesOnly=yes \
-  -o UserKnownHostsFile="$HOST_KEY_FILE" \
+  -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
   -o StrictHostKeyChecking=yes \
   deploy@"$SSH_HOST" \
-  'readlink -f /var/www/huangjianfen.cn/html; readlink -f /var/www/huangjianfen.cn/previous'
+  'set -e; readlink -f /var/www/huangjianfen.cn/html; readlink -f /var/www/huangjianfen.cn/previous'
 ```
 
 确认后只执行一次：
 
 ```bash
+SSH_HOST=8.163.27.231
+# 如果服务器实际端口不是 22，请改成实际数字
+SSH_PORT=22
 DEPLOY_KEY="$HOME/.ssh/sweet-memories-github-actions"
-ssh -i "$DEPLOY_KEY" \
+KNOWN_HOSTS_FILE="$HOME/.ssh/sweet-memories-known_hosts"
+
+if [[ -z "$SSH_HOST" || -z "$SSH_PORT" \
+  || ! "$SSH_PORT" =~ ^[0-9]+$ \
+  || ! -f "$DEPLOY_KEY" || -L "$DEPLOY_KEY" \
+  || ! -s "$KNOWN_HOSTS_FILE" || -L "$KNOWN_HOSTS_FILE" ]]; then
+  echo "停止：deploy SSH 连接信息、私钥或固定 known_hosts 不完整。"
+  return 1 2>/dev/null || exit 1
+fi
+
+if ! ssh -i "$DEPLOY_KEY" \
   -p "$SSH_PORT" \
   -o IdentitiesOnly=yes \
-  -o UserKnownHostsFile="$HOST_KEY_FILE" \
+  -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
   -o StrictHostKeyChecking=yes \
   deploy@"$SSH_HOST" \
   'bash -s -- rollback /var/www/huangjianfen.cn' \
-  < scripts/deploy/manage-release.sh
+  < scripts/deploy/manage-release.sh; then
+  echo "停止：回退 SSH 命令失败，服务器结果可能未知。不要重复执行，先重新读取 html 和 previous。"
+  return 1 2>/dev/null || exit 1
+fi
 
-curl --fail --silent --show-error --output /dev/null http://8.163.27.231
+if curl --fail --silent --show-error --output /dev/null http://8.163.27.231; then
+  echo "回退命令完成，公网健康检查通过。"
+else
+  echo "停止：回退命令已返回成功，但公网健康检查失败。"
+  return 1 2>/dev/null || exit 1
+fi
 ```
 
 回退命令会交换 `html` 和 `previous`，重复执行会再次切换，所以不要盲目运行第二次。回退只是止损，最终仍应修复代码、合并到 `main`，再使用一个全新的 Tag 发布。
