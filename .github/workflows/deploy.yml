@@ -10,6 +10,7 @@ permissions:
 
 concurrency:
   group: sweet-memories-production
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -163,6 +164,57 @@ jobs:
             ServerAliveCountMax 3
           CONFIG
 
+      - name: 防止线上版本倒退
+        id: validate-live
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_release=''
+          for attempt in 1 2 3; do
+            if active_release="$(
+              timeout 15s ssh production readlink -f -- "$SITE_ROOT/html"
+            )"; then
+              break
+            fi
+            if ((attempt < 3)); then
+              echo "读取线上版本失败，第 $attempt 次重试。" >&2
+              sleep 2
+            fi
+          done
+          if [[ -z "$active_release" ]]; then
+            echo '连续三次无法读取线上版本，拒绝上传发布产物。' >&2
+            exit 1
+          fi
+
+          release_prefix="$SITE_ROOT/releases/"
+          if [[ "$active_release" != "$release_prefix"* ]]; then
+            echo '线上 html 未指向 releases 目录，拒绝部署。' >&2
+            exit 1
+          fi
+          active_name="${active_release#"$release_prefix"}"
+          if [[ -z "$active_name" || "$active_name" == */* ]]; then
+            echo '线上 html 必须指向 releases 的直接子目录。' >&2
+            exit 1
+          fi
+          if [[ "$active_name" =~ ^initial-[0-9]{8}T[0-9]{6}Z$ ]]; then
+            exit 0
+          fi
+          if [[ ! "$active_name" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '线上版本名称既不是初始版本，也不是有效提交 SHA。' >&2
+            exit 1
+          fi
+
+          active_sha="$active_name"
+          if ! git cat-file -e "$active_sha^{commit}" 2>/dev/null; then
+            echo '线上版本提交不在当前仓库历史中，拒绝部署。' >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$active_sha" "$GITHUB_SHA"; then
+            echo '本次 Tag 早于或偏离线上版本，拒绝线上版本倒退。' >&2
+            exit 1
+          fi
+
       - name: 上传发布产物
         id: upload
         timeout-minutes: 5
@@ -187,13 +239,65 @@ jobs:
           PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
         run: |
           set -euo pipefail
-          active_release="$(ssh production readlink -f "$SITE_ROOT/html")"
           expected_release="$SITE_ROOT/releases/$GITHUB_SHA"
+
+          read_live_release() {
+            local attempt candidate
+            for attempt in 1 2 3; do
+              if candidate="$(
+                timeout 15s ssh production readlink -f -- "$SITE_ROOT/html"
+              )"; then
+                active_release="$candidate"
+                return 0
+              fi
+              if ((attempt < 3)); then
+                echo "读取线上版本失败，第 $attempt 次重试。" >&2
+                sleep 2
+              fi
+            done
+            return 1
+          }
+
+          rollback_if_current() {
+            local attempt observed_release
+            for attempt in 1 2 3; do
+              if ! timeout 15s ssh production bash -s -- rollback-if-current "$SITE_ROOT" "$GITHUB_SHA" \
+                < scripts/deploy/manage-release.sh; then
+                echo "安全回退第 $attempt 次命令未确认成功。" >&2
+              fi
+
+              if observed_release="$(
+                timeout 15s ssh production readlink -f -- "$SITE_ROOT/html"
+              )"; then
+                if [[ "$observed_release" != "$expected_release" ]]; then
+                  echo "已确认本次版本不再在线：$observed_release" >&2
+                  return 0
+                fi
+                echo "本次版本仍在线，准备第 $attempt 次重试。" >&2
+              else
+                echo "安全回退后无法确认线上版本，第 $attempt 次重试。" >&2
+              fi
+              if ((attempt < 3)); then
+                sleep 2
+              fi
+            done
+            echo '三次安全回退后仍无法确认本次版本已下线。' >&2
+            return 1
+          }
+
+          active_release=''
+          if ! read_live_release; then
+            echo '激活后连续三次无法读取线上版本，尝试安全回退。' >&2
+            if ! rollback_if_current; then
+              echo '无法确认安全回退结果，需要人工检查线上 html 链接。' >&2
+            fi
+            exit 1
+          fi
           if [[ "$active_release" != "$expected_release" ]]; then
             echo '线上版本不是本次部署提交，拒绝继续部署。' >&2
             exit 1
           fi
-          if curl --fail --silent --show-error \
+          if timeout 120s curl --fail --silent --show-error \
             --connect-timeout 10 --max-time 30 \
             --retry 5 --retry-delay 2 --retry-max-time 120 \
             --retry-all-errors \
@@ -201,8 +305,9 @@ jobs:
             exit 0
           fi
           echo '公网健康检查失败，开始回退。' >&2
-          ssh production bash -s -- rollback "$SITE_ROOT" \
-            < scripts/deploy/manage-release.sh
+          if ! rollback_if_current; then
+            echo '无法确认安全回退结果，需要人工检查线上 html 链接。' >&2
+          fi
           exit 1
 
       - name: 清理远程发布包

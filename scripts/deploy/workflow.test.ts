@@ -28,6 +28,7 @@ interface Workflow {
   concurrency: {
     'cancel-in-progress': boolean
     group: string
+    queue: string
   }
   jobs: {
     deploy: DeployJob
@@ -69,6 +70,7 @@ describe('production deployment workflow', () => {
 
     expect(workflow.concurrency).toEqual({
       group: 'sweet-memories-production',
+      queue: 'max',
       'cancel-in-progress': false,
     })
     expect(workflow.jobs.deploy.environment).toEqual({
@@ -153,6 +155,7 @@ describe('production deployment workflow', () => {
       ['package', 2],
       ['validate-config', 1],
       ['configure-ssh', 1],
+      ['validate-live', 3],
       ['upload', 5],
       ['activate', 5],
       ['health-check', 5],
@@ -187,10 +190,42 @@ describe('production deployment workflow', () => {
     expect(sshConfig).toContain('ServerAliveCountMax 3')
 
     const healthCheck = stepById(steps, 'health-check').run
+    expect(healthCheck).toContain('timeout 120s curl')
     expect(healthCheck).toContain('--connect-timeout 10')
     expect(healthCheck).toContain('--max-time 30')
     expect(healthCheck).toContain('--retry-max-time 120')
     expect(healthCheck).toContain('--retry-all-errors')
+  })
+
+  it('rejects stale or unverifiable releases before upload', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const configureIndex = steps.findIndex(
+      (step) => step.id === 'configure-ssh',
+    )
+    const validateLiveIndex = steps.findIndex(
+      (step) => step.id === 'validate-live',
+    )
+    const uploadIndex = steps.findIndex((step) => step.id === 'upload')
+    const command = stepById(steps, 'validate-live').run ?? ''
+
+    expect(validateLiveIndex).toBeGreaterThan(configureIndex)
+    expect(uploadIndex).toBeGreaterThan(validateLiveIndex)
+    expect(command).toContain('for attempt in 1 2 3')
+    expect(command).toContain(
+      'ssh production readlink -f -- "$SITE_ROOT/html"',
+    )
+    expect(command).toContain('sleep 2')
+    expect(command).toContain('^initial-[0-9]{8}T[0-9]{6}Z$')
+    expect(command).toContain('^[0-9a-f]{40}$')
+    expect(command).toContain('git cat-file -e "$active_sha^{commit}"')
+    expect(command).toContain(
+      'git merge-base --is-ancestor "$active_sha" "$GITHUB_SHA"',
+    )
+    expect(command).toContain('release_prefix="$SITE_ROOT/releases/"')
+    expect(command).toContain(
+      'active_name="${active_release#"$release_prefix"}"',
+    )
+    expect(command).toContain('[[ -z "$active_name" || "$active_name" == */* ]]')
   })
 
   it('validates SSH config interpolations as safe single-line tokens', () => {
@@ -205,7 +240,7 @@ describe('production deployment workflow', () => {
     expect(command).toContain('^https?://[^[:space:]]+$')
   })
 
-  it('activates, rolls back after a failed health check, and cleans releases', () => {
+  it('activates, conditionally rolls back after a failed health check, and cleans releases', () => {
     const steps = loadWorkflow().jobs.deploy.steps
     const activateIndex = steps.findIndex((step) => step.id === 'activate')
     const healthCheckIndex = steps.findIndex(
@@ -222,7 +257,10 @@ describe('production deployment workflow', () => {
       'bash -s -- activate "$SITE_ROOT" "$GITHUB_SHA" "$REMOTE_ARCHIVE"',
     )
     expect(activate).toContain('< scripts/deploy/manage-release.sh')
-    expect(healthCheck).toContain('bash -s -- rollback "$SITE_ROOT"')
+    expect(healthCheck).toContain(
+      'bash -s -- rollback-if-current "$SITE_ROOT" "$GITHUB_SHA"',
+    )
+    expect(healthCheck).not.toMatch(/bash -s -- rollback\s/)
     expect(healthCheck).toContain('< scripts/deploy/manage-release.sh')
     expect(cleanup).toContain('bash -s -- cleanup "$SITE_ROOT" 5')
     expect(cleanup).toContain('< scripts/deploy/manage-release.sh')
@@ -237,8 +275,38 @@ describe('production deployment workflow', () => {
     expect(healthCheck.if).toBe(
       "${{ always() && steps.activate.outcome != 'skipped' }}",
     )
-    expect(healthCheck.run).toContain('readlink -f "$SITE_ROOT/html"')
+    expect(healthCheck.run).toContain('readlink -f -- "$SITE_ROOT/html"')
     expect(healthCheck.run).toContain('$SITE_ROOT/releases/$GITHUB_SHA')
+  })
+
+  it('bounds health reads and rollback attempts and verifies ambiguous rollback results', () => {
+    const command =
+      stepById(loadWorkflow().jobs.deploy.steps, 'health-check').run ?? ''
+
+    expect(command).toContain(
+      'expected_release="$SITE_ROOT/releases/$GITHUB_SHA"',
+    )
+    expect(command).toContain('read_live_release()')
+    expect(command).toContain('rollback_if_current()')
+    expect(command.match(/for attempt in 1 2 3/g)).toHaveLength(2)
+    expect(command).toContain(
+      'bash -s -- rollback-if-current "$SITE_ROOT" "$GITHUB_SHA"',
+    )
+    expect(command.match(/< scripts\/deploy\/manage-release\.sh/g)).toHaveLength(
+      1,
+    )
+    expect(command).toMatch(
+      /if ! read_live_release; then[^]*rollback_if_current[^]*exit 1/,
+    )
+    expect(command).toMatch(
+      /if \[\[ "\$active_release" != "\$expected_release" \]\]; then[^]*?exit 1\nfi\nif timeout 120s curl/,
+    )
+    expect(command).toMatch(
+      /if ! timeout 15s ssh production bash -s -- rollback-if-current[^]*then[^]*timeout 15s ssh production readlink -f/,
+    )
+    expect(command).toContain('exit 1')
+    expect(command.trimEnd().endsWith('exit 1')).toBe(true)
+    expect(command).not.toMatch(/bash -s -- rollback\s/)
   })
 
   it('removes the exact remote archive before success-only release cleanup', () => {
