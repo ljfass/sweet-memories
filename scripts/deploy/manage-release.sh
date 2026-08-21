@@ -47,7 +47,7 @@ resolve_release_link() {
   printf '%s\n' "$target"
 }
 
-replace_symlink() {
+prepare_symlink() {
   local target="$1"
   local link_path="$2"
   local temp_link="$3"
@@ -59,16 +59,37 @@ replace_symlink() {
 
   rm -f "$temp_link"
   ln -s "$target" "$temp_link"
+}
+
+commit_symlink() {
+  local temp_link="$1"
+  local link_path="$2"
+
   if mv --help 2>&1 | grep -q -- '-T,'; then
-    if ! mv -Tf "$temp_link" "$link_path"; then
-      rm -f "$temp_link"
-      die "could not replace symlink: $link_path"
-    fi
+    mv -Tf "$temp_link" "$link_path"
   else
-    if ! mv -hf "$temp_link" "$link_path"; then
-      rm -f "$temp_link"
-      die "could not replace symlink: $link_path"
-    fi
+    mv -hf "$temp_link" "$link_path"
+  fi
+}
+
+replace_symlink() {
+  local target="$1"
+  local link_path="$2"
+  local temp_link="$3"
+
+  prepare_symlink "$target" "$link_path" "$temp_link"
+  if ! commit_symlink "$temp_link" "$link_path"; then
+    rm -f "$temp_link"
+    die "could not replace symlink: $link_path"
+  fi
+}
+
+cleanup_rollback_temp_links() {
+  if [[ -n "${rollback_html_temp:-}" ]]; then
+    rm -f "$rollback_html_temp"
+  fi
+  if [[ -n "${rollback_previous_temp:-}" ]]; then
+    rm -f "$rollback_previous_temp"
   fi
 }
 
@@ -82,11 +103,32 @@ directory_mtime() {
   fi
 }
 
+validate_release_tree() {
+  local release_dir="$1"
+  local unsupported_entry
+
+  if [[ ! -f "$release_dir/index.html" || -L "$release_dir/index.html" ]]; then
+    printf 'release is missing a regular index.html file\n'
+    return 1
+  fi
+  if ! unsupported_entry="$(
+    find "$release_dir" ! -type f ! -type d -print -quit
+  )"; then
+    printf 'release filesystem entries could not be inspected\n'
+    return 1
+  fi
+  if [[ -n "$unsupported_entry" ]]; then
+    printf 'release contains an unsupported filesystem entry: %s\n' \
+      "$unsupported_entry"
+    return 1
+  fi
+}
+
 activate() {
   local site_root="$1"
   local release_sha="$2"
   local archive="$3"
-  local releases release_dir staging current canonical_release
+  local releases release_dir staging current canonical_release validation_error
 
   [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] ||
     die 'release SHA must be 40 lowercase hexadecimal characters'
@@ -105,9 +147,9 @@ activate() {
       rm -rf "$staging"
       die 'release archive could not be extracted'
     fi
-    if [[ ! -f "$staging/index.html" || -L "$staging/index.html" ]]; then
+    if ! validation_error="$(validate_release_tree "$staging")"; then
       rm -rf "$staging"
-      die 'release is missing a regular index.html file'
+      die "$validation_error"
     fi
     if ! mv "$staging" "$release_dir"; then
       rm -rf "$staging"
@@ -117,8 +159,9 @@ activate() {
 
   [[ -d "$release_dir" && ! -L "$release_dir" ]] ||
     die "release path is not a directory: $release_dir"
-  [[ -f "$release_dir/index.html" && ! -L "$release_dir/index.html" ]] ||
-    die 'target release is missing a regular index.html file'
+  if ! validation_error="$(validate_release_tree "$release_dir")"; then
+    die "$validation_error"
+  fi
   canonical_release="$(canonical_dir "$release_dir")"
   [[ "$(dirname "$canonical_release")" == "$releases" ]] ||
     die 'target release is outside the releases directory'
@@ -154,14 +197,26 @@ rollback() {
   previous="$(resolve_release_link "$site_root/previous" "$releases")"
   marker="$(basename "$previous")"
 
-  replace_symlink \
-    "$current" \
-    "$site_root/previous" \
-    "$site_root/.previous-rollback-$marker-$$"
-  replace_symlink \
+  rollback_html_temp="$site_root/.html-rollback-$marker-$$"
+  rollback_previous_temp="$site_root/.previous-rollback-$marker-$$"
+  trap cleanup_rollback_temp_links EXIT
+  trap 'exit 1' HUP INT TERM
+
+  prepare_symlink \
     "$previous" \
     "$site_root/html" \
-    "$site_root/.html-rollback-$marker-$$"
+    "$rollback_html_temp"
+  prepare_symlink \
+    "$current" \
+    "$site_root/previous" \
+    "$rollback_previous_temp"
+
+  if ! commit_symlink "$rollback_html_temp" "$site_root/html"; then
+    die "could not replace symlink: $site_root/html"
+  fi
+  if ! commit_symlink "$rollback_previous_temp" "$site_root/previous"; then
+    die "could not replace symlink: $site_root/previous"
+  fi
   printf 'rolled back to: %s\n' "$previous"
 }
 

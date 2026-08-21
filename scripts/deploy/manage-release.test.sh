@@ -25,11 +25,15 @@ assert_same_path() {
 
 assert_fails() {
   local label="$1"
-  shift
+  local expected="$2"
+  local output
+  shift 2
 
-  if "$@" >"$TEST_DIR/failure.out" 2>&1; then
+  if output="$("$@" 2>&1)"; then
     fail "$label unexpectedly succeeded"
   fi
+  [[ "$output" == *"$expected"* ]] ||
+    fail "$label failed without expected error '$expected': $output"
 }
 
 file_mode() {
@@ -91,7 +95,7 @@ BAD_SOURCE="$TEST_DIR/bad-source"
 mkdir -p "$BAD_SOURCE/assets"
 printf 'missing index\n' >"$BAD_SOURCE/assets/version.txt"
 tar -C "$BAD_SOURCE" -czf "$BAD_ARCHIVE" .
-assert_fails 'archive missing index.html' \
+assert_fails 'archive missing index.html' 'missing a regular index.html' \
   bash "$MANAGER" activate "$SITE_ROOT" "$SHA_B" "$BAD_ARCHIVE"
 assert_same_path "$SITE_ROOT/html" "$SITE_ROOT/releases/$SHA_A"
 [[ ! -e "$SITE_ROOT/releases/$SHA_B" ]] ||
@@ -102,13 +106,45 @@ assert_same_path "$SITE_ROOT/html" "$SITE_ROOT/releases/$SHA_A"
 SHA_D='dddddddddddddddddddddddddddddddddddddddd'
 CORRUPT_ARCHIVE="$TEST_DIR/release-d.tar.gz"
 printf 'not a tar archive\n' >"$CORRUPT_ARCHIVE"
-assert_fails 'corrupt archive' \
+assert_fails 'corrupt archive' 'release archive could not be extracted' \
   bash "$MANAGER" activate "$SITE_ROOT" "$SHA_D" "$CORRUPT_ARCHIVE"
 assert_same_path "$SITE_ROOT/html" "$SITE_ROOT/releases/$SHA_A"
 [[ ! -e "$SITE_ROOT/releases/$SHA_D" ]] ||
   fail 'corrupt target release was created'
 [[ ! -e "$SITE_ROOT/releases/.incoming-$SHA_D" ]] ||
   fail 'corrupt staged release was not removed'
+
+SHA_SYMLINK='1111111111111111111111111111111111111111'
+SYMLINK_ARCHIVE="$TEST_DIR/release-symlink.tar.gz"
+SYMLINK_SOURCE="$TEST_DIR/symlink-source"
+mkdir -p "$SYMLINK_SOURCE/assets"
+printf '<html>unsafe symlink</html>\n' >"$SYMLINK_SOURCE/index.html"
+ln -s /etc/passwd "$SYMLINK_SOURCE/assets/server-file"
+tar -C "$SYMLINK_SOURCE" -czf "$SYMLINK_ARCHIVE" .
+assert_fails 'archive containing an external symlink' \
+  'release contains an unsupported filesystem entry' \
+  bash "$MANAGER" activate "$SITE_ROOT" "$SHA_SYMLINK" "$SYMLINK_ARCHIVE"
+assert_same_path "$SITE_ROOT/html" "$SITE_ROOT/releases/$SHA_A"
+[[ ! -e "$SITE_ROOT/releases/$SHA_SYMLINK" ]] ||
+  fail 'symlink target release was created'
+[[ ! -e "$SITE_ROOT/releases/.incoming-$SHA_SYMLINK" ]] ||
+  fail 'symlink staged release was not removed'
+
+SHA_FIFO='2222222222222222222222222222222222222222'
+FIFO_ARCHIVE="$TEST_DIR/release-fifo.tar.gz"
+FIFO_SOURCE="$TEST_DIR/fifo-source"
+mkdir -p "$FIFO_SOURCE/assets"
+printf '<html>unsafe fifo</html>\n' >"$FIFO_SOURCE/index.html"
+mkfifo "$FIFO_SOURCE/assets/unsafe.pipe"
+COPYFILE_DISABLE=1 tar -C "$FIFO_SOURCE" -czf "$FIFO_ARCHIVE" .
+assert_fails 'archive containing a FIFO' \
+  'release contains an unsupported filesystem entry' \
+  bash "$MANAGER" activate "$SITE_ROOT" "$SHA_FIFO" "$FIFO_ARCHIVE"
+assert_same_path "$SITE_ROOT/html" "$SITE_ROOT/releases/$SHA_A"
+[[ ! -e "$SITE_ROOT/releases/$SHA_FIFO" ]] ||
+  fail 'FIFO target release was created'
+[[ ! -e "$SITE_ROOT/releases/.incoming-$SHA_FIFO" ]] ||
+  fail 'FIFO staged release was not removed'
 
 SHA_C='cccccccccccccccccccccccccccccccccccccccc'
 ARCHIVE_C="$TEST_DIR/release-c.tar.gz"
@@ -120,10 +156,58 @@ bash "$MANAGER" rollback "$SITE_ROOT"
 assert_same_path "$SITE_ROOT/html" "$SITE_ROOT/releases/$SHA_A"
 assert_same_path "$SITE_ROOT/previous" "$SITE_ROOT/releases/$SHA_C"
 
+ROLLBACK_FAULT_ROOT="$TEST_DIR/rollback-fault-site"
+mkdir -p "$ROLLBACK_FAULT_ROOT/releases/unhealthy" \
+  "$ROLLBACK_FAULT_ROOT/releases/known-good"
+printf '<html>unhealthy</html>\n' \
+  >"$ROLLBACK_FAULT_ROOT/releases/unhealthy/index.html"
+printf '<html>known-good</html>\n' \
+  >"$ROLLBACK_FAULT_ROOT/releases/known-good/index.html"
+ln -s "$ROLLBACK_FAULT_ROOT/releases/unhealthy" "$ROLLBACK_FAULT_ROOT/html"
+ln -s "$ROLLBACK_FAULT_ROOT/releases/known-good" \
+  "$ROLLBACK_FAULT_ROOT/previous"
+
+FAULT_BIN="$TEST_DIR/fault-bin"
+mkdir -p "$FAULT_BIN"
+cat >"$FAULT_BIN/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+destination=''
+for argument in "$@"; do
+  destination="$argument"
+done
+if [[ "$destination" == "${FAIL_MV_DESTINATION:-}" ]]; then
+  printf 'injected previous rename failure\n' >&2
+  exit 73
+fi
+exec "$REAL_MV" "$@"
+EOF
+chmod u+x "$FAULT_BIN/mv"
+REAL_MV="$(command -v mv)"
+ROLLBACK_FAULT_ROOT_REAL="$(resolve_path "$ROLLBACK_FAULT_ROOT")"
+assert_fails 'rollback previous-link rename fault' \
+  'injected previous rename failure' \
+  env PATH="$FAULT_BIN:$PATH" \
+    REAL_MV="$REAL_MV" \
+    FAIL_MV_DESTINATION="$ROLLBACK_FAULT_ROOT_REAL/previous" \
+    bash "$MANAGER" rollback "$ROLLBACK_FAULT_ROOT"
+assert_same_path \
+  "$ROLLBACK_FAULT_ROOT/html" \
+  "$ROLLBACK_FAULT_ROOT/releases/known-good"
+assert_same_path \
+  "$ROLLBACK_FAULT_ROOT/previous" \
+  "$ROLLBACK_FAULT_ROOT/releases/known-good"
+[[ -d "$ROLLBACK_FAULT_ROOT/releases/unhealthy" ]] ||
+  fail 'failed current release was removed after rollback rename fault'
+[[ -z "$(
+  find "$ROLLBACK_FAULT_ROOT" -maxdepth 1 -name '.*-rollback-*' -print -quit
+)" ]] || fail 'rollback left an unused temporary symlink'
+
 NO_PREVIOUS_ROOT="$TEST_DIR/no-previous-site"
 mkdir -p "$NO_PREVIOUS_ROOT/releases/initial"
 ln -s "$NO_PREVIOUS_ROOT/releases/initial" "$NO_PREVIOUS_ROOT/html"
-assert_fails 'rollback without previous' \
+assert_fails 'rollback without previous' 'no previous release is available' \
   bash "$MANAGER" rollback "$NO_PREVIOUS_ROOT"
 
 CLEANUP_ROOT="$TEST_DIR/cleanup-site"
@@ -199,31 +283,38 @@ bash "$MANAGER" cleanup "$REFRESH_ROOT" 1
 
 VALIDATION_ARCHIVE="$TEST_DIR/validation.tar.gz"
 make_archive 'validation' "$VALIDATION_ARCHIVE"
-assert_fails 'unknown mode' bash "$MANAGER" unknown
-assert_fails 'activate argument count' bash "$MANAGER" activate "$SITE_ROOT"
-assert_fails 'rollback argument count' bash "$MANAGER" rollback
-assert_fails 'cleanup argument count' bash "$MANAGER" cleanup "$SITE_ROOT"
-assert_fails 'relative site root' \
+assert_fails 'unknown mode' 'mode must be activate, rollback, or cleanup' \
+  bash "$MANAGER" unknown
+assert_fails 'activate argument count' 'usage: manage-release.sh activate' \
+  bash "$MANAGER" activate "$SITE_ROOT"
+assert_fails 'rollback argument count' 'usage: manage-release.sh rollback' \
+  bash "$MANAGER" rollback
+assert_fails 'cleanup argument count' 'usage: manage-release.sh cleanup' \
+  bash "$MANAGER" cleanup "$SITE_ROOT"
+assert_fails 'relative site root' 'site root must be an absolute path' \
   bash -c 'cd "$1" && bash "$2" rollback site' _ "$TEST_DIR" "$MANAGER"
-assert_fails 'invalid SHA' \
+assert_fails 'invalid SHA' 'release SHA must be 40 lowercase hexadecimal characters' \
   bash "$MANAGER" activate "$SITE_ROOT" abc "$VALIDATION_ARCHIVE"
-assert_fails 'missing archive' \
+assert_fails 'missing archive' 'release archive does not exist' \
   bash "$MANAGER" activate "$SITE_ROOT" \
     ffffffffffffffffffffffffffffffffffffffff "$TEST_DIR/missing.tar.gz"
-assert_fails 'zero keep count' bash "$MANAGER" cleanup "$SITE_ROOT" 0
-assert_fails 'negative keep count' bash "$MANAGER" cleanup "$SITE_ROOT" -1
-assert_fails 'non-numeric keep count' bash "$MANAGER" cleanup "$SITE_ROOT" many
+assert_fails 'zero keep count' 'keep count must be a positive integer' \
+  bash "$MANAGER" cleanup "$SITE_ROOT" 0
+assert_fails 'negative keep count' 'keep count must be a positive integer' \
+  bash "$MANAGER" cleanup "$SITE_ROOT" -1
+assert_fails 'non-numeric keep count' 'keep count must be a positive integer' \
+  bash "$MANAGER" cleanup "$SITE_ROOT" many
 
 INVALID_LIVE_ROOT="$TEST_DIR/invalid-live-site"
 mkdir -p "$INVALID_LIVE_ROOT/releases" "$INVALID_LIVE_ROOT/html"
-assert_fails 'html is not a symlink' \
+assert_fails 'html is not a symlink' 'html must be a symlink' \
   bash "$MANAGER" activate "$INVALID_LIVE_ROOT" \
     ffffffffffffffffffffffffffffffffffffffff "$VALIDATION_ARCHIVE"
 
 BROKEN_LIVE_ROOT="$TEST_DIR/broken-live-site"
 mkdir -p "$BROKEN_LIVE_ROOT/releases"
 ln -s "$BROKEN_LIVE_ROOT/releases/missing" "$BROKEN_LIVE_ROOT/html"
-assert_fails 'html target is missing' \
+assert_fails 'html target is missing' 'directory does not exist' \
   bash "$MANAGER" activate "$BROKEN_LIVE_ROOT" \
     ffffffffffffffffffffffffffffffffffffffff "$VALIDATION_ARCHIVE"
 
