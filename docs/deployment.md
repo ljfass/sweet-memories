@@ -72,45 +72,50 @@ SSH_ADMIN=ubuntu
 ssh -p "$SSH_PORT" "$SSH_ADMIN@$SSH_HOST"
 ```
 
-下面命令都在服务器执行。它会在 `/var/backups` 中复制当前站点，不会修改线上目录：
+下面命令都在服务器执行。它会在 `/var/backups` 中复制当前站点，不会修改线上目录。整段由独立的严格模式 Bash 执行，任一检查失败都会停止，不会显示备份成功：
 
 ```bash
+sudo bash <<'BACKUP_SITE'
+set -Eeuo pipefail
+
 SITE_ROOT=/var/www/huangjianfen.cn
 BACKUP_DIR="/var/backups/sweet-memories-before-cicd-$(date -u +%Y%m%dT%H%M%SZ)"
 
-sudo test -d "$SITE_ROOT/html"
-sudo test ! -L "$SITE_ROOT/html"
-sudo test -f "$SITE_ROOT/html/index.html"
-if sudo test -e "$BACKUP_DIR" || sudo test -L "$BACKUP_DIR"; then
+[[ -d "$SITE_ROOT/html" && ! -L "$SITE_ROOT/html" ]]
+[[ -f "$SITE_ROOT/html/index.html" && ! -L "$SITE_ROOT/html/index.html" ]]
+if [[ -e "$BACKUP_DIR" || -L "$BACKUP_DIR" ]]; then
   echo "停止：备份目标已经存在，请重新生成一个时间戳。"
-  return 1 2>/dev/null || exit 1
+  exit 1
 fi
-sudo install -d -m 700 "$BACKUP_DIR"
-sudo cp -a -- "$SITE_ROOT/html" "$BACKUP_DIR/html"
-sudo test -f "$BACKUP_DIR/html/index.html"
+install -d -m 700 "$BACKUP_DIR"
+cp -a -- "$SITE_ROOT/html" "$BACKUP_DIR/html"
+[[ -f "$BACKUP_DIR/html/index.html" && ! -L "$BACKUP_DIR/html/index.html" ]]
 echo "备份位置：$BACKUP_DIR"
+BACKUP_SITE
 ```
 
 记录最后输出的完整备份位置。继续前最好也在阿里云控制台确认磁盘快照已成功。
 
 ## 4. 服务器预检
 
-以下命令仍在服务器执行。每条都应成功；有报错时先停止，不要带着错误继续迁移。
+以下命令仍在服务器执行。每段都使用严格模式；有报错时先停止，不要带着错误继续迁移。
 
 ### 4.1 确认 SSH、用户组和现有目录
 
 ```bash
-sudo systemctl is-active ssh
-sudo /usr/sbin/sshd -T | awk '$1 == "port" { print "SSH 端口：" $2 }'
-getent group www-data
+sudo bash <<'PREFLIGHT_SERVER'
+set -Eeuo pipefail
+
+systemctl is-active ssh
+/usr/sbin/sshd -T | awk '$1 == "port" { found=1; print "SSH 端口：" $2 } END { exit !found }'
+getent group www-data >/dev/null
 
 SITE_ROOT=/var/www/huangjianfen.cn
-sudo test -d "$SITE_ROOT"
-sudo test ! -L "$SITE_ROOT"
-sudo test -d "$SITE_ROOT/html"
-sudo test ! -L "$SITE_ROOT/html"
-sudo test -f "$SITE_ROOT/html/index.html"
-sudo find "$SITE_ROOT/html" -maxdepth 2 -printf '%M %u:%g %p\n' | head -n 30
+[[ -d "$SITE_ROOT" && ! -L "$SITE_ROOT" ]]
+[[ -d "$SITE_ROOT/html" && ! -L "$SITE_ROOT/html" ]]
+[[ -f "$SITE_ROOT/html/index.html" && ! -L "$SITE_ROOT/html/index.html" ]]
+find "$SITE_ROOT/html" -maxdepth 2 -printf '%M %u:%g %p\n' | sed -n '1,30p'
+PREFLIGHT_SERVER
 ```
 
 请把 `SSH 端口` 的数字记下来，并确保本机的 `SSH_PORT` 与它一致。`www-data` 是 Ubuntu 上 Nginx 常用的用户组，`getent` 必须能输出该组。
@@ -118,19 +123,32 @@ sudo find "$SITE_ROOT/html" -maxdepth 2 -printf '%M %u:%g %p\n' | head -n 30
 ### 4.2 确认 Nginx 和公网访问
 
 ```bash
-sudo nginx -t
-sudo systemctl is-active nginx
-sudo nginx -T 2>&1 | grep -nF '/var/www/huangjianfen.cn/html'
+sudo bash <<'PREFLIGHT_NGINX'
+set -Eeuo pipefail
+
+nginx -t
+systemctl is-active nginx
+nginx -T 2>&1 | grep -nF '/var/www/huangjianfen.cn/html'
 curl --fail --silent --show-error --output /dev/null http://8.163.27.231
 echo "服务器内健康检查通过"
+PREFLIGHT_NGINX
 ```
 
-然后退出服务器，在本机再检查一次公网访问：
+然后退出服务器：
 
 ```bash
 exit
-curl --fail --silent --show-error --output /dev/null http://8.163.27.231
-echo "本机公网健康检查通过"
+```
+
+在本机另行检查公网访问；只有 `curl` 成功才会显示通过：
+
+```bash
+if curl --fail --silent --show-error --output /dev/null http://8.163.27.231; then
+  echo "本机公网健康检查通过"
+else
+  echo "停止：本机公网健康检查失败。"
+  return 1 2>/dev/null || exit 1
+fi
 ```
 
 如果 `nginx -T` 没有显示 `/var/www/huangjianfen.cn/html`，先确认实际 Nginx `root`，不要继续套用本文路径。
@@ -255,7 +273,7 @@ if ! test -s "$HOST_KEY_FILE" \
   echo "停止：没有获取到有效的 ED25519 主机公钥。"
   return 1 2>/dev/null || exit 1
 fi
-echo "已核验的 known_hosts 临时文件：$HOST_KEY_FILE"
+echo "待与服务器指纹比对的 known_hosts 临时文件：$HOST_KEY_FILE"
 ```
 
 逐字符比较本机输出和服务器输出中的 `SHA256:...`，并确认两边都是 `ED25519`：
@@ -430,16 +448,22 @@ echo "html 当前指向：$(readlink -f "$SITE_ROOT/html")"
 MIGRATE
 ```
 
-迁移成功后，在服务器逐项验证：
+迁移成功后，在服务器逐项验证。该块任一步失败都会停止，不会显示“网站正常”：
 
 ```bash
+sudo bash <<'VERIFY_MIGRATION'
+set -Eeuo pipefail
+
 SITE_ROOT=/var/www/huangjianfen.cn
-sudo test -L "$SITE_ROOT/html"
-sudo readlink -f "$SITE_ROOT/html"
-sudo find "$SITE_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -printf '%f\n'
-sudo nginx -t
+[[ -L "$SITE_ROOT/html" ]]
+ACTIVE_RELEASE="$(readlink -f "$SITE_ROOT/html")"
+[[ "$ACTIVE_RELEASE" == "$SITE_ROOT"/releases/initial-* ]]
+printf 'html 当前指向：%s\n' "$ACTIVE_RELEASE"
+find "$SITE_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -printf '%f\n'
+nginx -t
 curl --fail --silent --show-error --output /dev/null http://8.163.27.231
 echo "迁移后网站正常"
+VERIFY_MIGRATION
 ```
 
 再在本机验证 `deploy` 对发布目录有写权限：
@@ -459,34 +483,37 @@ ssh -i "$DEPLOY_KEY" \
 
 上面的脚本会自动尝试恢复。如果终端断开或服务器重启导致自动恢复未完成，先不要再次运行迁移，也不要创建 Tag。
 
-在服务器用 `sudo find /var/www/huangjianfen.cn/releases -mindepth 1 -maxdepth 1 -type d -name 'initial-*' -print` 找到唯一的初始目录。把下面 `INITIAL_RELEASE` 改成刚查到的完整路径，再执行保护性恢复：
+在服务器用 `sudo find /var/www/huangjianfen.cn/releases -mindepth 1 -maxdepth 1 -type d -name 'initial-*' -print` 找到唯一的初始目录。把下面 `INITIAL_RELEASE` 改成刚查到的完整路径，再执行保护性恢复。该块会拒绝覆盖任何已有的普通 `html`，任一校验或健康检查失败也不会显示恢复成功：
 
 ```bash
+sudo bash <<'RECOVER_INITIAL'
+set -Eeuo pipefail
+
 SITE_ROOT=/var/www/huangjianfen.cn
 INITIAL_RELEASE=/var/www/huangjianfen.cn/releases/initial-请替换为实际时间戳
 
-sudo test -d "$INITIAL_RELEASE"
-sudo test ! -L "$INITIAL_RELEASE"
+[[ -d "$INITIAL_RELEASE" && ! -L "$INITIAL_RELEASE" ]]
+[[ "$INITIAL_RELEASE" == "$SITE_ROOT"/releases/initial-* ]]
 
-if sudo test -L "$SITE_ROOT/html"; then
-  CURRENT_TARGET="$(sudo readlink -f "$SITE_ROOT/html")"
-  if test "$CURRENT_TARGET" != "$INITIAL_RELEASE"; then
+if [[ -L "$SITE_ROOT/html" ]]; then
+  CURRENT_TARGET="$(readlink -f "$SITE_ROOT/html")"
+  if [[ "$CURRENT_TARGET" != "$INITIAL_RELEASE" ]]; then
     echo "停止：html 指向未知目标 $CURRENT_TARGET，不做覆盖。"
-    return 1 2>/dev/null || exit 1
+    exit 1
   fi
-  sudo unlink "$SITE_ROOT/html"
-else
-  sudo test ! -e "$SITE_ROOT/html"
+  unlink "$SITE_ROOT/html"
+elif [[ -e "$SITE_ROOT/html" ]]; then
+  echo "停止：html 是已有的普通文件或目录，不做覆盖。"
+  exit 1
 fi
 
-sudo test ! -e "$SITE_ROOT/html"
-sudo test ! -L "$SITE_ROOT/html"
-sudo mv -- "$INITIAL_RELEASE" "$SITE_ROOT/html"
-sudo test -d "$SITE_ROOT/html"
-sudo test ! -L "$SITE_ROOT/html"
-sudo nginx -t
+[[ ! -e "$SITE_ROOT/html" && ! -L "$SITE_ROOT/html" ]]
+mv -- "$INITIAL_RELEASE" "$SITE_ROOT/html"
+[[ -d "$SITE_ROOT/html" && ! -L "$SITE_ROOT/html" ]]
+nginx -t
 curl --fail --silent --show-error --output /dev/null http://8.163.27.231
 echo "已恢复为普通 html 目录"
+RECOVER_INITIAL
 ```
 
 恢复脚本只保证把可访问的站点内容放回普通 `html` 目录。如果失败发生在权限规范化之后，目录内容可能仍是 `deploy:www-data`，目录可能是 `755`、文件可能是 `644`；它不会声称恢复了迁移前的全部所有者和权限元数据。如需逐项还原原始元数据，应使用第 3 节的备份或阿里云磁盘快照。
@@ -528,8 +555,12 @@ echo "已恢复为普通 html 目录"
 
 ```bash
 DEPLOY_KEY="$HOME/.ssh/sweet-memories-github-actions"
-pbcopy < "$DEPLOY_KEY"
-echo "专用私钥已复制到剪贴板，请立即粘贴到 ALIYUN_SSH_PRIVATE_KEY"
+if pbcopy < "$DEPLOY_KEY"; then
+  echo "专用私钥已复制到剪贴板，请立即粘贴到 ALIYUN_SSH_PRIVATE_KEY"
+else
+  echo "停止：复制私钥失败，不要继续配置 Secret。"
+  return 1 2>/dev/null || exit 1
+fi
 ```
 
 只在 GitHub Secret 输入框中使用已核验的主机记录：
@@ -609,14 +640,40 @@ fi
 git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
 git show --no-patch --decorate "$RELEASE_TAG"
 
-if git merge-base --is-ancestor \
-  "$(git rev-list -n 1 "$RELEASE_TAG")" origin/main; then
-  echo "Tag 提交属于 origin/main，开始推送。"
-  git push origin "$RELEASE_TAG"
-else
+LOCAL_TAG_SHA="$(git rev-list -n 1 "$RELEASE_TAG")"
+if ! git merge-base --is-ancestor "$LOCAL_TAG_SHA" origin/main; then
   echo "停止：Tag 提交不属于 origin/main，没有推送。"
   return 1 2>/dev/null || exit 1
 fi
+
+if ! git push origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"; then
+  echo "停止：git push 报错，远程结果可能未知。不要重推或复用这个 Tag；先到 GitHub Tags 页面检查远程状态。"
+  return 1 2>/dev/null || exit 1
+fi
+
+REMOTE_PEELED_REF="refs/tags/$RELEASE_TAG^{}"
+if ! REMOTE_TAG_OUTPUT="$(
+  git ls-remote --exit-code origin "$REMOTE_PEELED_REF"
+)"; then
+  echo "停止：无法核验远程 Tag，远程结果可能未知。不要重推或复用这个 Tag；先检查 GitHub 远程状态。"
+  return 1 2>/dev/null || exit 1
+fi
+
+if [[ "$REMOTE_TAG_OUTPUT" == *$'\n'* ]]; then
+  echo "停止：远程 Tag 核验返回了多条记录，不要重推或复用；请先检查远程。"
+  return 1 2>/dev/null || exit 1
+fi
+
+IFS=$'\t ' read -r REMOTE_TAG_SHA REMOTE_TAG_REF REMOTE_EXTRA <<< "$REMOTE_TAG_OUTPUT"
+if [[ -n "${REMOTE_EXTRA:-}" \
+  || "$REMOTE_TAG_REF" != "$REMOTE_PEELED_REF" \
+  || ! "$REMOTE_TAG_SHA" =~ ^[0-9a-f]{40}$ \
+  || "$REMOTE_TAG_SHA" != "$LOCAL_TAG_SHA" ]]; then
+  echo "停止：远程 Tag 与本地提交不一致。不要重推或复用这个 Tag；请先检查远程。"
+  return 1 2>/dev/null || exit 1
+fi
+
+echo "远程 Tag 已确认指向 $LOCAL_TAG_SHA，现在可以打开 GitHub Actions。"
 ```
 
 不要使用 `--force`，不要强制移动已经推送的 Tag。如果 Tag 创建错了但还没推送，可以先停止并请熟悉 Git 的人检查；发布过或失败过的 Tag 不再复用。
@@ -625,7 +682,7 @@ fi
 
 ## 13. 在 GitHub 查看部署过程
 
-推送 Tag 后，打开仓库的 `Actions` 页面，选择 `发布生产环境`，再打开本次 `v1.0.0` 运行记录。
+只有上一步显示“远程 Tag 已确认”后，才打开仓库的 `Actions` 页面，选择 `发布生产环境`，再打开本次 `v1.0.0` 运行记录。如果推送或远程核验报错，先检查 GitHub Tags 页面，不要直接重推。
 
 应依次看到这些关键步骤成功：
 
@@ -656,9 +713,12 @@ ssh -i "$DEPLOY_KEY" \
   deploy@"$SSH_HOST"
 ```
 
-在服务器执行：
+在服务器执行。任一步失败都会停止，不会显示“线上验证通过”：
 
 ```bash
+bash <<'VERIFY_RELEASE'
+set -Eeuo pipefail
+
 SITE_ROOT=/var/www/huangjianfen.cn
 ACTIVE_RELEASE="$(readlink -f "$SITE_ROOT/html")"
 ACTIVE_SHA="$(basename "$ACTIVE_RELEASE")"
@@ -680,6 +740,7 @@ fi
 find "$SITE_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
 curl --fail --silent --show-error --output /dev/null http://8.163.27.231
 echo "线上验证通过"
+VERIFY_RELEASE
 ```
 
 目录名的 40 位 SHA 应与 GitHub Actions 本次运行页面显示的提交一致。浏览器再打开 `http://8.163.27.231`，确认页面功能正常。
@@ -731,7 +792,13 @@ sudo tail -n 100 /var/log/nginx/error.log
 
 ### 发布目录权限错误
 
-正常值是：发布根和所有目录 `755`，普通文件 `644`，发布根及 release 属于 `deploy:www-data`。检查：
+正常值需要区分首次迁移和后续自动发布：
+
+- 站点根 `/var/www/huangjianfen.cn`、`releases` 根和 `initial-*` 初始版本由迁移脚本设置为 `deploy:www-data`。
+- 后续以 40 位 SHA 命名的 release 是工作流以 `deploy` 用户创建的，通常属于 `deploy:deploy`；这不是错误。
+- 所有发布目录应为 `755`，普通文件应为 `644`。因此即使 SHA release 的组是 `deploy`，Nginx 的 `www-data` 仍可依靠 other 位的读权限和目录执行权限读取静态文件。
+
+检查：
 
 ```bash
 sudo stat -c '%U:%G %a %n' \
@@ -778,13 +845,40 @@ if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
 fi
 
 git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
-if git merge-base --is-ancestor \
-  "$(git rev-list -n 1 "$RELEASE_TAG")" origin/main; then
-  git push origin "$RELEASE_TAG"
-else
+LOCAL_TAG_SHA="$(git rev-list -n 1 "$RELEASE_TAG")"
+if ! git merge-base --is-ancestor "$LOCAL_TAG_SHA" origin/main; then
   echo "停止：Tag 提交不属于 origin/main，没有推送。"
   return 1 2>/dev/null || exit 1
 fi
+
+if ! git push origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"; then
+  echo "停止：git push 报错，远程结果可能未知。不要重推或复用这个 Tag；先到 GitHub Tags 页面检查远程状态。"
+  return 1 2>/dev/null || exit 1
+fi
+
+REMOTE_PEELED_REF="refs/tags/$RELEASE_TAG^{}"
+if ! REMOTE_TAG_OUTPUT="$(
+  git ls-remote --exit-code origin "$REMOTE_PEELED_REF"
+)"; then
+  echo "停止：无法核验远程 Tag，远程结果可能未知。不要重推或复用这个 Tag；先检查 GitHub 远程状态。"
+  return 1 2>/dev/null || exit 1
+fi
+
+if [[ "$REMOTE_TAG_OUTPUT" == *$'\n'* ]]; then
+  echo "停止：远程 Tag 核验返回了多条记录，不要重推或复用；请先检查远程。"
+  return 1 2>/dev/null || exit 1
+fi
+
+IFS=$'\t ' read -r REMOTE_TAG_SHA REMOTE_TAG_REF REMOTE_EXTRA <<< "$REMOTE_TAG_OUTPUT"
+if [[ -n "${REMOTE_EXTRA:-}" \
+  || "$REMOTE_TAG_REF" != "$REMOTE_PEELED_REF" \
+  || ! "$REMOTE_TAG_SHA" =~ ^[0-9a-f]{40}$ \
+  || "$REMOTE_TAG_SHA" != "$LOCAL_TAG_SHA" ]]; then
+  echo "停止：远程 Tag 与本地提交不一致。不要重推或复用这个 Tag；请先检查远程。"
+  return 1 2>/dev/null || exit 1
+fi
+
+echo "远程 Tag 已确认指向 $LOCAL_TAG_SHA，现在可以打开 GitHub Actions。"
 ```
 
 推荐使用语义化版本号：
