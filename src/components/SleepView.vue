@@ -33,8 +33,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="sleep-view" aria-label="睡眠模式">
-    <div class="stars-container" aria-hidden="true">
+  <div
+    class="sleep-view"
+    aria-label="睡眠模式"
+  >
+    <div
+      class="stars-container"
+      aria-hidden="true"
+    >
       <div
         v-for="star in stars"
         :key="star.id"
@@ -48,19 +54,27 @@ onMounted(() => {
           '--twinkle-duration': star.duration,
           '--twinkle-delay': star.delay,
         }"
-      ></div>
+      />
     </div>
 
     <div class="sleep-content">
       <div class="breathing-frame">
         <picture class="sleep-picture">
-          <img :src="sleepImageUrl" alt="安静熟睡的宝宝" class="sleep-image" />
+          <img
+            :src="sleepImageUrl"
+            alt="安静熟睡的宝宝"
+            class="sleep-image"
+          >
         </picture>
       </div>
 
       <div class="sleep-typography">
-        <p class="sleep-title">嘘，宝宝睡着了... 💤</p>
-        <p class="sleep-subtitle">Good night, sweet dreams</p>
+        <p class="sleep-title">
+          嘘，宝宝睡着了... 💤
+        </p>
+        <p class="sleep-subtitle">
+          Good night, sweet dreams
+        </p>
       </div>
     </div>
   </div>

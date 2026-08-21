@@ -17,21 +17,33 @@ const { isSleepMode, toggleSleepMode } = useSleepMode();
 </script>
 
 <template>
-  <div class="album-app" :class="{ 'is-sleeping': isSleepMode }">
+  <div
+    class="album-app"
+    :class="{ 'is-sleeping': isSleepMode }"
+  >
     <FloatingControls
       :is-sleep-mode="isSleepMode"
       :is-overlay-visible="false"
       :audio-sources="audioSources"
-      @toggle-sleep="toggleSleepMode"
       style="z-index: 20"
+      @toggle-sleep="toggleSleepMode"
     />
     <AmbientEffects :is-sleep-mode="isSleepMode" />
 
-    <transition name="fade" mode="out-in">
+    <transition
+      name="fade"
+      mode="out-in"
+    >
       <SleepView v-if="isSleepMode" />
-      <main v-else aria-label="宝贝成长相册">
+      <main
+        v-else
+        aria-label="宝贝成长相册"
+      >
         <AlbumHeader />
-        <MemoryVideo :poster="videoPosterUrl" :src="videoUrl" />
+        <MemoryVideo
+          :poster="videoPosterUrl"
+          :src="videoUrl"
+        />
         <PhotoGallery :memories="memories" />
       </main>
     </transition>
