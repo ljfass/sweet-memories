@@ -31,6 +31,6 @@ describe('App', () => {
     await wrapper.get('[data-testid="sleep-toggle"]').trigger('click')
 
     expect(wrapper.get('.album-app').classes()).toContain('is-sleeping')
-    expect(wrapper.get('.sleep-overlay').text()).toBe('嘘，宝宝睡着了... 💤')
+    expect(wrapper.get('.sleep-title').text()).toBe('嘘，宝宝睡着了... 💤')
   })
 })
