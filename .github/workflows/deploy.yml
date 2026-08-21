@@ -16,7 +16,7 @@ jobs:
   deploy:
     name: 检查并部署
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     environment:
       name: production
       url: ${{ vars.PRODUCTION_URL }}
@@ -25,12 +25,15 @@ jobs:
       REMOTE_ARCHIVE: /tmp/sweet-memories-${{ github.sha }}.tar.gz
     steps:
       - name: 检出 Tag 对应代码
+        id: checkout
+        timeout-minutes: 2
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
       - name: 验证提交已经进入 main
         id: validate-main
+        timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail
@@ -41,45 +44,58 @@ jobs:
           fi
 
       - name: 安装 Node.js
+        id: setup-node
+        timeout-minutes: 3
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
 
       - name: 安装项目指定的 pnpm
+        id: install-pnpm
+        timeout-minutes: 3
         run: |
           npm install --global pnpm@8.6.1
           test "$(pnpm --version)" = '8.6.1'
 
       - name: 安装依赖
         id: install-dependencies
+        timeout-minutes: 5
         run: pnpm install --frozen-lockfile
 
       - name: 类型检查
         id: typecheck
+        timeout-minutes: 3
         run: pnpm typecheck
 
       - name: 代码检查
         id: lint
+        timeout-minutes: 3
         run: pnpm lint
 
       - name: 单元测试
         id: test
+        timeout-minutes: 5
         run: pnpm test
 
       - name: 部署脚本测试
         id: test-deploy
+        timeout-minutes: 3
         run: pnpm test:deploy
 
       - name: 生产构建
         id: build
+        timeout-minutes: 5
         run: pnpm build
 
       - name: 打包构建产物
+        id: package
+        timeout-minutes: 2
         shell: bash
         run: tar -C dist -czf "$RUNNER_TEMP/release.tar.gz" .
 
       - name: 校验部署配置
         id: validate-config
+        timeout-minutes: 1
         shell: bash
         env:
           ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
@@ -115,6 +131,7 @@ jobs:
 
       - name: 配置 SSH
         id: configure-ssh
+        timeout-minutes: 1
         shell: bash
         env:
           ALIYUN_HOST: ${{ secrets.ALIYUN_HOST }}
@@ -190,9 +207,9 @@ jobs:
 
       - name: 清理远程发布包
         id: archive-cleanup
-        if: ${{ always() && steps.activate.outcome != 'skipped' }}
+        if: ${{ always() && steps.upload.outcome != 'skipped' }}
         continue-on-error: true
-        timeout-minutes: 5
+        timeout-minutes: 2
         run: ssh production rm -f -- "$REMOTE_ARCHIVE"
 
       - name: 清理旧版本

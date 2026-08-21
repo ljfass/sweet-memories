@@ -111,50 +111,82 @@ describe('production deployment workflow', () => {
     }
   })
 
-  it('runs every quality gate in order before uploading an artifact', () => {
+  it('runs exact quality and packaging commands in order before upload', () => {
     const steps = loadWorkflow().jobs.deploy.steps
-    const gateIds = [
-      'install-dependencies',
-      'typecheck',
-      'lint',
-      'test',
-      'test-deploy',
-      'build',
-    ]
-    const gateIndexes = gateIds.map((id) =>
+    const commands = new Map([
+      ['install-dependencies', 'pnpm install --frozen-lockfile'],
+      ['typecheck', 'pnpm typecheck'],
+      ['lint', 'pnpm lint'],
+      ['test', 'pnpm test'],
+      ['test-deploy', 'pnpm test:deploy'],
+      ['build', 'pnpm build'],
+      ['package', 'tar -C dist -czf "$RUNNER_TEMP/release.tar.gz" .'],
+      ['upload', 'scp "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_ARCHIVE"'],
+    ])
+    const orderedIds = [...commands.keys()]
+    const orderedIndexes = orderedIds.map((id) =>
       steps.findIndex((step) => step.id === id),
     )
-    const uploadIndex = steps.findIndex((step) => step.id === 'upload')
 
-    expect(gateIndexes.every((index) => index >= 0)).toBe(true)
-    expect(gateIndexes).toEqual([...gateIndexes].sort((a, b) => a - b))
-    expect(gateIndexes.every((index) => index < uploadIndex)).toBe(true)
-    expect(stepById(steps, 'install-dependencies').run).toBe(
-      'pnpm install --frozen-lockfile',
+    expect(orderedIndexes.every((index) => index >= 0)).toBe(true)
+    expect(orderedIndexes).toEqual(
+      [...orderedIndexes].sort((a, b) => a - b),
     )
+    for (const [id, command] of commands) {
+      expect(stepById(steps, id).run).toBe(command)
+    }
   })
 
-  it('bounds the deployment and every network mutation', () => {
+  it('gives every step a bounded budget with job recovery headroom', () => {
     const deploy = loadWorkflow().jobs.deploy
-    const timedStepIds = [
-      'upload',
-      'activate',
-      'health-check',
-      'archive-cleanup',
-      'cleanup',
-    ]
+    const expectedBudgets = new Map([
+      ['checkout', 2],
+      ['validate-main', 2],
+      ['setup-node', 3],
+      ['install-pnpm', 3],
+      ['install-dependencies', 5],
+      ['typecheck', 3],
+      ['lint', 3],
+      ['test', 5],
+      ['test-deploy', 3],
+      ['build', 5],
+      ['package', 2],
+      ['validate-config', 1],
+      ['configure-ssh', 1],
+      ['upload', 5],
+      ['activate', 5],
+      ['health-check', 5],
+      ['archive-cleanup', 2],
+      ['cleanup', 5],
+    ])
+    const stepBudgets = deploy.steps.map((step) => step['timeout-minutes'])
+    const totalStepBudget = stepBudgets.reduce(
+      (total, budget) => total + (budget ?? 0),
+      0,
+    )
 
-    expect(deploy['timeout-minutes']).toBe(30)
-    for (const id of timedStepIds) {
-      expect(stepById(deploy.steps, id)['timeout-minutes']).toBe(5)
+    expect(deploy.steps).toHaveLength(expectedBudgets.size)
+    expect(
+      stepBudgets.every(
+        (budget) => typeof budget === 'number' && budget > 0,
+      ),
+    ).toBe(true)
+    for (const [id, budget] of expectedBudgets) {
+      expect(stepById(deploy.steps, id)['timeout-minutes']).toBe(budget)
     }
+    expect(deploy['timeout-minutes']).toBe(75)
+    expect(deploy['timeout-minutes']).toBeGreaterThan(totalStepBudget)
+  })
 
-    const sshConfig = stepById(deploy.steps, 'configure-ssh').run
+  it('bounds SSH sessions and the public health request', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+
+    const sshConfig = stepById(steps, 'configure-ssh').run
     expect(sshConfig).toContain('ConnectTimeout 15')
     expect(sshConfig).toContain('ServerAliveInterval 15')
     expect(sshConfig).toContain('ServerAliveCountMax 3')
 
-    const healthCheck = stepById(deploy.steps, 'health-check').run
+    const healthCheck = stepById(steps, 'health-check').run
     expect(healthCheck).toContain('--connect-timeout 10')
     expect(healthCheck).toContain('--max-time 30')
     expect(healthCheck).toContain('--retry-max-time 120')
@@ -228,7 +260,7 @@ describe('production deployment workflow', () => {
     expect(archiveCleanupIndex).toBeGreaterThan(healthCheckIndex)
     expect(cleanupIndex).toBeGreaterThan(archiveCleanupIndex)
     expect(archiveCleanup.if).toBe(
-      "${{ always() && steps.activate.outcome != 'skipped' }}",
+      "${{ always() && steps.upload.outcome != 'skipped' }}",
     )
     expect(archiveCleanup['continue-on-error']).toBe(true)
     expect(archiveCleanup.run).toContain(
