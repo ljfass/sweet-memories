@@ -1,111 +1,111 @@
-# Tag-Triggered Production Deployment Design
+# 基于 Tag 触发的生产环境自动部署设计
 
-## Goal
+## 目标
 
-Deploy the Vue/Vite static site to the existing Alibaba Cloud server automatically when a version tag is pushed to GitHub. A release must pass all repository checks before it can replace the live files, and a failed upload or health check must leave or restore the previous working release.
+当版本 Tag 推送到 GitHub 后，自动将 Vue/Vite 静态站点部署到现有的阿里云服务器。新版本必须通过仓库中的全部检查后才能替换线上文件；如果上传或健康检查失败，线上应继续使用或自动恢复到上一个可用版本。
 
-The existing Nginx document root is `/var/www/huangjianfen.cn/html`. The public health-check URL is initially `http://8.163.27.231`.
+Nginx 现有的静态文件目录为 `/var/www/huangjianfen.cn/html`，初始公网健康检查地址为 `http://8.163.27.231`。
 
-## Approved Release Contract
+## 已确认的发布规则
 
-- Tags beginning with `v` trigger production deployment, for example `v1.0.0`.
-- Ordinary branch pushes do not deploy.
-- The exact commit referenced by the tag is built and deployed.
-- Only one production deployment runs at a time.
-- A release must pass type checking, linting, unit tests, and the production build.
-- Nginx continues serving static files and does not need a restart or reload for a release.
-- The server keeps the five newest releases so an earlier version remains available for rollback.
+- 只有以 `v` 开头的 Tag 才触发生产部署，例如 `v1.0.0`。
+- 普通分支推送不触发部署。
+- 构建并部署 Tag 准确指向的提交。
+- 同一时间只允许一个生产部署任务运行。
+- 新版本必须依次通过类型检查、代码检查、单元测试和生产构建。
+- Nginx 继续提供静态文件服务，发布时不需要重启或重新加载 Nginx。
+- 服务器保留最新的 5 个版本，便于回退到早期版本。
 
-## Architecture
+## 整体架构
 
-One GitHub Actions workflow owns both verification and deployment:
+由一个 GitHub Actions 工作流负责检查和部署：
 
-1. Check out the tagged commit.
-2. Install the pnpm version declared by the repository and a supported Node.js runtime.
-3. Install dependencies with the frozen lockfile.
-4. Run `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm build`.
-5. Package the contents of `dist/` as an immutable release artifact.
-6. Transfer the artifact over SSH to a dedicated, unprivileged `deploy` user on the Alibaba Cloud server.
-7. Extract it into `/var/www/huangjianfen.cn/releases/<commit-sha>` and verify that `index.html` exists.
-8. Atomically switch `/var/www/huangjianfen.cn/html` to a symlink targeting the new release.
-9. Request the configured public URL. If the request fails, atomically restore the previous symlink target and fail the workflow.
-10. After a successful check, remove releases older than the five newest entries.
+1. 检出 Tag 指向的提交。
+2. 安装仓库声明的 pnpm 版本以及受支持的 Node.js 运行时。
+3. 使用锁定文件安装依赖，禁止自动修改依赖版本。
+4. 依次运行 `pnpm typecheck`、`pnpm lint`、`pnpm test` 和 `pnpm build`。
+5. 将 `dist/` 目录内容打包为不可变的发布产物。
+6. 通过 SSH 将发布产物传输到阿里云服务器上的专用低权限用户 `deploy`。
+7. 将产物解压到 `/var/www/huangjianfen.cn/releases/<提交哈希>`，并确认其中存在 `index.html`。
+8. 通过原子操作，将 `/var/www/huangjianfen.cn/html` 软链接切换到新版本。
+9. 请求已配置的公网地址；如果请求失败，则以原子方式恢复上一个软链接目标，并将工作流标记为失败。
+10. 健康检查成功后，删除最新 5 个版本以外的旧版本。
 
-The workflow uses the standard SSH and archive tools available on the GitHub-hosted Ubuntu runner. It does not depend on a third-party SSH deployment action.
+工作流使用 GitHub 托管的 Ubuntu 执行器中自带的 SSH 和压缩工具，不依赖第三方 SSH 部署 Action。
 
-## One-Time Server Preparation
+## 服务器一次性准备
 
-The server receives a dedicated `deploy` account with no password login. Its only application responsibility is writing release directories and switching the static-site symlink under `/var/www/huangjianfen.cn`.
+在服务器上创建专用的 `deploy` 账户，并禁止其使用密码登录。该账户在应用范围内只负责写入发布目录，以及切换 `/var/www/huangjianfen.cn` 下的静态站点软链接。
 
-Initial preparation will:
+首次准备包含以下操作：
 
-- create the `deploy` user and its SSH directory;
-- authorize a dedicated Ed25519 public key generated specifically for GitHub Actions;
-- create `/var/www/huangjianfen.cn/releases`;
-- move the currently served static files into an initial release directory;
-- replace the existing `html` directory with an `html` symlink to that initial release;
-- grant `deploy` ownership only over the application deployment directory;
-- retain read and traversal permissions required by the Nginx worker user.
+- 创建 `deploy` 用户及其 SSH 目录；
+- 添加一把专门为 GitHub Actions 生成的 Ed25519 公钥；
+- 创建 `/var/www/huangjianfen.cn/releases`；
+- 将当前正在提供服务的静态文件移动到初始版本目录；
+- 将原有 `html` 目录替换为指向初始版本的 `html` 软链接；
+- 只将应用部署目录的所有权授予 `deploy`；
+- 保留 Nginx 工作进程读取文件和进入目录所需的权限。
 
-SSH remains on the server's configured port, initially assumed to be port `22`. The preparation steps will first inspect the actual SSH port and relevant file ownership before making changes.
+SSH 继续使用服务器当前配置的端口，初步假设为 `22`。正式执行准备操作前，先检查实际 SSH 端口和相关文件的所有权。
 
-## Credentials And GitHub Configuration
+## 凭据与 GitHub 配置
 
-The production workflow uses a GitHub Environment named `production`. The following values are configured outside the repository:
+生产工作流使用名为 `production` 的 GitHub Environment。以下配置保存在仓库代码之外：
 
-- `ALIYUN_HOST`: server address;
-- `ALIYUN_SSH_PORT`: SSH port;
-- `ALIYUN_USER`: dedicated deployment user, `deploy`;
-- `ALIYUN_SSH_PRIVATE_KEY`: dedicated private key used only by GitHub Actions;
-- `ALIYUN_KNOWN_HOSTS`: pinned SSH host-key entry used to verify the server;
-- `PRODUCTION_URL`: public URL used by the post-deployment health check.
+- `ALIYUN_HOST`：服务器地址；
+- `ALIYUN_SSH_PORT`：SSH 端口；
+- `ALIYUN_USER`：专用部署用户，值为 `deploy`；
+- `ALIYUN_SSH_PRIVATE_KEY`：仅供 GitHub Actions 使用的专用私钥；
+- `ALIYUN_KNOWN_HOSTS`：用于验证服务器身份的固定 SSH 主机密钥记录；
+- `PRODUCTION_URL`：部署后进行健康检查的公网地址。
 
-Sensitive values are stored as environment secrets. The public URL may be stored as an environment variable. The workflow grants only `contents: read` permission and never writes a private key, password, or secret into the repository or workflow logs.
+敏感值存储为 Environment Secret，公网地址可以存储为 Environment Variable。工作流只获得 `contents: read` 权限，绝不将私钥、密码或其他 Secret 写入仓库或输出到工作流日志。
 
-The server's security group must permit SSH connections from GitHub-hosted runners. Authentication uses the dedicated key; the `deploy` account has no password. Broader SSH hardening is separate from this deployment change so the existing administrator login is not accidentally disabled.
+服务器安全组需要允许 GitHub 托管执行器连接 SSH 端口。连接时使用专用密钥，`deploy` 账户没有密码。本次部署不会调整全局 SSH 登录策略，避免意外影响现有管理员账户；更全面的 SSH 加固不属于本次改动范围。
 
-## Atomic Activation And Rollback
+## 原子切换与回退
 
-Each build is extracted into a new commit-addressed directory. The live `html` path is not modified while files are uploading or extracting.
+每次构建都解压到以提交哈希命名的新目录中。文件上传和解压期间，不修改正在提供服务的 `html` 路径。
 
-Activation creates a temporary symlink beside `html` and renames it over the live symlink. On Linux this rename is atomic, so Nginx sees either the complete old release or the complete new release. The previous target is recorded before activation.
+启用新版本时，先在 `html` 旁创建临时软链接，再使用重命名操作覆盖当前软链接。Linux 上的该重命名操作具有原子性，因此 Nginx 只能看到完整的旧版本或完整的新版本。切换前记录旧软链接的目标。
 
-If upload, extraction, or validation fails, activation never occurs. If the public health check fails after activation, the workflow switches `html` back to the recorded previous target before reporting failure. Cleanup only runs after a successful health check and never removes the live or immediately previous release.
+如果上传、解压或文件校验失败，则不会启用新版本。如果切换后的公网健康检查失败，工作流会先把 `html` 恢复到之前记录的目标，再报告部署失败。只有健康检查成功后才清理旧版本，而且清理操作不会删除正在使用的版本或紧邻的上一个版本。
 
-## Concurrency And Failure Handling
+## 并发与失败处理
 
-GitHub Actions production concurrency prevents overlapping deployments. An already running production release is allowed to finish rather than being canceled during its server update.
+使用 GitHub Actions 的生产环境并发控制，避免部署任务重叠。正在运行的生产部署会正常完成，不会在更新服务器期间被新的任务强制取消。
 
-SSH uses strict host-key checking and non-interactive authentication. Remote commands fail on unset variables, command errors, and failed pipelines. Release directory names use the Git commit SHA rather than the tag text, avoiding shell interpolation and path traversal from unusual tag names.
+SSH 开启严格的主机密钥检查，并使用非交互式身份验证。远程脚本遇到未定义变量、命令错误或管道错误时立即失败。发布目录使用 Git 提交哈希命名，不使用 Tag 文本，避免异常 Tag 名称造成 Shell 插值或路径穿越问题。
 
-Re-pushing the same immutable tag commit is idempotent: the matching release directory can be validated and activated again. Moving published tags is discouraged; GitHub repository policy should treat release tags as immutable.
+对同一个不可变 Tag 提交重新运行工作流是幂等的：工作流可以重新验证并启用对应版本。已发布的 Tag 不应被移动，GitHub 仓库管理规则应将发布 Tag 视为不可变内容。
 
-## Verification And Acceptance
+## 验证与验收标准
 
-Repository verification covers:
+仓库内的验证包含：
 
-- the existing type-check, lint, and Vitest suites;
-- a clean production build from the frozen lockfile;
-- workflow syntax and shell-script syntax;
-- absence of committed credentials or private keys.
+- 现有的类型检查、代码检查和 Vitest 测试套件；
+- 使用锁定文件执行一次干净的生产构建；
+- 检查工作流语法和 Shell 脚本语法；
+- 确认仓库中没有提交凭据或私钥。
 
-The first release is accepted when:
+首次发布满足以下条件时视为验收通过：
 
-- pushing a test version tag starts the workflow;
-- all checks complete before any server files change;
-- the workflow deploys the tag's exact commit;
-- `http://8.163.27.231` returns a successful response after activation;
-- the live `html` symlink points to the new commit-addressed release;
-- an ordinary branch push does not deploy;
-- a deliberately failed pre-deployment check does not alter the live release.
+- 推送测试版本 Tag 后，自动启动工作流；
+- 所有检查完成前，服务器文件不会发生变化；
+- 工作流部署的是 Tag 准确指向的提交；
+- 启用新版本后，`http://8.163.27.231` 返回成功响应；
+- 当前 `html` 软链接指向以新提交哈希命名的版本目录；
+- 普通分支推送不触发部署；
+- 人为制造部署前检查失败时，线上版本不发生变化。
 
-The server-preparation instructions and GitHub secret setup will be documented for a beginner and performed as explicit, verifiable steps.
+面向初学者编写服务器准备和 GitHub Secret 配置说明，并将操作拆分为可以逐步执行、逐步验证的明确步骤。
 
-## Out Of Scope
+## 不在本次范围内
 
-- changing the Nginx virtual-host configuration;
-- adding a domain name or HTTPS certificate;
-- deploying ordinary branch pushes;
-- Docker, PM2, or building application code on the server;
-- automatically creating or moving Git tags;
-- globally disabling SSH password login or changing unrelated server security settings.
+- 修改 Nginx 虚拟主机配置；
+- 添加域名或 HTTPS 证书；
+- 部署普通分支推送；
+- 使用 Docker、PM2，或在服务器上构建应用代码；
+- 自动创建或移动 Git Tag；
+- 全局禁用 SSH 密码登录，或更改其他无关的服务器安全配置。
