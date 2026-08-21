@@ -720,23 +720,42 @@ bash <<'VERIFY_RELEASE'
 set -Eeuo pipefail
 
 SITE_ROOT=/var/www/huangjianfen.cn
+RELEASES="$SITE_ROOT/releases"
+
+die() {
+  echo "线上验证错误：$1" >&2
+  exit 1
+}
+
+[[ -d "$RELEASES" && ! -L "$RELEASES" ]] || \
+  die "releases 不是普通目录"
+[[ -L "$SITE_ROOT/html" ]] || \
+  die "html 不是软链接"
 ACTIVE_RELEASE="$(readlink -f "$SITE_ROOT/html")"
 ACTIVE_SHA="$(basename "$ACTIVE_RELEASE")"
 
-case "$ACTIVE_RELEASE" in
-  "$SITE_ROOT"/releases/*) ;;
-  *) echo "错误：html 没有指向 releases"; exit 1 ;;
-esac
+[[ "$(dirname "$ACTIVE_RELEASE")" == "$RELEASES" ]] || \
+  die "html 没有指向 releases 的直接子目录"
 
+[[ -d "$ACTIVE_RELEASE" && ! -L "$ACTIVE_RELEASE" ]] || \
+  die "html 指向的版本不是实际存在的普通目录"
 if [[ ! "$ACTIVE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "错误：当前发布目录名不是 40 位小写 SHA"
-  exit 1
+  die "当前发布目录名不是 40 位小写 SHA"
 fi
+
+[[ -L "$SITE_ROOT/previous" ]] || \
+  die "previous 不是软链接；首次自动部署没有完整记录上一个版本"
+PREVIOUS_RELEASE="$(readlink -f "$SITE_ROOT/previous")"
+[[ "$(dirname "$PREVIOUS_RELEASE")" == "$RELEASES" ]] || \
+  die "previous 没有指向 releases 的直接子目录"
+
+[[ -d "$PREVIOUS_RELEASE" && ! -L "$PREVIOUS_RELEASE" ]] || \
+  die "previous 指向的版本不是实际存在的普通目录"
+[[ "$PREVIOUS_RELEASE" != "$ACTIVE_RELEASE" ]] || \
+  die "previous 与当前版本相同，无法提供有效回退"
 
 echo "当前版本：$ACTIVE_RELEASE"
-if test -L "$SITE_ROOT/previous"; then
-  echo "上一个版本：$(readlink -f "$SITE_ROOT/previous")"
-fi
+echo "上一个版本：$PREVIOUS_RELEASE"
 find "$SITE_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
 curl --fail --silent --show-error --output /dev/null http://8.163.27.231
 echo "线上验证通过"
