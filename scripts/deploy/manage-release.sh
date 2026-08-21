@@ -93,6 +93,17 @@ cleanup_rollback_temp_links() {
   fi
 }
 
+cleanup_activation_staging() {
+  local staging_name
+
+  [[ -n "${activation_staging:-}" ]] || return 0
+  [[ "$(dirname "$activation_staging")" == "${activation_releases:-}" ]] ||
+    return 0
+  staging_name="$(basename "$activation_staging")"
+  [[ "$staging_name" =~ ^\.incoming-[0-9a-f]{40}$ ]] || return 0
+  rm -rf -- "$activation_staging"
+}
+
 directory_mtime() {
   local path="$1"
 
@@ -139,22 +150,24 @@ activate() {
   current="$(resolve_release_link "$site_root/html" "$releases")"
   release_dir="$releases/$release_sha"
   staging="$releases/.incoming-$release_sha"
+  activation_releases="$releases"
+  activation_staging="$staging"
+  trap cleanup_activation_staging EXIT
+  trap 'exit 1' HUP INT TERM
 
   if [[ ! -e "$release_dir" ]]; then
     rm -rf "$staging"
     mkdir "$staging"
     if ! tar -xzf "$archive" -C "$staging"; then
-      rm -rf "$staging"
       die 'release archive could not be extracted'
     fi
     if ! validation_error="$(validate_release_tree "$staging")"; then
-      rm -rf "$staging"
       die "$validation_error"
     fi
     if ! mv "$staging" "$release_dir"; then
-      rm -rf "$staging"
       die 'staged release could not be finalized'
     fi
+    activation_staging=''
   fi
 
   [[ -d "$release_dir" && ! -L "$release_dir" ]] ||
@@ -186,15 +199,14 @@ activate() {
   printf 'activated release: %s\n' "$release_sha"
 }
 
-rollback() {
+swap_release_links() {
   local site_root="$1"
-  local releases current previous marker
+  local current="$2"
+  local previous="$3"
+  local marker
 
-  site_root="$(validate_site_root "$site_root")"
-  [[ -L "$site_root/previous" ]] || die 'no previous release is available'
-  releases="$(canonical_dir "$site_root/releases")"
-  current="$(resolve_release_link "$site_root/html" "$releases")"
-  previous="$(resolve_release_link "$site_root/previous" "$releases")"
+  [[ "$current" != "$previous" ]] ||
+    die 'previous release must differ from current release'
   marker="$(basename "$previous")"
 
   rollback_html_temp="$site_root/.html-rollback-$marker-$$"
@@ -220,10 +232,43 @@ rollback() {
   printf 'rolled back to: %s\n' "$previous"
 }
 
+rollback() {
+  local site_root="$1"
+  local releases current previous
+
+  site_root="$(validate_site_root "$site_root")"
+  [[ -L "$site_root/previous" ]] || die 'no previous release is available'
+  releases="$(canonical_dir "$site_root/releases")"
+  current="$(resolve_release_link "$site_root/html" "$releases")"
+  previous="$(resolve_release_link "$site_root/previous" "$releases")"
+  swap_release_links "$site_root" "$current" "$previous"
+}
+
+rollback_if_current() {
+  local site_root="$1"
+  local expected_sha="$2"
+  local releases current previous expected_release
+
+  [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] ||
+    die 'release SHA must be 40 lowercase hexadecimal characters'
+  site_root="$(validate_site_root "$site_root")"
+  releases="$(canonical_dir "$site_root/releases")"
+  current="$(resolve_release_link "$site_root/html" "$releases")"
+  expected_release="$releases/$expected_sha"
+  if [[ "$(basename "$current")" != "$expected_sha" ||
+    "$current" != "$expected_release" ]]; then
+    die 'current release does not match expected SHA'
+  fi
+  [[ -L "$site_root/previous" ]] || die 'no previous release is available'
+  previous="$(resolve_release_link "$site_root/previous" "$releases")"
+  swap_release_links "$site_root" "$current" "$previous"
+}
+
 cleanup() {
   local site_root="$1"
   local keep_count="$2"
   local releases current previous candidate candidate_mtime canonical_candidate
+  local staging_name now staging_cutoff
   local i j newest_index swap_path swap_mtime
   local release_dirs=()
   local release_mtimes=()
@@ -237,6 +282,25 @@ cleanup() {
   if [[ -L "$site_root/previous" ]]; then
     previous="$(resolve_release_link "$site_root/previous" "$releases")"
   fi
+
+  now="$(date +%s)"
+  [[ "$now" =~ ^[0-9]+$ ]] || die 'could not read the current time'
+  staging_cutoff=$((now - 86400))
+  shopt -s nullglob
+  for candidate in "$releases"/.incoming-*; do
+    staging_name="$(basename "$candidate")"
+    if [[ "$staging_name" =~ ^\.incoming-[0-9a-f]{40}$ &&
+      -d "$candidate" && ! -L "$candidate" ]]; then
+      candidate_mtime="$(directory_mtime "$candidate")"
+      [[ "$candidate_mtime" =~ ^[0-9]+$ ]] ||
+        die "could not read staging mtime: $candidate"
+      if ((candidate_mtime <= staging_cutoff)); then
+        rm -rf -- "$candidate"
+        printf 'removed stale staging: %s\n' "$candidate"
+      fi
+    fi
+  done
+  shopt -u nullglob
 
   shopt -s nullglob
   for candidate in "$releases"/*; do
@@ -290,12 +354,17 @@ case "$mode" in
       die 'usage: manage-release.sh rollback <absolute-site-root>'
     rollback "$2"
     ;;
+  rollback-if-current)
+    [[ $# -eq 3 ]] ||
+      die 'usage: manage-release.sh rollback-if-current <absolute-site-root> <sha>'
+    rollback_if_current "$2" "$3"
+    ;;
   cleanup)
     [[ $# -eq 3 ]] ||
       die 'usage: manage-release.sh cleanup <absolute-site-root> <keep-count>'
     cleanup "$2" "$3"
     ;;
   *)
-    die 'mode must be activate, rollback, or cleanup'
+    die 'mode must be activate, rollback, rollback-if-current, or cleanup'
     ;;
 esac
