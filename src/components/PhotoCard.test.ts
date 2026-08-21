@@ -39,11 +39,30 @@ describe('PhotoCard', () => {
 
   it('renders the caption and desktop transform variables', () => {
     const wrapper = mount(PhotoCard, { props: { memory } })
-    const card = wrapper.get('article')
+    const card = wrapper.get('article.polaroid')
 
     expect(wrapper.get('.caption').text()).toBe(memory.caption)
     expect(card.attributes('style')).toContain('--rotation: -5deg')
     expect(card.attributes('style')).toContain('--offset-x: 0px')
     expect(card.attributes('style')).toContain('--offset-y: 10px')
+  })
+
+  it('exposes selected state and emits activation from a native button', async () => {
+    const wrapper = mount(PhotoCard, {
+      props: { memory, isSelected: true },
+    })
+    const trigger = wrapper.get('button.polaroid-trigger')
+
+    expect(wrapper.get('.photo-slot').attributes('data-memory-id')).toBe(memory.id)
+    expect(wrapper.get('.photo-slot').classes()).toContain('is-selected')
+    expect(trigger.attributes()).toMatchObject({
+      type: 'button',
+      'aria-expanded': 'true',
+      'aria-label': `查看${memory.caption}`,
+    })
+
+    await trigger.trigger('click')
+
+    expect(wrapper.emitted('activate')).toEqual([[memory.id]])
   })
 })

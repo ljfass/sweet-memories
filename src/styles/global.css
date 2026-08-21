@@ -204,10 +204,16 @@ button {
   gap: 40px;
 }
 
-.polaroid {
+.photo-slot {
   position: relative;
   width: 280px;
   flex: 0 0 280px;
+  transform-origin: 50% 50%;
+}
+
+.polaroid {
+  position: relative;
+  width: 100%;
   padding: 15px 15px 30px;
   border-radius: 8px;
   background: var(--surface-color);
@@ -236,6 +242,15 @@ button {
   transition: background 1s ease;
 }
 
+.polaroid-trigger {
+  display: block;
+  width: 100%;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  cursor: zoom-in;
+}
+
 .polaroid picture {
   aspect-ratio: 1;
   overflow: hidden;
@@ -251,6 +266,7 @@ button {
 }
 
 .caption {
+  display: block;
   margin-top: 15px;
   color: var(--text-color);
   font-size: 1.25rem;
@@ -496,9 +512,13 @@ button {
     gap: 34px;
   }
 
-  .polaroid {
+  .photo-slot {
     width: min(100%, 320px);
     flex-basis: auto;
+  }
+
+  .polaroid {
+    width: 100%;
     transform: none;
   }
 
