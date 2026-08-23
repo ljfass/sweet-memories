@@ -418,7 +418,6 @@ describe('Lighthouse CI configuration', () => {
       url: ['http://8.163.27.231'],
       numberOfRuns: 3,
       settings: {
-        chromeFlags: '--headless --no-sandbox',
         onlyCategories: [
           'performance',
           'accessibility',
@@ -489,7 +488,6 @@ module.exports = {
       url: [targetUrl],
       numberOfRuns: 3,
       settings: {
-        chromeFlags: '--headless --no-sandbox',
         onlyCategories: categoryThresholds.map(({ id }) => id),
       },
     },

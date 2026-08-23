@@ -15,7 +15,6 @@ module.exports = {
       url: [monitorUrl],
       numberOfRuns: 3,
       settings: {
-        chromeFlags: '--headless --no-sandbox',
         onlyCategories: thresholds.map(({ id }) => id),
       },
     },

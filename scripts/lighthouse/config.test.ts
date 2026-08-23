@@ -29,7 +29,6 @@ describe('Lighthouse CI configuration', () => {
       url: ['http://8.163.27.231'],
       numberOfRuns: 3,
       settings: {
-        chromeFlags: '--headless --no-sandbox',
         onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
       },
     })
