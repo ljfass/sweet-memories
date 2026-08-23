@@ -24,6 +24,8 @@ jobs:
         id: checkout
         timeout-minutes: 2
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: 校验生产地址
         id: validate-config
         timeout-minutes: 1

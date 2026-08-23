@@ -69,6 +69,7 @@ describe('production Lighthouse workflow', () => {
   it('defines one isolated Lighthouse job without secrets or deployment environment', () => {
     const workflow = loadWorkflow()
     const jobs = workflow.jobs ?? {}
+    const serializedWorkflow = JSON.stringify(workflow)
 
     expect(Object.keys(jobs)).toEqual(['lighthouse'])
     expect(jobs.lighthouse).toMatchObject({
@@ -78,7 +79,10 @@ describe('production Lighthouse workflow', () => {
     expect(jobs.lighthouse.env).toEqual({ MONITOR_URL: '${{ vars.MONITOR_URL }}' })
     expect(jobs.lighthouse.environment).toBeUndefined()
     expect(jobs.lighthouse).not.toHaveProperty('permissions')
-    expect(JSON.stringify(workflow)).not.toMatch(/secrets\.|ALIYUN_/)
+    expect(serializedWorkflow).not.toMatch(/secrets\.|ALIYUN_/)
+    expect(serializedWorkflow).not.toMatch(/\b(?:ssh|scp|rsync)\b/i)
+    expect(serializedWorkflow).not.toMatch(/scripts\/deploy|manage-release\.sh/i)
+    expect(serializedWorkflow).not.toMatch(/\blhci\s+upload\b|temporary-public-storage/i)
   })
 
   it('uses only the required immutable official action revisions in order', () => {
@@ -92,6 +96,7 @@ describe('production Lighthouse workflow', () => {
     for (const action of job.steps?.filter((step) => step.uses) ?? []) {
       expect(action.uses).toMatch(/@[a-f0-9]{40}$/)
     }
+    expect(stepById(job, 'checkout').with).toEqual({ 'persist-credentials': false })
   })
 
   it('keeps the nine-step execution budget and order bounded', () => {
