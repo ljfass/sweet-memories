@@ -69,6 +69,28 @@ class TestHandler(BaseHTTPRequestHandler):
             self.send_body(200, "text/css", b"#app { display: block; }\n")
             return
 
+        if path == "/redirected-asset":
+            body = b"""<!doctype html>
+<html><head>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script type="module" src="/assets/redirect.js"></script>
+</head><body><div id="app"></div></body></html>
+"""
+            self.send_body(200, "text/html", body)
+            return
+
+        if path == "/assets/redirect.js":
+            location = (
+                f"http://localhost:{self.server.server_port}/assets/app.js"
+            )
+            self.send_body(
+                302,
+                "text/plain",
+                b"",
+                (("Location", location),),
+            )
+            return
+
         if path == "/status-500":
             self.send_body(500, "text/plain", b"server error")
             return
