@@ -3,7 +3,7 @@ name: 生产站点巡检
 on:
   schedule:
     - cron: '7,37 * * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/monitor/check-site.sh
-          python3 -m py_compile scripts/monitor/extract-assets.py
+          python3 -c 'compile(open("scripts/monitor/extract-assets.py", encoding="utf-8").read(), "scripts/monitor/extract-assets.py", "exec")'
 
       - name: 执行生产站点巡检
         id: monitor-site

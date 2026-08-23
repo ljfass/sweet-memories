@@ -34,7 +34,7 @@ interface MonitorWorkflow {
   name: string
   on: {
     schedule: Array<{ cron: string }>
-    workflow_dispatch: Record<string, never>
+    workflow_dispatch: null
   }
   permissions: Record<string, string>
 }
@@ -61,7 +61,7 @@ describe('production site monitoring workflow', () => {
     expect(workflow.name).toBe('生产站点巡检')
     expect(workflow.on).toEqual({
       schedule: [{ cron: '7,37 * * * *' }],
-      workflow_dispatch: {},
+      workflow_dispatch: null,
     })
     expect(workflow.permissions).toEqual({ contents: 'read' })
   })
@@ -149,7 +149,7 @@ describe('production site monitoring workflow', () => {
     expect(syntax.run?.trim().split('\n')).toEqual([
       'set -euo pipefail',
       'bash -n scripts/monitor/check-site.sh',
-      'python3 -m py_compile scripts/monitor/extract-assets.py',
+      `python3 -c 'compile(open("scripts/monitor/extract-assets.py", encoding="utf-8").read(), "scripts/monitor/extract-assets.py", "exec")'`,
     ])
     expect(monitorSite.shell).toBe('bash')
     expect(monitorSite.run).toBe(
