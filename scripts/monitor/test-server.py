@@ -91,6 +91,20 @@ class TestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/bare-redirect-asset":
+            body = b"""<!doctype html>
+<html><head>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script type="module" src="/assets/bare-redirect.js"></script>
+</head><body><div id="app"></div></body></html>
+"""
+            self.send_body(200, "text/html", body)
+            return
+
+        if path == "/assets/bare-redirect.js":
+            self.send_body(302, "text/plain", b"")
+            return
+
         if path == "/status-500":
             self.send_body(500, "text/plain", b"server error")
             return

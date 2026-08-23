@@ -98,6 +98,7 @@ run_failure missing_app "$BASE_URL/missing-app" "HTML 缺少 Vue 挂载点"
 run_failure no_assets "$BASE_URL/no-assets" "HTML 没有可巡检的模块脚本"
 run_failure bad_resource "$BASE_URL/bad-resource" "静态资源请求失败"
 run_failure redirected_asset "$BASE_URL/redirected-asset" "静态资源请求失败"
+run_failure bare_redirect_asset "$BASE_URL/bare-redirect-asset" "静态资源请求失败"
 
 INVALID_DIR="$TEST_ROOT/invalid-url"
 FAKE_BIN="$INVALID_DIR/bin"

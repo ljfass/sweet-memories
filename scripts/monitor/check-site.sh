@@ -104,11 +104,18 @@ ASSET_COUNT=0
 while IFS= read -r ASSET_URL || [[ -n "$ASSET_URL" ]]; do
   [[ -n "$ASSET_URL" ]] || continue
   ((ASSET_COUNT += 1))
-  if ! curl "${CURL_OPTIONS[@]}" \
-    --max-redirs 0 \
-    --fail \
-    --output /dev/null \
-    -- "$ASSET_URL"; then
+  ASSET_HTTP_CODE=""
+  if ! ASSET_HTTP_CODE="$(
+    curl "${CURL_OPTIONS[@]}" \
+      --max-redirs 0 \
+      --fail \
+      --output /dev/null \
+      --write-out '%{http_code}' \
+      -- "$ASSET_URL"
+  )"; then
+    ASSET_HTTP_CODE=""
+  fi
+  if [[ ! "$ASSET_HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
     printf '静态资源请求失败：%s\n' "$ASSET_URL" >&2
     exit 1
   fi
