@@ -1,0 +1,91 @@
+name: 生产站点 Lighthouse 检查
+
+on:
+  schedule:
+    - cron: '23 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sweet-memories-production-lighthouse
+  cancel-in-progress: false
+
+jobs:
+  lighthouse:
+    name: 检查移动端性能与页面质量
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MONITOR_URL: ${{ vars.MONITOR_URL }}
+    steps:
+      - name: 检出检查代码
+        id: checkout
+        timeout-minutes: 2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: 校验生产地址
+        id: validate-config
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${MONITOR_URL:?缺少仓库变量 MONITOR_URL}"
+          python3 scripts/monitor/extract-assets.py --validate-url "$MONITOR_URL"
+      - name: 安装 Node.js
+        id: setup-node
+        timeout-minutes: 3
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+      - name: 安装项目指定的 pnpm
+        id: install-pnpm
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global pnpm@8.6.1
+          test "$(pnpm --version)" = '8.6.1'
+      - name: 安装锁定依赖
+        id: install-dependencies
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+      - name: 采集三次移动端报告
+        id: collect
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec lhci collect --config=./lighthouserc.cjs
+      - name: 生成分数摘要
+        id: summarize
+        if: ${{ steps.collect.outcome == 'success' }}
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/lighthouse/summarize-reports.mjs .lighthouseci >> "$GITHUB_STEP_SUMMARY"
+      - name: 检查质量阈值
+        id: assert
+        if: ${{ steps.summarize.outcome == 'success' }}
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec lhci assert --config=./lighthouserc.cjs
+      - name: 上传 Lighthouse 报告
+        id: upload-report
+        if: ${{ always() && steps.collect.outcome != 'skipped' }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lighthouse-production-${{ github.run_id }}
+          path: |
+            .lighthouseci/*.html
+            .lighthouseci/*.json
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: true
