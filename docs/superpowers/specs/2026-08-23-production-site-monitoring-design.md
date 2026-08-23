@@ -46,10 +46,11 @@
 
 ### HTML 资源解析器
 
-新增小型 Python 3 辅助程序 `scripts/monitor/extract-assets.py`，仅负责将 HTML 和最终响应 URL 转换为经过校验的同源 JavaScript/CSS URL 列表。它使用 Python 标准库的 `html.parser.HTMLParser` 和 `urllib.parse` 解析 HTML、相对路径与同源关系，不引入第三方依赖。解析器不发起网络请求，也不决定重试策略。
+新增小型 Python 3 辅助程序 `scripts/monitor/extract-assets.py`，负责结构化验证 Vue 挂载点，并将 HTML 和最终响应 URL 转换为经过校验的同源 JavaScript/CSS URL 列表。它使用 Python 标准库的 `html.parser.HTMLParser` 和 `urllib.parse` 解析 HTML、相对路径与同源关系，不引入第三方依赖。解析器不发起网络请求，也不决定重试策略。
 
 解析器只选择：
 
+- `id` 准确等于 `app` 的 Vue 挂载元素；
 - 带 `src` 的模块脚本；
 - `rel` 包含 `stylesheet` 且带 `href` 的链接。
 
