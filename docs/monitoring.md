@@ -49,37 +49,39 @@ GitHub runner 每 30 分钟自动巡检一次生产站点，也支持随时手�
 
 ## GitHub 失败邮件通知
 
-GitHub 原生 Actions 邮件通知同时覆盖 `生产站点巡检` 和 `发布生产环境`。这是每个用户自己的 GitHub 通知设置，不是仓库 Variable、Secret 或 `production` Environment 配置；每位协作者都需要在自己的账户中单独配置。
+GitHub Actions 通知不是仓库级广播。启用邮件后，每位用户只会收到由自己触发的 workflow run 完成通知，不会收到其他协作者触发的全部运行通知。`生产站点巡检` 和 `发布生产环境` 都遵循这条规则：对本项目，手动触发和 Tag push 部署的通知接收人是触发该运行的用户；定时巡检按下文的 actor 规则确定。
+
+这是每个用户自己的 GitHub 通知设置，不是仓库 Variable、Secret 或 `production` Environment 配置。每位协作者单独配置，只决定自己能否收到属于自己的通知，并不代表可以订阅其他协作者触发的全部运行。
 
 生产站点持续失败时，每次定时运行都可能触发邮件，因此最多可能每 30 分钟收到一封失败邮件。邮件可能延迟，也可能被邮箱过滤；GitHub Actions 页面始终是运行状态的准确信息来源。
 
 ### 一次性配置
 
-1. 确认 GitHub 主邮箱已经验证、当前可以正常收信。
-2. 将这个仓库设置为 `Watching`。
-3. 打开 GitHub 个人设置中的 `Settings -> Notifications`。
+1. 打开 GitHub 个人 `Settings -> Notifications`。
+2. 在 `Default notifications email` 中选择一个已验证、当前可以正常收信的邮箱，然后保存。
+3. 在仓库页面选择 `Watch -> All Activity`。
 4. 在 `System -> Actions` 中选择 `Email`，然后保存。
 5. 完成下文的送达测试后，启用 `Only notify for failed workflows`，然后再次保存。
 
-对于定时运行，通知接收者是最初创建这个定时 workflow 的用户。某位用户修改 cron 后，未来定时运行的通知接收者会改为这位修改者。
+定时巡检的通知接收人遵循 actor 规则：默认是初始创建者；其他用户修改 cron 后，后续通知转给该 cron 修改者；定时 workflow 被禁用后重新启用，通知则转给重新启用者，而不是之前的 cron 修改者。
 
 ### 不制造故障的验证
 
 1. 开始验证时先不要选择 `Only notify for failed workflows`。
-2. 在 `main` 分支手动运行 `生产站点巡检`。
-3. 确认运行结果为绿色，并确认收到运行完成邮件。
+2. 使用准备验证收件的同一个 GitHub 用户，在 `main` 分支手动运行 `生产站点巡检`。
+3. 确认运行结果为绿色，并确认该触发者收到运行完成邮件。
 4. 启用 `Only notify for failed workflows` 并保存。
 5. 再手动运行一次绿色巡检；此时不要求收到成功邮件，后续失败运行会发送邮件通知。
 6. 不要为了测试而修改 `MONITOR_URL`、停止 Nginx 或破坏生产环境。
 
 ### 收不到邮件时
 
-1. 检查 GitHub 主邮箱是否已验证，并确认该邮箱仍可正常收信。
+1. 检查 `Settings -> Notifications` 中的 `Default notifications email` 是否选择了已验证且可正常收信的邮箱。
 2. 检查垃圾邮件、推广邮件等分类和邮箱过滤规则。
 3. 检查 `System -> Actions` 是否仍选择了 `Email`。
 4. 检查 `Only notify for failed workflows` 是否已保存。
-5. 检查仓库是否仍为 `Watching`。
-6. 对于定时运行，检查当前用户是否为定时 workflow 的创建者，或禁用后重新启用该 workflow 的用户；修改 cron 也会把未来通知接收者改为修改者。
+5. 检查仓库是否仍选择了 `Watch -> All Activity`。
+6. 对于手动触发或 Tag push，检查当前用户是否为该运行的触发者；对于定时巡检，检查当前用户是否为初始创建者、cron 修改者或重新启用者。
 
 GitHub 官方说明：
 
