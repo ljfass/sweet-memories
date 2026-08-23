@@ -3,11 +3,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
+const configPath = require.resolve('../../lighthouserc.cjs')
 const originalMonitorUrl = process.env.MONITOR_URL
 const hadMonitorUrl = Object.prototype.hasOwnProperty.call(process.env, 'MONITOR_URL')
 
 function loadConfig() {
-  const configPath = require.resolve('../../lighthouserc.cjs')
   delete require.cache[configPath]
   return require(configPath)
 }
@@ -18,6 +18,7 @@ afterEach(() => {
   } else {
     delete process.env.MONITOR_URL
   }
+  delete require.cache[configPath]
 })
 
 describe('Lighthouse CI configuration', () => {
