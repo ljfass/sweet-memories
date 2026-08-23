@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:deploy": "bash scripts/deploy/manage-release.test.sh",
+    "test:monitor": "python3 scripts/monitor/test_extract_assets.py && bash scripts/monitor/check-site.test.sh",
     "media:build": "node scripts/optimize-media.mjs",
     "media:verify": "node scripts/verify-media.mjs"
   },
