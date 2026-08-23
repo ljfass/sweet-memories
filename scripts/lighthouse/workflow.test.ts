@@ -77,6 +77,7 @@ describe('production Lighthouse workflow', () => {
     })
     expect(jobs.lighthouse.env).toEqual({ MONITOR_URL: '${{ vars.MONITOR_URL }}' })
     expect(jobs.lighthouse.environment).toBeUndefined()
+    expect(jobs.lighthouse).not.toHaveProperty('permissions')
     expect(JSON.stringify(workflow)).not.toMatch(/secrets\.|ALIYUN_/)
   })
 
@@ -132,6 +133,12 @@ describe('production Lighthouse workflow', () => {
 
   it('validates, collects, summarizes, and asserts in the required order', () => {
     const job = loadWorkflow().jobs?.lighthouse as WorkflowJob
+    const runSteps = job.steps?.filter((step) => typeof step.run === 'string') ?? []
+
+    expect(runSteps).toHaveLength(6)
+    for (const step of runSteps) {
+      expect(step.shell).toBe('bash')
+    }
 
     expect(stepById(job, 'validate-config')).toMatchObject({
       shell: 'bash',
