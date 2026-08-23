@@ -4,7 +4,7 @@
 
 ## 自动执行时间
 
-GitHub Actions 工作流名称为“生产站点 Lighthouse 检查”，其中的任务名称为“检查移动端性能与页面质量”。它每天在北京时间约 02:23 运行；GitHub 的计划任务可能延迟，因此该时间不是精确的开始承诺。
+GitHub Actions 工作流名称为“生产站点 Lighthouse 检查”，其中的任务名称为“检查移动端性能与页面质量”。计划 `23 18 * * *` 的含义是 18:23 UTC = 次日北京时间约 02:23。GitHub 的计划任务可能延迟，因此该时间不是精确的开始承诺。
 
 工作流复用仓库 Variable `MONITOR_URL` 作为检查地址，无需新增任何凭据或敏感设置。不要修改 `MONITOR_URL` 来制造失败；它必须保持为当前生产检查地址。
 
@@ -32,25 +32,29 @@ GitHub Actions 工作流名称为“生产站点 Lighthouse 检查”，其中�
 
 ## 查看分数和报告
 
-先打开该次运行的 Summary 查看分数摘要；再打开 Artifacts 下载名称以 `lighthouse-production-` 开头的报告。报告同时包含 HTML 和 JSON：HTML 适合在浏览器中阅读，JSON 用于查看原始数据。
+当“采集三次移动端报告”和“生成分数摘要”都成功后，才会有 Summary 分数摘要。只有采集产生了报告文件并且“上传 Lighthouse 报告”成功后，才会有 Artifacts 可下载；较早的校验、安装或采集失败时，可能没有 Summary 或 Artifact。
 
-Artifact 保留 14 天。报告只保留在 GitHub Artifact 内，不会上传至任何面向公众的临时存储，也不会公开暴露报告链接。
+有报告时，在 Artifacts 下载名称以 `lighthouse-production-` 开头的文件。报告同时包含 HTML 和 JSON：HTML 适合在浏览器中阅读，JSON 用于查看原始数据。Artifact 保留 14 天，访问权限遵循仓库权限；报告不上传到 Lighthouse 的公开临时存储。
 
 ## 检查失败怎么办
 
-先查看 Summary，再下载对应报告确认失败分类和具体条目。常见原因包括：
+先打开 Actions 中该次运行，查看第一个红色步骤及其日志；不要先假设 Summary 或 Artifact 一定存在。按步骤判断：
 
-- 页面或其资源暂时不可用。
-- 图片、视频或 JavaScript 让移动端性能下降。
-- 可访问性、SEO 或最佳实践存在页面问题。
-- 当前使用 HTTP 地址，可能降低最佳实践分数。
-- Chrome、依赖安装或 Artifact 上传出现短暂异常。
+- 检出检查代码：查看检出日志和 GitHub Actions 的暂时性错误。
+- 校验生产地址：检查仓库 Variable `MONITOR_URL` 和地址校验日志；不要修改变量来制造失败。
+- 安装 Node.js、安装项目指定的 pnpm、安装锁定依赖：查看工具或依赖日志；仅在确认是短暂问题后重新运行。
+- 采集三次移动端报告：检查生产页面可达性、Chrome 日志和页面加载情况。
+- 生成分数摘要：表示报告可能缺失或格式不正确，查看该步骤日志。
+- 检查质量阈值：此时 Summary 和 Artifact 都可用，查看未通过的分类；图片、视频或 JavaScript 可能降低移动端性能，可访问性、SEO 或最佳实践也可能有页面问题。当前 HTTP 地址可能降低最佳实践分数。
+- 上传 Lighthouse 报告：分数可能已经存在但 Artifact 不可用，查看上传日志。
 
 红色结果不会阻止发布，也不会重启、回滚或更改站点。不要降低阈值，不要关闭检查，不要修改 `MONITOR_URL`，不要停止 Nginx，也不要对生产环境做破坏性操作。确认原因后，修复相应的页面或资源问题，等待下一次检查或在远程 `main` 上手动重新运行。
 
 ## 失败邮件
 
-已有个人通知设置“Only notify for failed workflows”时，只会为失败的工作流发送通知。手动运行的通知归触发该运行的用户；计划运行则遵循 GitHub 对计划工作流的收件人和执行者规则。邮件可能延迟，Actions 中的运行状态才是最终依据。
+GitHub Actions 通知不是仓库级广播，每位用户自行配置个人通知。`Only notify for failed workflows` 只是筛选条件；要收到邮件，用户还必须在 `Settings -> Notifications` 选择可正常收信的 `Default notifications email`，在仓库选择 `Watch -> All Activity`，并在 `System -> Actions` 选择 `Email`。
+
+手动运行的通知归触发该运行的用户。计划运行的 actor 默认是初始创建者；最近一次 cron 修改者会成为后续运行的 actor；定时工作流被禁用后重新启用时，重新启用者会成为 actor。更详细的个人设置和送达排查见[监控与通知说明](monitoring.md#github-失败邮件通知)。邮件可能延迟，Actions 中的运行状态才是最终依据。
 
 ## 本地验证
 
