@@ -58,14 +58,15 @@ export async function loadReports(reportDirectory) {
   return reports
 }
 
+async function main(reportDirectory) {
+  const reports = await loadReports(reportDirectory)
+  process.stdout.write(summarizeReports(reports))
+}
+
 const invokedFile = process.argv[1]
 
 if (invokedFile && import.meta.url === pathToFileURL(resolve(invokedFile)).href) {
-  const reportDirectory = '.lighthouseci'
-
-  loadReports(reportDirectory)
-    .then(summarizeReports)
-    .then((summary) => process.stdout.write(summary))
+  main(process.argv[2] ?? '.lighthouseci')
     .catch((error) => {
       process.stderr.write(`Lighthouse 摘要失败：${error.message}\n`)
       process.exitCode = 1

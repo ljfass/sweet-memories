@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { loadReports, summarizeReports } from './summarize-reports.mjs'
 
 const temporaryDirectories: string[] = []
+const execFileAsync = promisify(execFile)
 
 function report(scores: Record<string, number> = {}) {
   return {
@@ -98,5 +101,22 @@ describe('Lighthouse report summarizer', () => {
     ])
 
     await expect(loadReports(directory)).rejects.toThrow('LHR 报告无法解析：lhr-2.json')
+  })
+
+  it('uses the direct invocation report directory argument', async () => {
+    const directory = await createTemporaryDirectory()
+    await Promise.all([
+      writeFile(join(directory, 'lhr-1.json'), JSON.stringify(report({ performance: 0.71 }))),
+      writeFile(join(directory, 'lhr-2.json'), JSON.stringify(report({ performance: 0.72 }))),
+      writeFile(join(directory, 'lhr-3.json'), JSON.stringify(report({ performance: 0.73 }))),
+    ])
+
+    const { stderr, stdout } = await execFileAsync(process.execPath, [
+      join(process.cwd(), 'scripts/lighthouse/summarize-reports.mjs'),
+      directory,
+    ])
+
+    expect(stderr).toBe('')
+    expect(stdout).toContain('| 性能 | 70 | 72 | 通过 |')
   })
 })
