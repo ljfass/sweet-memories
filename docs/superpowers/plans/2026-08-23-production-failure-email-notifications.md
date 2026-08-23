@@ -60,7 +60,15 @@ required=(
   'Only notify for failed workflows'
   '发布生产环境'
   '每 30 分钟收到一封失败邮件'
-  'GitHub 主邮箱是否已验证'
+  '不是仓库级广播'
+  'Tag push'
+  'Default notifications email'
+  'Watch -> All Activity'
+  '只会收到由自己触发的 workflow run 完成通知'
+  '触发该运行的用户'
+  '初始创建者'
+  'cron 修改者'
+  '重新启用者'
 )
 
 for text in "${required[@]}"; do
@@ -74,6 +82,13 @@ if grep -F -- '不表示 GitHub 会发送邮件或微信通知' "$DOC" >/dev/nul
   echo 'obsolete no-email statement remains' >&2
   exit 1
 fi
+
+for obsolete in 'GitHub 主邮箱' '设置为 `Watching`'; do
+  if grep -F -- "$obsolete" "$DOC" >/dev/null; then
+    echo "obsolete notification setup text remains: $obsolete" >&2
+    exit 1
+  fi
+done
 BASH
 ```
 
@@ -94,46 +109,48 @@ In `docs/monitoring.md`, replace:
 with the following content, immediately before the existing `## 本地验证` heading:
 
 ```markdown
-巡检不会自动重启、回滚或修改服务器，也不发送微信通知。完成下方个人通知设置后，失败邮件由 GitHub 原生 Actions 通知服务发送。
+巡检本身不会自动重启、回滚或修改服务器，也不会发送微信通知；完成下面的个人设置后，失败邮件由 GitHub 原生 Actions 通知发送。
 
 ## GitHub 失败邮件通知
 
-GitHub 原生 Actions 邮件同时覆盖“生产站点巡检”和“发布生产环境”。这是 GitHub 用户的个人通知设置，不是仓库 Variable、Secret 或 `production` Environment 配置；其他协作者如需邮件，也要在自己的账户中单独设置。
+GitHub Actions 通知不是仓库级广播。启用邮件后，每位用户只会收到由自己触发的 workflow run 完成通知，不会收到其他协作者触发的全部运行通知。`生产站点巡检` 和 `发布生产环境` 都遵循这条规则：对本项目，手动触发和 Tag push 部署的通知接收人是触发该运行的用户；定时巡检按下文的 actor 规则确定。
 
-定时巡检持续失败时，每次运行都可能发送通知，因此最多可能每 30 分钟收到一封失败邮件。邮件可能延迟或被邮箱分类，故障状态仍以仓库 `Actions` 页面为准。
+这是每个用户自己的 GitHub 通知设置，不是仓库 Variable、Secret 或 `production` Environment 配置。每位协作者单独配置，只决定自己能否收到属于自己的通知，并不代表可以订阅其他协作者触发的全部运行。
+
+生产站点持续失败时，每次定时运行都可能触发邮件，因此最多可能每 30 分钟收到一封失败邮件。邮件可能延迟，也可能被邮箱过滤；GitHub Actions 页面始终是运行状态的准确信息来源。
 
 ### 一次性配置
 
-1. 确认 GitHub 主邮箱已经验证并且可以正常收信。
-2. 在仓库页面确认当前仓库处于 `Watching` 状态。
-3. 打开 GitHub 个人 `Settings -> Notifications`。
-4. 找到 `System -> Actions`，选择 `Email` 并保存。
-5. 完成下方邮件通道验证后，在同一位置启用 `Only notify for failed workflows`，再次保存。
+1. 打开 GitHub 个人 `Settings -> Notifications`。
+2. 在 `Default notifications email` 中选择一个已验证、当前可以正常收信的邮箱，然后保存。
+3. 在仓库页面选择 `Watch -> All Activity`。
+4. 在 `System -> Actions` 中选择 `Email`，然后保存。
+5. 完成下文的送达测试后，启用 `Only notify for failed workflows`，然后再次保存。
 
-定时 workflow 的通知发送给最初创建该定时 workflow 的用户；如果其他用户修改 `schedule` 的 cron 表达式，后续通知接收人会变为该用户。
+定时巡检的通知接收人遵循 actor 规则：默认是初始创建者；其他用户修改 cron 后，后续通知转给该 cron 修改者；定时 workflow 被禁用后重新启用，通知则转给重新启用者，而不是之前的 cron 修改者。
 
 ### 不制造故障的验证
 
-1. 首次配置时先不要启用 `Only notify for failed workflows`。
-2. 在 `main` 上手动运行一次“生产站点巡检”。
-3. 等待作业成功，确认 GitHub 绑定邮箱收到包含运行状态的邮件。
-4. 回到通知设置，启用 `Only notify for failed workflows` 并保存。
-5. 再手动运行一次成功巡检；成功运行不要求发送邮件，今后的失败运行才会发送。
-
-验证过程不要修改 `MONITOR_URL`，不要停止 Nginx，也不要故意破坏生产站点。
+1. 开始验证时先不要选择 `Only notify for failed workflows`。
+2. 使用准备验证收件的同一个 GitHub 用户，在 `main` 分支手动运行 `生产站点巡检`。
+3. 确认运行结果为绿色，并确认该触发者收到运行完成邮件。
+4. 启用 `Only notify for failed workflows` 并保存。
+5. 再手动运行一次绿色巡检；此时不要求收到成功邮件，后续失败运行会发送邮件通知。
+6. 不要为了测试而修改 `MONITOR_URL`、停止 Nginx 或破坏生产环境。
 
 ### 收不到邮件时
 
-按以下顺序检查：
+1. 检查 `Settings -> Notifications` 中的 `Default notifications email` 是否选择了已验证且可正常收信的邮箱。
+2. 检查垃圾邮件、推广邮件等分类和邮箱过滤规则。
+3. 检查 `System -> Actions` 是否仍选择了 `Email`。
+4. 检查 `Only notify for failed workflows` 是否已保存。
+5. 检查仓库是否仍选择了 `Watch -> All Activity`。
+6. 对于手动触发或 Tag push，检查当前用户是否为该运行的触发者；对于定时巡检，检查当前用户是否为初始创建者、cron 修改者或重新启用者。
 
-1. GitHub 主邮箱是否已验证；
-2. 邮箱垃圾邮件或自动分类目录；
-3. `Settings -> Notifications -> System -> Actions` 是否选择了 `Email`；
-4. `Only notify for failed workflows` 是否已保存；
-5. 仓库是否处于 `Watching` 状态；
-6. 当前用户是否为定时 workflow 的创建者或最近重新启用者。
+GitHub 官方说明：
 
-GitHub 官方说明：[管理 Actions 通知](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications)和[工作流运行通知](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs)。
+- [管理 GitHub Actions 通知](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications)
+- [工作流运行通知](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs)
 ```
 
 Do not change the failure-message table or the local validation commands.
@@ -154,7 +171,15 @@ required=(
   'Only notify for failed workflows'
   '发布生产环境'
   '每 30 分钟收到一封失败邮件'
-  'GitHub 主邮箱是否已验证'
+  '不是仓库级广播'
+  'Tag push'
+  'Default notifications email'
+  'Watch -> All Activity'
+  '只会收到由自己触发的 workflow run 完成通知'
+  '触发该运行的用户'
+  '初始创建者'
+  'cron 修改者'
+  '重新启用者'
 )
 
 for text in "${required[@]}"; do
@@ -168,6 +193,13 @@ if grep -F -- '不表示 GitHub 会发送邮件或微信通知' "$DOC" >/dev/nul
   echo 'obsolete no-email statement remains' >&2
   exit 1
 fi
+
+for obsolete in 'GitHub 主邮箱' '设置为 `Watching`'; do
+  if grep -F -- "$obsolete" "$DOC" >/dev/null; then
+    echo "obsolete notification setup text remains: $obsolete" >&2
+    exit 1
+  fi
+done
 
 for forbidden in MAIL_PASSWORD SMTP_PASSWORD WEBHOOK_URL; do
   if grep -F -- "$forbidden" "$DOC" >/dev/null; then
@@ -259,6 +291,8 @@ Expected:
 Run:
 
 ```bash
+set -euo pipefail
+
 git diff --check
 
 test -z "$(git diff --name-only 90c193e..HEAD -- \
@@ -266,9 +300,9 @@ test -z "$(git diff --name-only 90c193e..HEAD -- \
 
 for required in \
   'Only notify for failed workflows' \
-  '不发送微信通知' \
-  '不要修改 `MONITOR_URL`' \
-  '不要停止 Nginx'; do
+  '不会发送微信通知' \
+  '不要为了测试而修改 `MONITOR_URL`' \
+  '停止 Nginx 或破坏生产环境'; do
   grep -F -- "$required" docs/monitoring.md >/dev/null
 done
 
@@ -287,14 +321,16 @@ Expected:
 These steps change the user's GitHub account and must not be represented as repository automation:
 
 1. Merge the feature branch to `main` and push `main` to GitHub.
-2. Confirm the repository is `Watching`.
-3. Open GitHub personal `Settings -> Notifications`.
+2. Open GitHub personal `Settings -> Notifications`; under `Default notifications email`, select a verified address that can receive mail and save.
+3. On the repository page, select `Watch -> All Activity`.
 4. Under `System -> Actions`, select `Email`; initially leave failure-only filtering disabled and save.
-5. Manually run `Actions -> 生产站点巡检` on `main`.
-6. Wait for the green run and confirm the GitHub account email receives the completion message.
+5. Using the same GitHub user that should receive the test message, manually run `Actions -> 生产站点巡检` on `main`.
+6. Wait for the green run and confirm that triggering user receives the completion message.
 7. Return to `Settings -> Notifications -> System -> Actions`.
 8. Enable `Only notify for failed workflows` and save.
 9. Optionally run one more successful monitor to confirm no failure notification is expected.
 10. Do not change `MONITOR_URL`, GitHub Secrets, the `production` Environment, Nginx, or server files during validation.
+
+Actions notifications are not repository-wide broadcasts. For manual runs and Tag push deployments, only the user who triggers that workflow run receives its completion notification. Scheduled monitor notifications go to the initial creator, then a cron modifier, or the user who re-enables the workflow according to GitHub's actor rules.
 
 The final state accepts repeated failure emails: if the site remains unhealthy, each failed 30-minute scheduled run may send another message.
