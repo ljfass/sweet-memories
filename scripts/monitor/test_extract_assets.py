@@ -132,6 +132,134 @@ class ExtractAssetsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Vue 挂载点", result.stderr)
 
+    def test_duplicate_mount_attributes_keep_the_first_value(self) -> None:
+        cases = (
+            ('<div id="app" id="other"></div>', True),
+            ('<div id="other" id="app"></div>', False),
+        )
+        for mount, should_succeed in cases:
+            with self.subTest(mount=mount):
+                result = self.run_extract(
+                    "https://example.com/",
+                    f"""<!doctype html>
+<html><head>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head><body>{mount}</body></html>
+""",
+                )
+                if should_succeed:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Vue 挂载点", result.stderr)
+
+    def test_duplicate_asset_attributes_keep_the_first_values(self) -> None:
+        result = self.run_extract(
+            "https://example.com/",
+            """<!doctype html>
+<html><head>
+  <link rel="stylesheet" rel="preload"
+        href="/first.css" href="/last.css">
+  <script type="module" type="text/javascript"
+          src="/first.js" src="/last.js"></script>
+</head><body><div id="app"></div></body></html>
+""",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "https://example.com/first.css",
+                "https://example.com/first.js",
+            ],
+        )
+
+    def test_rejects_backslashes_in_page_and_asset_urls(self) -> None:
+        page_result = self.run_validate("https://example.com/path\\file")
+        self.assertNotEqual(page_result.returncode, 0)
+        self.assertIn("URL 无效", page_result.stderr)
+
+        asset_result = self.run_extract(
+            "https://example.com/",
+            """<!doctype html>
+<html><head>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="assets\\app.js"></script>
+</head><body><div id="app"></div></body></html>
+""",
+        )
+        self.assertNotEqual(asset_result.returncode, 0)
+        self.assertIn("同源 HTTP(S) URL", asset_result.stderr)
+
+    def test_rejects_base_href_but_allows_base_target(self) -> None:
+        with_href = self.run_extract(
+            "https://example.com/nested/index.html",
+            """<!doctype html>
+<html><head>
+  <base href="/other/">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head><body><div id="app"></div></body></html>
+""",
+        )
+        self.assertNotEqual(with_href.returncode, 0)
+        self.assertIn("base href", with_href.stderr)
+
+        target_only = self.run_extract(
+            "https://example.com/nested/index.html",
+            """<!doctype html>
+<html><head>
+  <base target="_blank">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head><body><div id="app"></div></body></html>
+""",
+        )
+        self.assertEqual(target_only.returncode, 0, target_only.stderr)
+
+    def test_rejects_and_escapes_raw_url_controls(self) -> None:
+        for control, escaped in (("\x1b", "\\x1b"), ("\x7f", "\\x7f")):
+            with self.subTest(location="page", control=escaped):
+                result = self.run_validate(
+                    f"https://example.com/unsafe{control}path"
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("URL 无效", result.stderr)
+                self.assertNotIn(control, result.stderr)
+
+            with self.subTest(location="asset", control=escaped):
+                result = self.run_extract(
+                    "https://example.com/",
+                    f"""<!doctype html>
+<html><head>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/unsafe{control}app.js"></script>
+</head><body><div id="app"></div></body></html>
+""",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("同源 HTTP(S) URL", result.stderr)
+                self.assertNotIn(control, result.stderr)
+                self.assertIn(escaped, result.stderr)
+
+    def test_bounds_long_external_values_in_errors(self) -> None:
+        source = "data:text/javascript," + ("x" * 5000)
+        result = self.run_extract(
+            "https://example.com/",
+            f"""<!doctype html>
+<html><head>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="{source}"></script>
+</head><body><div id="app"></div></body></html>
+""",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("同源 HTTP(S) URL", result.stderr)
+        self.assertLess(len(result.stderr), 400)
+
 
 if __name__ == "__main__":
     unittest.main()

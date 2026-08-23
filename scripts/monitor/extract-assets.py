@@ -11,9 +11,25 @@ class MonitorInputError(ValueError):
     pass
 
 
+def _has_c0_or_del(value: str) -> bool:
+    return any(
+        ord(character) < 0x20 or ord(character) == 0x7F
+        for character in value
+    )
+
+
+def _format_external_value(value: str, limit: int = 160) -> str:
+    escaped = value.encode("unicode_escape").decode("ascii")
+    if len(escaped) <= limit:
+        return escaped
+    return escaped[: limit - 3] + "..."
+
+
 def validate_page_url(value: str) -> SplitResult:
     if not value or any(character.isspace() for character in value):
         raise MonitorInputError("URL 无效：地址为空或包含空白字符。")
+    if "\\" in value or _has_c0_or_del(value):
+        raise MonitorInputError("URL 无效：地址包含反斜杠或控制字符。")
 
     try:
         parsed = urlsplit(value)
@@ -43,15 +59,21 @@ class AssetParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.has_app_mount = False
+        self.has_base_href = False
         self.module_sources: List[str] = []
         self.stylesheet_sources: List[str] = []
 
     def handle_starttag(
         self, tag: str, attributes: List[Tuple[str, Optional[str]]]
     ) -> None:
-        values = {name.lower(): value for name, value in attributes}
+        values = {}
+        for name, value in attributes:
+            values.setdefault(name.lower(), value)
+
         if values.get("id") == "app":
             self.has_app_mount = True
+        if tag.lower() == "base" and "href" in values:
+            self.has_base_href = True
 
         if tag.lower() == "script":
             script_type = (values.get("type") or "").strip().lower()
@@ -74,17 +96,26 @@ def resolve_asset(
 ) -> str:
     if any(character.isspace() for character in value):
         raise MonitorInputError("资源不是同源 HTTP(S) URL：包含空白字符。")
+    if "\\" in value or _has_c0_or_del(value):
+        raise MonitorInputError(
+            "资源不是同源 HTTP(S) URL："
+            f"{_format_external_value(value)}"
+        )
 
     try:
         resolved, _fragment = urldefrag(urljoin(page_url, value))
         parsed = validate_page_url(resolved)
     except (UnicodeError, ValueError) as error:
         raise MonitorInputError(
-            f"资源不是同源 HTTP(S) URL：{value}"
+            "资源不是同源 HTTP(S) URL："
+            f"{_format_external_value(value)}"
         ) from error
 
     if origin(parsed) != page_origin:
-        raise MonitorInputError(f"资源不是同源 HTTP(S) URL：{resolved}")
+        raise MonitorInputError(
+            "资源不是同源 HTTP(S) URL："
+            f"{_format_external_value(resolved)}"
+        )
     return resolved
 
 
@@ -94,6 +125,10 @@ def extract_assets(page_url: str, html_path: Path) -> List[str]:
     parser.feed(html_path.read_text(encoding="utf-8"))
     parser.close()
 
+    if parser.has_base_href:
+        raise MonitorInputError(
+            "HTML 包含 base href，无法按浏览器语义安全解析资源。"
+        )
     if not parser.has_app_mount:
         raise MonitorInputError('HTML 缺少 Vue 挂载点 id="app"。')
     if not parser.module_sources:
