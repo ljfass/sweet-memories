@@ -65,6 +65,8 @@ describe('production Lighthouse guide', () => {
     expect(guide).toContain('不要停止 Nginx')
     expect(guide).toContain('第一个红色步骤')
     expect(guide).toContain('可能没有 Summary 或 Artifact')
+    expect(guide).toContain('Summary 已可查看；Artifact 仍需等待后续上传成功')
+    expect(guide).not.toContain('Summary 和 Artifact 都可用')
     for (const step of job.steps) {
       expect(guide).toContain(step.name)
     }
