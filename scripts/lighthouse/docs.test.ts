@@ -21,6 +21,48 @@ function bashCodeBlocks(guide: string) {
   return Array.from(guide.matchAll(/^```bash\n([\s\S]*?)^```/gm), (match) => match[1]).join('\n')
 }
 
+function scoreTableRows(guide: string) {
+  const heading = '## 分数要求'
+  const sectionStart = guide.indexOf(heading)
+  if (sectionStart === -1) return []
+
+  const sectionEnd = guide.indexOf('\n## ', sectionStart + heading.length)
+  const section = guide.slice(sectionStart + heading.length, sectionEnd === -1 ? guide.length : sectionEnd)
+  const rows: string[][] = []
+  let tableStarted = false
+
+  for (const line of section.split('\n')) {
+    const trimmedLine = line.trim()
+    if (trimmedLine.startsWith('|') && trimmedLine.endsWith('|')) {
+      tableStarted = true
+      rows.push(
+        trimmedLine
+          .slice(1, -1)
+          .split('|')
+          .map((cell) => cell.trim()),
+      )
+    } else if (tableStarted) {
+      break
+    }
+  }
+
+  return rows
+}
+
+function expectedScoreTableRows() {
+  return [
+    ['分类', '目标分', '低于目标时'],
+    ['---', '---:', '---'],
+    ...thresholds.map(
+      (threshold: { assertionLevel: string; label: string; minScore: number }) => [
+        threshold.label,
+        String(Math.round(threshold.minScore * 100)),
+        threshold.assertionLevel === 'warn' ? '提示' : '强制',
+      ],
+    ),
+  ]
+}
+
 describe('production Lighthouse guide', () => {
   it('documents the workflow, schedule, thresholds, reports, and local contract', () => {
     const guide = loadGuide()
@@ -53,17 +95,25 @@ describe('production Lighthouse guide', () => {
       '`Disallow: /`',
       '`noindex`',
       '最佳实践仍是强制项',
+      '只请求遵守 robots.txt 的爬虫不要抓取页面',
+      '只有在爬虫实际抓取页面并读取到指令后才会生效',
+      '即使 robots.txt 阻止抓取，它仍可能出现在搜索结果中',
+      '要保证隐私，必须使用身份验证或网络访问控制，本项目当前未启用这些限制',
     ]) {
       expect(guide).toContain(requiredText)
     }
 
     expect(workflow.on.schedule).toHaveLength(1)
-    for (const threshold of thresholds) {
-      const resultType = threshold.assertionLevel === 'warn' ? '提示' : '强制'
-      expect(guide).toContain(
-        `| ${threshold.label} | ${Math.round(threshold.minScore * 100)} | ${resultType} |`,
-      )
-    }
+    expect(scoreTableRows(guide)).toEqual(expectedScoreTableRows())
+  })
+
+  it('rejects extra, stale, or duplicate score categories', () => {
+    const guideWithStaleRow = loadGuide().replace(
+      '| SEO | 90 | 提示 |',
+      '| SEO | 90 | 提示 |\n| 已停用分类 | 100 | 强制 |',
+    )
+
+    expect(scoreTableRows(guideWithStaleRow)).not.toEqual(expectedScoreTableRows())
   })
 
   it('keeps beginner operations read-only and free from unsafe instructions', () => {
