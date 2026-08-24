@@ -42,7 +42,7 @@ describe('Lighthouse report summarizer', () => {
     expect(summary).toBe([
       '## Lighthouse 移动端质量检查',
       '',
-      '| 分类 | 最低分 | 三次中位数 | 结果 |',
+      '| 分类 | 目标分 | 三次中位数 | 结果 |',
       '| --- | ---: | ---: | --- |',
       '| 性能 | 70 | 72 | 通过 |',
       '| 可访问性 | 90 | 91 | 通过 |',
@@ -61,6 +61,27 @@ describe('Lighthouse report summarizer', () => {
 
     expect(summary).toContain('| 性能 | 70 | 70 | 通过 |')
     expect(summary).not.toContain('未通过')
+  })
+
+  it('renders a below-target SEO median as an advisory result', () => {
+    const summary = summarizeReports([
+      report({ seo: 0.8 }),
+      report({ seo: 0.83 }),
+      report({ seo: 0.86 }),
+    ])
+
+    expect(summary).toContain('| SEO | 90 | 83 | 提示 |')
+    expect(summary).not.toContain('未通过')
+  })
+
+  it('keeps a below-target required category as a failure result', () => {
+    const summary = summarizeReports([
+      report({ 'best-practices': 0.77 }),
+      report({ 'best-practices': 0.79 }),
+      report({ 'best-practices': 0.81 }),
+    ])
+
+    expect(summary).toContain('| 最佳实践 | 90 | 79 | 未通过 |')
   })
 
   it('requires exactly three reports', () => {

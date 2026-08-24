@@ -23,7 +23,11 @@ export function summarizeReports(reports) {
     const median = scores[1]
     const minimum = Math.round(threshold.minScore * 100)
     const medianPercent = Math.round(median * 100)
-    const result = median >= threshold.minScore ? '通过' : '未通过'
+    const result = median >= threshold.minScore
+      ? '通过'
+      : threshold.assertionLevel === 'warn'
+        ? '提示'
+        : '未通过'
 
     return `| ${threshold.label} | ${minimum} | ${medianPercent} | ${result} |`
   })
@@ -31,7 +35,7 @@ export function summarizeReports(reports) {
   return [
     '## Lighthouse 移动端质量检查',
     '',
-    '| 分类 | 最低分 | 三次中位数 | 结果 |',
+    '| 分类 | 目标分 | 三次中位数 | 结果 |',
     '| --- | ---: | ---: | --- |',
     ...rows,
     '',

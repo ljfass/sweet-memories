@@ -34,7 +34,7 @@ describe('Lighthouse CI configuration', () => {
     })
   })
 
-  it('asserts median category thresholds without an upload target', () => {
+  it('asserts required categories as errors and private SEO as a median warning', () => {
     process.env.MONITOR_URL = 'http://8.163.27.231'
 
     const { ci } = loadConfig()
@@ -43,7 +43,7 @@ describe('Lighthouse CI configuration', () => {
       'categories:performance': ['error', { aggregationMethod: 'median', minScore: 0.7 }],
       'categories:accessibility': ['error', { aggregationMethod: 'median', minScore: 0.9 }],
       'categories:best-practices': ['error', { aggregationMethod: 'median', minScore: 0.9 }],
-      'categories:seo': ['error', { aggregationMethod: 'median', minScore: 0.9 }],
+      'categories:seo': ['warn', { aggregationMethod: 'median', minScore: 0.9 }],
     })
     expect(ci).not.toHaveProperty('upload')
   })

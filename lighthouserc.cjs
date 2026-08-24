@@ -20,9 +20,9 @@ module.exports = {
     },
     assert: {
       assertions: Object.fromEntries(
-        thresholds.map(({ id, minScore }) => [
+        thresholds.map(({ id, minScore, assertionLevel }) => [
           `categories:${id}`,
-          ['error', { aggregationMethod: 'median', minScore }],
+          [assertionLevel, { aggregationMethod: 'median', minScore }],
         ]),
       ),
     },
