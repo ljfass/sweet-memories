@@ -15,22 +15,31 @@ const expectedRobotsMeta = 'noindex, nofollow, noarchive, nosnippet, noimageinde
 const expectedRobotsFile = 'User-agent: *\nDisallow: /\n'
 const temporaryDirectories: string[] = []
 
-function parseHtml(html: string) {
-  const window = new Window({ url: 'http://example.test/' })
-  window.document.write(html)
-  window.document.close()
-  return window.document
-}
-
 function expectSearchMetadata(html: string) {
-  const document = parseHtml(html)
-  const descriptions = document.querySelectorAll('meta[name="description"]')
-  const robots = document.querySelectorAll('meta[name="robots"]')
+  const window = new Window({ url: 'http://example.test/' })
 
-  expect(descriptions).toHaveLength(1)
-  expect(descriptions[0]?.getAttribute('content')).toBe(expectedDescription)
-  expect(robots).toHaveLength(1)
-  expect(robots[0]?.getAttribute('content')).toBe(expectedRobotsMeta)
+  try {
+    const { document } = window
+    document.write(html)
+    document.close()
+
+    const namedMetadata = [...document.querySelectorAll('meta[name]')]
+    const descriptions = namedMetadata.filter(
+      (meta) => meta.getAttribute('name')?.toLowerCase() === 'description',
+    )
+    const robots = namedMetadata.filter(
+      (meta) => meta.getAttribute('name')?.toLowerCase() === 'robots',
+    )
+
+    expect(descriptions).toHaveLength(1)
+    expect(descriptions[0]?.parentElement).toBe(document.head)
+    expect(descriptions[0]?.getAttribute('content')).toBe(expectedDescription)
+    expect(robots).toHaveLength(1)
+    expect(robots[0]?.parentElement).toBe(document.head)
+    expect(robots[0]?.getAttribute('content')).toBe(expectedRobotsMeta)
+  } finally {
+    window.close()
+  }
 }
 
 afterEach(async () => {
@@ -42,6 +51,40 @@ afterEach(async () => {
 })
 
 describe('search indexing privacy policy', () => {
+  it('rejects required search metadata outside the document head', () => {
+    expect(() =>
+      expectSearchMetadata(`
+        <!doctype html>
+        <html>
+          <head><title>Private album</title></head>
+          <body>
+            <meta name="description" content="${expectedDescription}" />
+            <meta name="robots" content="${expectedRobotsMeta}" />
+          </body>
+        </html>
+      `),
+    ).toThrow()
+  })
+
+  it.each([
+    ['DESCRIPTION', expectedDescription],
+    ['ROBOTS', expectedRobotsMeta],
+  ])('rejects a mixed-case duplicate %s metadata name', (name, content) => {
+    expect(() =>
+      expectSearchMetadata(`
+        <!doctype html>
+        <html>
+          <head>
+            <meta name="description" content="${expectedDescription}" />
+            <meta name="robots" content="${expectedRobotsMeta}" />
+            <meta name="${name}" content="${content}" />
+          </head>
+          <body></body>
+        </html>
+      `),
+    ).toThrow()
+  })
+
   it('declares the exact privacy-first metadata in the source HTML', async () => {
     expectSearchMetadata(await readFile(sourceIndexPath, 'utf8'))
   })
