@@ -45,13 +45,24 @@ describe('production Lighthouse guide', () => {
       'Only notify for failed workflows',
       'pnpm test:lighthouse',
       '不会访问生产站点',
+      'SEO 低于 90 分只显示提示',
+      '不会单独让工作流变红',
+      '不是密码保护或访问控制',
+      '知道地址的任何人仍然可以访问',
+      '`User-agent: *`',
+      '`Disallow: /`',
+      '`noindex`',
+      '最佳实践仍是强制项',
     ]) {
       expect(guide).toContain(requiredText)
     }
 
     expect(workflow.on.schedule).toHaveLength(1)
     for (const threshold of thresholds) {
-      expect(guide).toContain(`| ${threshold.label} | ${Math.round(threshold.minScore * 100)} |`)
+      const resultType = threshold.assertionLevel === 'warn' ? '提示' : '强制'
+      expect(guide).toContain(
+        `| ${threshold.label} | ${Math.round(threshold.minScore * 100)} | ${resultType} |`,
+      )
     }
   })
 
