@@ -8,6 +8,9 @@ import { inspectHeif, type HeifDimensions } from './heif-tools.js';
 
 export const MAX_IMAGE_PIXELS = 60_000_000;
 const MAX_FTYP_BOX_BYTES = 4096;
+const MAX_HEIF_INSPECTION_BYTES = 10 * 1024 * 1024;
+const MAX_BMFF_BOXES = 1024;
+const MAX_BMFF_DEPTH = 8;
 
 export type SupportedImageKind = 'heic' | 'heif' | 'jpeg' | 'png' | 'webp';
 export type InputInspectionErrorCode =
@@ -156,49 +159,278 @@ function readPrintableBrand(box: Buffer, offset: number): string {
   return box.toString('ascii', offset, offset + 4);
 }
 
-async function validateHeifFileTypeBox(
-  inputPath: string,
+interface BmffBox {
+  readonly end: number;
+  readonly payloadStart: number;
+  readonly start: number;
+  readonly type: string;
+}
+
+interface BmffInspectionState {
+  boxCount: number;
+  hasHevcConfig: boolean;
+  hasHevcItem: boolean;
+  metadataBoxCount: number;
+}
+
+function assertBmffDepth(depth: number): void {
+  if (depth > MAX_BMFF_DEPTH) {
+    throw unsupportedHeifContainer();
+  }
+}
+
+function parseBmffBox(
+  buffer: Buffer,
+  offset: number,
+  parentEnd: number,
+  state: BmffInspectionState,
+): BmffBox {
+  if (offset < 0 || parentEnd > buffer.length || offset > parentEnd - 8) {
+    throw unsupportedHeifContainer();
+  }
+
+  const size32 = buffer.readUInt32BE(offset);
+  let size: number;
+  let headerSize: number;
+  if (size32 === 1) {
+    if (offset > parentEnd - 16) {
+      throw unsupportedHeifContainer();
+    }
+    const size64 = buffer.readBigUInt64BE(offset + 8);
+    if (size64 > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw unsupportedHeifContainer();
+    }
+    size = Number(size64);
+    headerSize = 16;
+  } else {
+    size = size32;
+    headerSize = 8;
+  }
+
+  if (size === 0 || size < headerSize || size > parentEnd - offset) {
+    throw unsupportedHeifContainer();
+  }
+
+  state.boxCount += 1;
+  if (state.boxCount > MAX_BMFF_BOXES) {
+    throw unsupportedHeifContainer();
+  }
+
+  return {
+    start: offset,
+    end: offset + size,
+    payloadStart: offset + headerSize,
+    type: readPrintableBrand(buffer, offset + 4),
+  };
+}
+
+function walkBmffBoxes(
+  buffer: Buffer,
+  start: number,
+  end: number,
+  state: BmffInspectionState,
+  visit: (box: BmffBox) => void,
+): void {
+  let offset = start;
+  while (offset < end) {
+    const box = parseBmffBox(buffer, offset, end, state);
+    visit(box);
+    offset = box.end;
+  }
+
+  if (offset !== end) {
+    throw unsupportedHeifContainer();
+  }
+}
+
+function inspectItemInfoEntry(
+  buffer: Buffer,
+  box: BmffBox,
+  depth: number,
+  state: BmffInspectionState,
+): void {
+  assertBmffDepth(depth);
+  if (box.end - box.payloadStart < 4) {
+    throw unsupportedHeifContainer();
+  }
+
+  const version = buffer[box.payloadStart];
+  let itemTypeOffset: number;
+  if (version === 2) {
+    itemTypeOffset = box.payloadStart + 8;
+  } else if (version === 3) {
+    itemTypeOffset = box.payloadStart + 10;
+  } else {
+    throw unsupportedHeifContainer();
+  }
+
+  if (itemTypeOffset > box.end - 4) {
+    throw unsupportedHeifContainer();
+  }
+
+  const itemType = readPrintableBrand(buffer, itemTypeOffset);
+  if (itemType === 'av01') {
+    throw new InputInspectionError('UNSUPPORTED_IMAGE', '不支持 AVIF 图片');
+  }
+  if (itemType === 'hvc1' || itemType === 'hev1') {
+    state.hasHevcItem = true;
+  }
+}
+
+function inspectItemInformation(
+  buffer: Buffer,
+  box: BmffBox,
+  depth: number,
+  state: BmffInspectionState,
+): void {
+  assertBmffDepth(depth);
+  if (box.end - box.payloadStart < 6) {
+    throw unsupportedHeifContainer();
+  }
+
+  const version = buffer[box.payloadStart];
+  let entryCount: number;
+  let entriesStart: number;
+  if (version === 0) {
+    entryCount = buffer.readUInt16BE(box.payloadStart + 4);
+    entriesStart = box.payloadStart + 6;
+  } else if (version === 1) {
+    if (box.end - box.payloadStart < 8) {
+      throw unsupportedHeifContainer();
+    }
+    entryCount = buffer.readUInt32BE(box.payloadStart + 4);
+    entriesStart = box.payloadStart + 8;
+  } else {
+    throw unsupportedHeifContainer();
+  }
+
+  if (entryCount > MAX_BMFF_BOXES) {
+    throw unsupportedHeifContainer();
+  }
+
+  let parsedEntries = 0;
+  walkBmffBoxes(buffer, entriesStart, box.end, state, (entry) => {
+    if (entry.type !== 'infe') {
+      throw unsupportedHeifContainer();
+    }
+    parsedEntries += 1;
+    inspectItemInfoEntry(buffer, entry, depth + 1, state);
+  });
+  if (parsedEntries !== entryCount) {
+    throw unsupportedHeifContainer();
+  }
+}
+
+function inspectItemPropertyContainer(
+  buffer: Buffer,
+  box: BmffBox,
+  depth: number,
+  state: BmffInspectionState,
+): void {
+  assertBmffDepth(depth);
+  walkBmffBoxes(buffer, box.payloadStart, box.end, state, (property) => {
+    if (property.type === 'av1C') {
+      throw new InputInspectionError('UNSUPPORTED_IMAGE', '不支持 AVIF 图片');
+    }
+    if (property.type === 'hvcC') {
+      state.hasHevcConfig = true;
+    }
+  });
+}
+
+function inspectItemProperties(
+  buffer: Buffer,
+  box: BmffBox,
+  depth: number,
+  state: BmffInspectionState,
+): void {
+  assertBmffDepth(depth);
+  walkBmffBoxes(buffer, box.payloadStart, box.end, state, (child) => {
+    if (child.type === 'ipco') {
+      inspectItemPropertyContainer(buffer, child, depth + 1, state);
+    } else if (child.type === 'iprp') {
+      inspectItemProperties(buffer, child, depth + 1, state);
+    } else if (child.type === 'meta') {
+      inspectMetadataBox(buffer, child, depth + 1, state);
+    }
+  });
+}
+
+function inspectMetadataBox(
+  buffer: Buffer,
+  box: BmffBox,
+  depth: number,
+  state: BmffInspectionState,
+): void {
+  assertBmffDepth(depth);
+  if (box.end - box.payloadStart < 4) {
+    throw unsupportedHeifContainer();
+  }
+
+  state.metadataBoxCount += 1;
+  walkBmffBoxes(buffer, box.payloadStart + 4, box.end, state, (child) => {
+    if (child.type === 'iinf') {
+      inspectItemInformation(buffer, child, depth + 1, state);
+    } else if (child.type === 'iprp') {
+      inspectItemProperties(buffer, child, depth + 1, state);
+    } else if (child.type === 'meta') {
+      inspectMetadataBox(buffer, child, depth + 1, state);
+    }
+  });
+}
+
+function validateFileTypeBox(
+  buffer: Buffer,
+  box: BmffBox,
   kind: 'heic' | 'heif',
-): Promise<void> {
+): void {
+  if (
+    box.start !== 0
+    || box.type !== 'ftyp'
+    || box.end - box.start < 16
+    || box.end - box.start > MAX_FTYP_BOX_BYTES
+    || (box.end - box.start - 16) % 4 !== 0
+  ) {
+    throw unsupportedHeifContainer();
+  }
+
+  const majorBrand = readPrintableBrand(buffer, box.payloadStart);
+  if (
+    (kind === 'heic' && majorBrand !== 'heic' && majorBrand !== 'heix')
+    || (kind === 'heif' && majorBrand !== 'mif1')
+  ) {
+    throw unsupportedHeifContainer();
+  }
+
+  const brands = [majorBrand];
+  for (let offset = box.payloadStart + 8; offset < box.end; offset += 4) {
+    brands.push(readPrintableBrand(buffer, offset));
+  }
+  if (brands.some((brand) => brand === 'avif' || brand === 'avis')) {
+    throw new InputInspectionError('UNSUPPORTED_IMAGE', '不支持 AVIF 图片');
+  }
+}
+
+async function readBoundedHeif(inputPath: string): Promise<Buffer> {
   let file: Awaited<ReturnType<typeof open>> | undefined;
   try {
     file = await open(inputPath, 'r');
-    const header = Buffer.alloc(16);
-    const headerRead = await file.read(header, 0, header.length, 0);
-    if (headerRead.bytesRead !== header.length || header.toString('ascii', 4, 8) !== 'ftyp') {
+    const stats = await file.stat();
+    if (!stats.isFile() || stats.size < 16 || stats.size > MAX_HEIF_INSPECTION_BYTES) {
       throw unsupportedHeifContainer();
     }
 
-    const boxSize = header.readUInt32BE(0);
-    if (
-      boxSize < 16
-      || boxSize > MAX_FTYP_BOX_BYTES
-      || (boxSize - 16) % 4 !== 0
-    ) {
-      throw unsupportedHeifContainer();
+    const buffer = Buffer.alloc(stats.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const result = await file.read(buffer, offset, buffer.length - offset, offset);
+      if (result.bytesRead <= 0) {
+        throw unsupportedHeifContainer();
+      }
+      offset += result.bytesRead;
     }
 
-    const box = Buffer.alloc(boxSize);
-    const boxRead = await file.read(box, 0, box.length, 0);
-    if (boxRead.bytesRead !== box.length || box.toString('ascii', 4, 8) !== 'ftyp') {
-      throw unsupportedHeifContainer();
-    }
-
-    const majorBrand = readPrintableBrand(box, 8);
-    if (
-      (kind === 'heic' && majorBrand !== 'heic' && majorBrand !== 'heix')
-      || (kind === 'heif' && majorBrand !== 'mif1')
-    ) {
-      throw unsupportedHeifContainer();
-    }
-
-    const brands = [majorBrand];
-    for (let offset = 16; offset < box.length; offset += 4) {
-      brands.push(readPrintableBrand(box, offset));
-    }
-    if (brands.some((brand) => brand === 'avif' || brand === 'avis')) {
-      throw new InputInspectionError('UNSUPPORTED_IMAGE', '不支持 AVIF 图片');
-    }
+    return buffer;
   } catch (error) {
     if (error instanceof InputInspectionError) {
       throw error;
@@ -207,6 +439,45 @@ async function validateHeifFileTypeBox(
     throw unsupportedHeifContainer();
   } finally {
     await file?.close().catch(() => undefined);
+  }
+}
+
+async function validateHeifContainer(
+  inputPath: string,
+  kind: 'heic' | 'heif',
+): Promise<void> {
+  try {
+    const buffer = await readBoundedHeif(inputPath);
+    const state: BmffInspectionState = {
+      boxCount: 0,
+      hasHevcConfig: false,
+      hasHevcItem: false,
+      metadataBoxCount: 0,
+    };
+    let firstBox = true;
+    walkBmffBoxes(buffer, 0, buffer.length, state, (box) => {
+      if (firstBox) {
+        validateFileTypeBox(buffer, box, kind);
+        firstBox = false;
+      } else if (box.type === 'meta') {
+        inspectMetadataBox(buffer, box, 1, state);
+      }
+    });
+
+    if (
+      firstBox
+      || state.metadataBoxCount === 0
+      || !state.hasHevcItem
+      || !state.hasHevcConfig
+    ) {
+      throw unsupportedHeifContainer();
+    }
+  } catch (error) {
+    if (error instanceof InputInspectionError) {
+      throw error;
+    }
+
+    throw unsupportedHeifContainer();
   }
 }
 
@@ -244,7 +515,7 @@ export async function inspectInput(
 
   let metadata: ImageMetadata;
   if (supportedType.kind === 'heic' || supportedType.kind === 'heif') {
-    await validateHeifFileTypeBox(inputPath, supportedType.kind);
+    await validateHeifContainer(inputPath, supportedType.kind);
     metadata = await (dependencies.inspectHeif ?? inspectHeif)(inputPath);
   } else {
     try {

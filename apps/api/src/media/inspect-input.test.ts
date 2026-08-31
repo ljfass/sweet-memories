@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { fileTypeFromFile } from 'file-type';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -64,6 +65,66 @@ function heifDependencies(): InspectInputDependencies {
     inspectHeif: vi.fn().mockResolvedValue({ width: 64, height: 48 }),
     parseExif: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+function bmffBox(type: string, payload: Buffer = Buffer.alloc(0)): Buffer {
+  const box = Buffer.alloc(8 + payload.length);
+  box.writeUInt32BE(box.length, 0);
+  box.write(type, 4, 4, 'ascii');
+  payload.copy(box, 8);
+  return box;
+}
+
+function fullBoxPayload(version: number, payload: Buffer = Buffer.alloc(0)): Buffer {
+  return Buffer.concat([Buffer.from([version, 0, 0, 0]), payload]);
+}
+
+function syntheticFtyp(): Buffer {
+  return bmffBox('ftyp', Buffer.concat([
+    Buffer.from('mif1', 'ascii'),
+    Buffer.alloc(4),
+    Buffer.from('mif1miaf', 'ascii'),
+  ]));
+}
+
+function itemInfoEntry(version: 2 | 3, itemType: string): Buffer {
+  const identity = version === 2
+    ? Buffer.from([0, 1, 0, 0])
+    : Buffer.from([0, 0, 0, 1, 0, 0]);
+  return bmffBox('infe', fullBoxPayload(version, Buffer.concat([
+    identity,
+    Buffer.from(itemType, 'ascii'),
+    Buffer.from([0]),
+  ])));
+}
+
+function itemInformation(entry: Buffer): Buffer {
+  const count = Buffer.alloc(2);
+  count.writeUInt16BE(1);
+  return bmffBox('iinf', fullBoxPayload(0, Buffer.concat([count, entry])));
+}
+
+function itemProperties(property: Buffer): Buffer {
+  return bmffBox('iprp', bmffBox('ipco', property));
+}
+
+function metadataBox(...children: Buffer[]): Buffer {
+  return bmffBox('meta', fullBoxPayload(0, Buffer.concat(children)));
+}
+
+async function writeSyntheticHeif(name: string, ...boxes: Buffer[]): Promise<string> {
+  const path = join(temporaryDirectory, name);
+  await writeFile(path, Buffer.concat([syntheticFtyp(), ...boxes]));
+  return path;
+}
+
+async function expectRejectedBeforeHeifInspection(path: string): Promise<void> {
+  const inspectHeif = vi.fn().mockResolvedValue({ width: 2, height: 2 });
+  await expect(inspectInput(path, {
+    inspectHeif,
+    parseExif: vi.fn().mockResolvedValue(undefined),
+  })).rejects.toMatchObject({ code: 'UNSUPPORTED_IMAGE' });
+  expect(inspectHeif).not.toHaveBeenCalled();
 }
 
 describe('inspectInput format recognition', () => {
@@ -127,29 +188,104 @@ describe('inspectInput format recognition', () => {
     });
   });
 
-  it('rejects AVIF data disguised with a mif1 major brand before HEIF inspection', async () => {
+  it('rejects AVIF codec metadata after every AVIF ftyp brand is disguised', async () => {
     const avif = await readFile(avifPath);
     expect(avif.toString('ascii', 4, 8)).toBe('ftyp');
-    expect(avif.toString('ascii', 8, 12)).toBe('avif');
     const ftypSize = avif.readUInt32BE(0);
-    const compatibleBrands = Array.from(
+    const brands = [avif.toString('ascii', 8, 12), ...Array.from(
       { length: (ftypSize - 16) / 4 },
       (_, index) => avif.toString('ascii', 16 + index * 4, 20 + index * 4),
-    );
-    expect(compatibleBrands).toContain('avif');
+    )];
+    expect(brands).toEqual(['avif', 'mif1', 'avif', 'miaf']);
 
     const disguised = Buffer.from(avif);
     disguised.write('mif1', 8, 'ascii');
+    disguised.write('mif1', 16, 'ascii');
+    disguised.write('miaf', 20, 'ascii');
+    disguised.write('miaf', 24, 'ascii');
+    expect([
+      disguised.toString('ascii', 8, 12),
+      disguised.toString('ascii', 16, 20),
+      disguised.toString('ascii', 20, 24),
+      disguised.toString('ascii', 24, 28),
+    ]).toEqual(['mif1', 'mif1', 'miaf', 'miaf']);
     const disguisedPath = join(temporaryDirectory, 'disguised-avif.heif');
     await writeFile(disguisedPath, disguised);
     await expect(sharp(disguisedPath).metadata()).resolves.toMatchObject({ width: 2, height: 2 });
-    const inspectHeif = vi.fn().mockResolvedValue({ width: 2, height: 2 });
+    await expect(fileTypeFromFile(disguisedPath)).resolves.toMatchObject({ mime: 'image/heif' });
+    await expectRejectedBeforeHeifInspection(disguisedPath);
+  });
 
-    await expect(inspectInput(disguisedPath, {
-      inspectHeif,
-      parseExif: vi.fn().mockResolvedValue(undefined),
-    })).rejects.toMatchObject({ code: 'UNSUPPORTED_IMAGE' });
-    expect(inspectHeif).not.toHaveBeenCalled();
+  it.each([2, 3] as const)('rejects an infe version %i av01 item type', async (version) => {
+    const path = await writeSyntheticHeif(
+      `av01-infe-v${version}.heif`,
+      metadataBox(itemInformation(itemInfoEntry(version, 'av01'))),
+    );
+    await expectRejectedBeforeHeifInspection(path);
+  });
+
+  it('rejects an av1C item property even when no infe item exposes the codec', async () => {
+    const path = await writeSyntheticHeif(
+      'av1c-property.heif',
+      metadataBox(itemProperties(bmffBox('av1C'))),
+    );
+    await expectRejectedBeforeHeifInspection(path);
+  });
+
+  it('accepts structurally valid HEVC item and property metadata', async () => {
+    const path = await writeSyntheticHeif(
+      'synthetic-hevc.heif',
+      metadataBox(
+        itemInformation(itemInfoEntry(2, 'hvc1')),
+        itemProperties(bmffBox('hvcC')),
+      ),
+    );
+
+    await expect(inspectInput(path, heifDependencies())).resolves.toMatchObject({
+      kind: 'heif',
+      width: 64,
+      height: 48,
+    });
+  });
+
+  it.each([
+    ['zero-sized metadata box', () => {
+      const box = Buffer.alloc(8);
+      box.write('meta', 4, 4, 'ascii');
+      return box;
+    }],
+    ['extended-sized metadata box', () => {
+      const box = Buffer.alloc(20);
+      box.writeUInt32BE(1, 0);
+      box.write('meta', 4, 4, 'ascii');
+      box.writeBigUInt64BE(20n, 8);
+      return box;
+    }],
+    ['out-of-bounds metadata box', () => {
+      const box = Buffer.alloc(8);
+      box.writeUInt32BE(64, 0);
+      box.write('meta', 4, 4, 'ascii');
+      return box;
+    }],
+    ['truncated metadata FullBox', () => bmffBox('meta', Buffer.alloc(3))],
+  ])('rejects malformed BMFF structure: %s', async (label, createBox) => {
+    const path = await writeSyntheticHeif(`malformed-${label.replaceAll(' ', '-')}.heif`, createBox());
+    await expectRejectedBeforeHeifInspection(path);
+  });
+
+  it('rejects metadata nesting beyond the inspection depth limit', async () => {
+    let nested = metadataBox();
+    for (let depth = 0; depth < 10; depth += 1) {
+      nested = metadataBox(nested);
+    }
+    const path = await writeSyntheticHeif('too-deep.heif', nested);
+    await expectRejectedBeforeHeifInspection(path);
+  });
+
+  it('rejects files that exceed the BMFF box-count limit', async () => {
+    const boxes = Array.from({ length: 1025 }, () => bmffBox('free'));
+    const path = await writeSyntheticHeif('too-many-boxes.heif', ...boxes);
+    await expectRejectedBeforeHeifInspection(path);
   });
 
   it('rejects a malformed mif1 ftyp box before HEIF inspection', async () => {
