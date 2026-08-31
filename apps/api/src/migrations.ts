@@ -31,6 +31,8 @@ interface MigrationFile {
   readonly version: string;
 }
 
+type SqlToken = { readonly kind: 'word'; readonly value: string } | { readonly kind: 'semicolon' };
+
 function skipQuoted(sql: string, start: number, closing: string): number {
   let index = start + 1;
   while (index < sql.length) {
@@ -47,7 +49,8 @@ function skipQuoted(sql: string, start: number, closing: string): number {
   return index;
 }
 
-function forbiddenTransactionWord(sql: string): string | undefined {
+function tokenizeSql(sql: string): SqlToken[] {
+  const tokens: SqlToken[] = [];
   let index = 0;
   while (index < sql.length) {
     const character = sql[index];
@@ -83,12 +86,76 @@ function forbiddenTransactionWord(sql: string): string | undefined {
         IDENTIFIER_CHARACTER.test(sql[index] as string)
       );
       const word = sql.slice(start, index).toUpperCase();
+      tokens.push({ kind: 'word', value: word });
+      continue;
+    }
+    if (character === ';') {
+      tokens.push({ kind: 'semicolon' });
+    }
+    index += 1;
+  }
+  return tokens;
+}
+
+function forbiddenTransactionWord(sql: string): string | undefined {
+  let atStatementStart = true;
+  let createPrefix: 'none' | 'create' | 'create-temp' = 'none';
+  let isTrigger = false;
+  let inTriggerBody = false;
+  let triggerEnded = false;
+  let caseDepth = 0;
+
+  for (const token of tokenizeSql(sql)) {
+    if (token.kind === 'semicolon') {
+      if (isTrigger && inTriggerBody) {
+        continue;
+      }
+      atStatementStart = true;
+      createPrefix = 'none';
+      isTrigger = false;
+      inTriggerBody = false;
+      triggerEnded = false;
+      caseDepth = 0;
+      continue;
+    }
+
+    const word = token.value;
+    if (atStatementStart) {
       if (FORBIDDEN_TRANSACTION_WORDS.has(word)) {
         return word;
       }
+      atStatementStart = false;
+      createPrefix = word === 'CREATE' ? 'create' : 'none';
       continue;
     }
-    index += 1;
+
+    if (!isTrigger && createPrefix !== 'none') {
+      if (createPrefix === 'create' && (word === 'TEMP' || word === 'TEMPORARY')) {
+        createPrefix = 'create-temp';
+      } else if (word === 'TRIGGER') {
+        isTrigger = true;
+        createPrefix = 'none';
+      } else {
+        createPrefix = 'none';
+      }
+      continue;
+    }
+
+    if (!isTrigger || triggerEnded) {
+      continue;
+    }
+    if (word === 'CASE') {
+      caseDepth += 1;
+    } else if (word === 'END') {
+      if (caseDepth > 0) {
+        caseDepth -= 1;
+      } else if (inTriggerBody) {
+        inTriggerBody = false;
+        triggerEnded = true;
+      }
+    } else if (word === 'BEGIN' && !inTriggerBody && caseDepth === 0) {
+      inTriggerBody = true;
+    }
   }
   return undefined;
 }
@@ -174,6 +241,41 @@ function validateRequiredSchema(db: Database.Database): void {
   }
 }
 
+function validateAppliedVersions(
+  migrations: readonly MigrationFile[],
+  applied: ReadonlySet<string>,
+): void {
+  const knownVersions = migrations.map(({ version }) => version);
+  const known = new Set(knownVersions);
+  const maximumKnownVersion = knownVersions.at(-1) as string;
+  const futureVersions: string[] = [];
+
+  for (const version of applied) {
+    if (!/^\d{3}$/.test(version)) {
+      throw new MigrationError(`数据库迁移版本无效: ${version}`);
+    }
+    if (!known.has(version)) {
+      if (version <= maximumKnownVersion) {
+        throw new MigrationError(`数据库包含缺失的迁移文件版本: ${version}`);
+      }
+      futureVersions.push(version);
+    }
+  }
+
+  let foundMissingKnownVersion = false;
+  for (const version of knownVersions) {
+    if (!applied.has(version)) {
+      foundMissingKnownVersion = true;
+    } else if (foundMissingKnownVersion) {
+      throw new MigrationError('数据库迁移版本不是有序前缀');
+    }
+  }
+
+  if (futureVersions.length > 0 && foundMissingKnownVersion) {
+    throw new MigrationError('未来迁移版本存在时不能补旧迁移');
+  }
+}
+
 export function runMigrations(db: Database.Database, migrationsRoot: string): void {
   const migrations = listMigrations(migrationsRoot);
   if (migrations.length === 0) {
@@ -184,12 +286,7 @@ export function runMigrations(db: Database.Database, migrationsRoot: string): vo
   }
 
   const applied = appliedVersions(db);
-  const knownVersions = new Set(migrations.map(({ version }) => version));
-  for (const version of applied) {
-    if (!knownVersions.has(version)) {
-      throw new MigrationError(`数据库包含未知迁移版本: ${version}`);
-    }
-  }
+  validateAppliedVersions(migrations, applied);
 
   for (const migration of migrations) {
     if (applied.has(migration.version)) {
@@ -213,6 +310,7 @@ export function runMigrations(db: Database.Database, migrationsRoot: string): vo
     try {
       db.transaction(() => {
         db.exec(sql);
+        validateRequiredSchema(db);
         db.prepare(
           `INSERT INTO schema_migrations(version, applied_at)
            VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,

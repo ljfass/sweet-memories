@@ -218,7 +218,7 @@ describe('runMigrations', () => {
     writeMigration(
       migrationsRoot,
       '001_start.sql',
-      'CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);',
+      initialMigrationSql,
     );
     mkdirSync(join(migrationsRoot, '002_unreadable.sql'));
 
@@ -232,7 +232,7 @@ describe('runMigrations', () => {
     writeMigration(
       migrationsRoot,
       '001_start.sql',
-      `CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+      `${initialMigrationSql}
        CREATE TABLE retained(value TEXT NOT NULL);
        INSERT INTO retained(value) VALUES ('yes');`,
     );
@@ -335,19 +335,6 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db, migrationsRoot)).toThrow('迁移必须从 001 开始');
   });
 
-  it('rejects migration versions recorded by the database but absent from disk', () => {
-    const { db } = createDatabase();
-    runMigrations(db, initialMigrationsRoot);
-    db.prepare(
-      `INSERT INTO schema_migrations(version, applied_at)
-       VALUES ('999', '2026-08-31T00:00:00.000Z')`,
-    ).run();
-
-    expect(() => runMigrations(db, initialMigrationsRoot)).toThrow(
-      '数据库包含未知迁移版本: 999',
-    );
-  });
-
   it('rejects a forged initial version when required schema objects are missing', () => {
     const { db } = createDatabase();
     db.exec(
@@ -375,5 +362,193 @@ describe('runMigrations', () => {
     expect(caught).toBeInstanceOf(MigrationError);
     expect(caught).toMatchObject({ message: '读取迁移状态失败' });
     expect((caught as MigrationError).cause).toBeInstanceOf(Error);
+  });
+
+  it('allows a CREATE TRIGGER body with CASE and executes the trigger', () => {
+    const { db } = createDatabase();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-trigger-migration-');
+    writeMigration(migrationsRoot, '001_initial.sql', initialMigrationSql);
+    writeMigration(
+      migrationsRoot,
+      '002_trigger.sql',
+      `CREATE TABLE trigger_events(value TEXT NOT NULL);
+       CREATE TRIGGER photos_after_insert
+       AFTER INSERT ON photos
+       BEGIN
+         INSERT INTO trigger_events(value)
+         VALUES (CASE WHEN NEW.status = 'published' THEN 'visible' ELSE 'hidden' END);
+         UPDATE photos SET updated_at = NEW.updated_at WHERE id = NEW.id;
+       END;`,
+    );
+
+    runMigrations(db, migrationsRoot);
+    db.prepare(
+      `INSERT INTO photos(
+         id, title, status, rotation, offset_x, offset_y,
+         request_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'photo-trigger',
+      'Trigger photo',
+      'published',
+      0,
+      0,
+      0,
+      'request-trigger',
+      '2026-08-31T00:00:00.000Z',
+      '2026-08-31T00:00:00.000Z',
+    );
+
+    expect(db.prepare('SELECT value FROM trigger_events').all()).toEqual([{ value: 'visible' }]);
+    expect(migrationVersions(db)).toEqual(['001', '002']);
+  });
+
+  it('allows CASE expressions in ordinary migration statements', () => {
+    const { db } = createDatabase();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-case-migration-');
+    writeMigration(migrationsRoot, '001_initial.sql', initialMigrationSql);
+    writeMigration(
+      migrationsRoot,
+      '002_case.sql',
+      `INSERT INTO settings(key, value, updated_at)
+       VALUES (
+         'case_result',
+         CASE WHEN 1 = 1 THEN 'matched' ELSE 'missed' END,
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       );`,
+    );
+
+    runMigrations(db, migrationsRoot);
+
+    expect(db.prepare("SELECT value FROM settings WHERE key = 'case_result'").get()).toEqual({
+      value: 'matched',
+    });
+    expect(migrationVersions(db)).toEqual(['001', '002']);
+  });
+
+  it('rolls back an incomplete initial schema before recording version 001', () => {
+    const { db } = createDatabase();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-incomplete-initial-');
+    writeMigration(
+      migrationsRoot,
+      '001_incomplete.sql',
+      'CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);',
+    );
+
+    expect(() => runMigrations(db, migrationsRoot)).toThrow(
+      '执行迁移失败: 001_incomplete.sql',
+    );
+    expect(
+      db
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name = 'schema_migrations'`,
+        )
+        .get(),
+    ).toBeUndefined();
+  });
+
+  it('rolls back a later migration that removes a required schema object', () => {
+    const { db } = createDatabase();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-destructive-migration-');
+    writeMigration(migrationsRoot, '001_initial.sql', initialMigrationSql);
+    writeMigration(migrationsRoot, '002_drop_index.sql', 'DROP INDEX sessions_admin_id_idx;');
+
+    expect(() => runMigrations(db, migrationsRoot)).toThrow(
+      '执行迁移失败: 002_drop_index.sql',
+    );
+    expect(
+      db
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'index' AND name = 'sessions_admin_id_idx'`,
+        )
+        .get(),
+    ).toEqual({ name: 'sessions_admin_id_idx' });
+    expect(migrationVersions(db)).toEqual(['001']);
+  });
+
+  it('allows an older migration directory after a future additive version was applied', () => {
+    const { db } = createDatabase();
+    const futureRoot = createTemporaryRoot('sweet-memories-future-release-');
+    writeMigration(futureRoot, '001_initial.sql', initialMigrationSql);
+    writeMigration(
+      futureRoot,
+      '002_additive.sql',
+      `CREATE TABLE future_data(value TEXT NOT NULL);
+       INSERT INTO future_data(value) VALUES ('preserved');`,
+    );
+    runMigrations(db, futureRoot);
+
+    const oldRoot = createTemporaryRoot('sweet-memories-old-release-');
+    writeMigration(oldRoot, '001_initial.sql', initialMigrationSql);
+    runMigrations(db, oldRoot);
+
+    expect(migrationVersions(db)).toEqual(['001', '002']);
+    expect(db.prepare('SELECT value FROM future_data').all()).toEqual([{ value: 'preserved' }]);
+  });
+
+  it('rejects applied known versions that are not an ordered prefix', () => {
+    const { db } = createDatabase();
+    runMigrations(db, initialMigrationsRoot);
+    db.prepare(
+      `INSERT INTO schema_migrations(version, applied_at)
+       VALUES ('003', '2026-08-31T00:00:00.000Z')`,
+    ).run();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-prefix-gap-');
+    writeMigration(migrationsRoot, '001_initial.sql', initialMigrationSql);
+    writeMigration(migrationsRoot, '002_additive.sql', 'CREATE TABLE migration_two(value TEXT);');
+    writeMigration(migrationsRoot, '003_additive.sql', 'CREATE TABLE migration_three(value TEXT);');
+
+    expect(() => runMigrations(db, migrationsRoot)).toThrow(
+      '数据库迁移版本不是有序前缀',
+    );
+    expect(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_two'").get(),
+    ).toBeUndefined();
+    expect(migrationVersions(db)).toEqual(['001', '003']);
+  });
+
+  it('does not backfill a current migration behind an applied future version', () => {
+    const { db } = createDatabase();
+    db.exec(initialMigrationSql);
+    db.prepare(
+      `INSERT INTO schema_migrations(version, applied_at)
+       VALUES ('002', '2026-08-31T00:00:00.000Z')`,
+    ).run();
+
+    expect(() => runMigrations(db, initialMigrationsRoot)).toThrow(
+      '未来迁移版本存在时不能补旧迁移',
+    );
+    expect(migrationVersions(db)).toEqual(['002']);
+  });
+
+  it('rejects applied versions that are not three digits', () => {
+    const { db } = createDatabase();
+    db.exec(initialMigrationSql);
+    db.prepare(
+      `INSERT INTO schema_migrations(version, applied_at)
+       VALUES ('version-two', '2026-08-31T00:00:00.000Z')`,
+    ).run();
+
+    expect(() => runMigrations(db, initialMigrationsRoot)).toThrow(
+      '数据库迁移版本无效: version-two',
+    );
+  });
+
+  it('rejects an applied version missing on disk below the disk maximum', () => {
+    const { db } = createDatabase();
+    runMigrations(db, initialMigrationsRoot);
+    db.prepare(
+      `INSERT INTO schema_migrations(version, applied_at)
+       VALUES ('002', '2026-08-31T00:00:00.000Z')`,
+    ).run();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-missing-file-');
+    writeMigration(migrationsRoot, '001_initial.sql', initialMigrationSql);
+    writeMigration(migrationsRoot, '003_later.sql', 'CREATE TABLE migration_three(value TEXT);');
+
+    expect(() => runMigrations(db, migrationsRoot)).toThrow(
+      '数据库包含缺失的迁移文件版本: 002',
+    );
   });
 });
