@@ -161,7 +161,7 @@ describe('admin commands', () => {
       created_at: '2026-09-01T09:30:00.000Z',
       updated_at: '2026-09-01T09:30:00.000Z',
     });
-    await expect(verifyPassword(password, row.password_hash)).resolves.toBe(true);
+    await expect(verifyPassword(row.password_hash, password)).resolves.toBe(true);
     expect(result.output).toContain('owner');
     expect(result.output).toContain('创建成功');
     expect(result.output).not.toContain(password);
@@ -257,8 +257,8 @@ describe('admin commands', () => {
     const owner = db
       .prepare('SELECT password_hash, updated_at FROM admins WHERE username = ?')
       .get('owner') as { password_hash: string; updated_at: string };
-    await expect(verifyPassword(oldPassword, owner.password_hash)).resolves.toBe(false);
-    await expect(verifyPassword(newPassword, owner.password_hash)).resolves.toBe(true);
+    await expect(verifyPassword(owner.password_hash, oldPassword)).resolves.toBe(false);
+    await expect(verifyPassword(owner.password_hash, newPassword)).resolves.toBe(true);
     expect(owner.updated_at).toBe('2026-09-01T10:00:00.000Z');
     expect(db.prepare('SELECT token_hash FROM sessions ORDER BY token_hash').all()).toEqual([
       { token_hash: 'other-session' },

@@ -6,7 +6,8 @@ export const passwordPolicy = Object.freeze({
 });
 
 export function validatePassword(password: string): boolean {
-  return password.length >= passwordPolicy.minLength && password.length <= passwordPolicy.maxLength;
+  const length = Array.from(password).length;
+  return length >= passwordPolicy.minLength && length <= passwordPolicy.maxLength;
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -22,7 +23,7 @@ export async function hashPassword(password: string): Promise<string> {
   });
 }
 
-export async function verifyPassword(password: string, passwordHash: string): Promise<boolean> {
+export async function verifyPassword(passwordHash: string, password: string): Promise<boolean> {
   if (!passwordHash.startsWith('$argon2id$')) {
     return false;
   }
