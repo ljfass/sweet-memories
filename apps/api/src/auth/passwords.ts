@@ -5,6 +5,47 @@ export const passwordPolicy = Object.freeze({
   maxLength: 256,
 });
 
+const supportedParameters = new Set(['m=65536', 't=3', 'p=1']);
+const maximumPhcLength = 128;
+
+function isCanonicalBase64(value: string, decodedLength: number): boolean {
+  if (!/^[A-Za-z0-9+/]+$/.test(value)) {
+    return false;
+  }
+  const decoded = Buffer.from(value, 'base64');
+  return (
+    decoded.length === decodedLength &&
+    decoded.toString('base64').replace(/=+$/, '') === value
+  );
+}
+
+function isSupportedPasswordHash(passwordHash: string): boolean {
+  if (passwordHash.length > maximumPhcLength) {
+    return false;
+  }
+  const parts = passwordHash.split('$');
+  if (parts.length !== 6) {
+    return false;
+  }
+  const [prefix, algorithm, version, parameters, salt, digest] = parts;
+  if (prefix !== '' || algorithm !== 'argon2id' || version !== 'v=19') {
+    return false;
+  }
+  if (parameters === undefined || salt === undefined || digest === undefined) {
+    return false;
+  }
+  const parameterEntries = parameters.split(',');
+  const parameterSet = new Set(parameterEntries);
+  if (
+    parameterEntries.length !== supportedParameters.size ||
+    parameterSet.size !== supportedParameters.size ||
+    [...supportedParameters].some((parameter) => !parameterSet.has(parameter))
+  ) {
+    return false;
+  }
+  return isCanonicalBase64(salt, 16) && isCanonicalBase64(digest, 32);
+}
+
 export function validatePassword(password: string): boolean {
   const length = Array.from(password).length;
   return length >= passwordPolicy.minLength && length <= passwordPolicy.maxLength;
@@ -24,7 +65,7 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export async function verifyPassword(passwordHash: string, password: string): Promise<boolean> {
-  if (!passwordHash.startsWith('$argon2id$')) {
+  if (!isSupportedPasswordHash(passwordHash)) {
     return false;
   }
 

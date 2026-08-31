@@ -31,28 +31,63 @@ export function createHiddenInput(
   input: HiddenInputStream,
   output: AdminCommandOutput,
 ): HiddenInput {
+  let active = false;
+
   return {
     read(prompt: string): Promise<string> {
-      if (input.isTTY !== true || input.setRawMode === undefined) {
-        return Promise.reject(new Error('密码输入需要交互终端'));
+      if (active) {
+        return Promise.reject(new Error('密码输入失败'));
       }
-      const setRawMode = input.setRawMode;
+      active = true;
+
+      let initiallyRaw: boolean;
+      let initiallyPaused: boolean;
+      let setRawMode: (mode: boolean) => unknown;
+      try {
+        if (input.isTTY !== true || input.setRawMode === undefined) {
+          active = false;
+          return Promise.reject(new Error('密码输入需要交互终端'));
+        }
+        setRawMode = input.setRawMode;
+        initiallyRaw = input.isRaw === true;
+        initiallyPaused = input.isPaused();
+      } catch {
+        active = false;
+        return Promise.reject(new Error('密码输入失败'));
+      }
 
       return new Promise((resolvePassword, rejectPassword) => {
-        const initiallyRaw = input.isRaw === true;
-        const initiallyPaused = input.isPaused();
         let value = '';
         let settled = false;
         const inputFailure = () => new Error('密码输入失败');
 
-        const restore = () => {
-          input.removeListener('keypress', onKeypress);
-          input.removeListener('error', onInputError);
-          input.removeListener('end', onInputEnd);
-          setRawMode.call(input, initiallyRaw);
-          if (initiallyPaused) {
-            input.pause();
+        const restore = (): boolean => {
+          let failed = false;
+          for (const [event, listener] of [
+            ['keypress', onKeypress],
+            ['error', onInputError],
+            ['end', onInputEnd],
+          ] as const) {
+            try {
+              input.removeListener(event, listener);
+            } catch {
+              failed = true;
+            }
           }
+          try {
+            setRawMode.call(input, initiallyRaw);
+          } catch {
+            failed = true;
+          }
+          if (initiallyPaused) {
+            try {
+              input.pause();
+            } catch {
+              failed = true;
+            }
+          }
+          active = false;
+          return failed;
         };
         const finish = (result: { value: string } | { error: Error }) => {
           if (settled) return;
@@ -63,9 +98,7 @@ export function createHiddenInput(
           } catch {
             error = inputFailure();
           }
-          try {
-            restore();
-          } catch {
+          if (restore()) {
             error = inputFailure();
           }
           if (error !== undefined) rejectPassword(error);
@@ -100,11 +133,7 @@ export function createHiddenInput(
           setRawMode.call(input, true);
           input.resume();
         } catch {
-          try {
-            restore();
-          } catch {
-            // The caller receives one stable error even when restoration itself fails.
-          }
+          restore();
           rejectPassword(inputFailure());
         }
       });
@@ -112,16 +141,73 @@ export function createHiddenInput(
   };
 }
 
-function createVisibleInput(): AdminCommandInput {
+export function createVisibleInput(
+  input: NodeJS.ReadableStream = process.stdin,
+  output: NodeJS.WritableStream = process.stdout,
+): AdminCommandInput {
   return {
     argv: [],
-    async readLine(prompt: string): Promise<string> {
-      const interface_ = createInterface({ input: process.stdin, output: process.stdout });
-      try {
-        return await new Promise<string>((resolveLine) => interface_.question(prompt, resolveLine));
-      } finally {
-        interface_.close();
-      }
+    readLine(prompt: string): Promise<string> {
+      return new Promise((resolveLine, rejectLine) => {
+        let interface_: ReturnType<typeof createInterface>;
+        const existingDataListeners = new Set(input.rawListeners('data'));
+        try {
+          interface_ = createInterface({ input, output });
+        } catch {
+          rejectLine(new Error('用户名输入失败'));
+          return;
+        }
+        const readlineDataListeners = input
+          .rawListeners('data')
+          .filter((listener) => !existingDataListeners.has(listener)) as Array<
+          (...args: unknown[]) => void
+        >;
+
+        let settled = false;
+        const cleanup = () => {
+          interface_.removeListener('close', onClose);
+          interface_.removeListener('error', onError);
+          interface_.removeListener('SIGINT', onSigint);
+          input.removeListener('close', onClose);
+          input.removeListener('error', onError);
+          try {
+            interface_.close();
+          } finally {
+            for (const listener of readlineDataListeners) {
+              input.removeListener('data', listener);
+            }
+          }
+        };
+        const finish = (answer?: string) => {
+          if (settled) return;
+          settled = true;
+          let cleanupFailed = false;
+          try {
+            cleanup();
+          } catch {
+            cleanupFailed = true;
+          }
+          if (answer !== undefined && !cleanupFailed) {
+            resolveLine(answer);
+          } else {
+            rejectLine(new Error('用户名输入失败'));
+          }
+        };
+        const onClose = () => finish();
+        const onError = () => finish();
+        const onSigint = () => finish();
+
+        interface_.once('close', onClose);
+        interface_.once('error', onError);
+        interface_.once('SIGINT', onSigint);
+        input.once('close', onClose);
+        input.once('error', onError);
+        try {
+          interface_.question(prompt, (answer) => finish(answer));
+        } catch {
+          finish();
+        }
+      });
     },
   };
 }
@@ -166,22 +252,35 @@ export async function runCli(
   runtime: CliRuntime = defaultRuntime(),
 ): Promise<number> {
   const input = { ...runtime.input, argv };
+  const reportFailure = () => {
+    try {
+      runtime.output.write('管理员命令执行失败\n');
+    } catch {
+      // A failed output stream must not turn cleanup into an unhandled rejection.
+    }
+  };
   if (!needsDatabase(argv)) {
-    return runtime.runAdminCommand({
-      input,
-      output: runtime.output,
-      hiddenInput: runtime.hiddenInput,
-      now: runtime.now,
-      randomId: runtime.randomId,
-    });
+    try {
+      return await runtime.runAdminCommand({
+        input,
+        output: runtime.output,
+        hiddenInput: runtime.hiddenInput,
+        now: runtime.now,
+        randomId: runtime.randomId,
+      });
+    } catch {
+      reportFailure();
+      return 1;
+    }
   }
 
   let db: Database.Database | undefined;
+  let result: number;
   try {
     const config = runtime.loadConfig();
     db = runtime.openDatabase(config);
     runtime.runMigrations(db, config.migrationsRoot);
-    return await runtime.runAdminCommand({
+    result = await runtime.runAdminCommand({
       input,
       output: runtime.output,
       hiddenInput: runtime.hiddenInput,
@@ -190,11 +289,18 @@ export async function runCli(
       randomId: runtime.randomId,
     });
   } catch {
-    runtime.output.write('管理员命令执行失败\n');
-    return 1;
-  } finally {
-    db?.close();
+    reportFailure();
+    result = 1;
   }
+  if (db !== undefined) {
+    try {
+      db.close();
+    } catch {
+      reportFailure();
+      result = 1;
+    }
+  }
+  return result;
 }
 
 function isDirectExecution(): boolean {
@@ -203,7 +309,17 @@ function isDirectExecution(): boolean {
 }
 
 if (isDirectExecution()) {
-  void runCli(process.argv.slice(2)).then((exitCode) => {
-    process.exitCode = exitCode;
-  });
+  void runCli(process.argv.slice(2)).then(
+    (exitCode) => {
+      process.exitCode = exitCode;
+    },
+    () => {
+      try {
+        process.stdout.write('管理员命令执行失败\n');
+      } catch {
+        // Nothing else can be reported safely when stdout itself has failed.
+      }
+      process.exitCode = 1;
+    },
+  );
 }

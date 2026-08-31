@@ -8,7 +8,7 @@ import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { hashPassword, verifyPassword } from '../auth/passwords.js';
-import { runCli, createHiddenInput, type CliRuntime } from '../cli.js';
+import { createHiddenInput, createVisibleInput, runCli, type CliRuntime } from '../cli.js';
 import { loadConfig } from '../config.js';
 import { openDatabase } from '../database.js';
 import { runMigrations } from '../migrations.js';
@@ -435,6 +435,138 @@ describe('terminal password input', () => {
     expect(setRawMode.mock.calls).toEqual([[true], [false]]);
     expect(input.isRaw).toBe(false);
   });
+
+  it('rejects a concurrent read without touching the active terminal and allows later reads', async () => {
+    const { hiddenInput, input, setRawMode } = terminal();
+    const first = hiddenInput.read('密码: ');
+    const keypressListeners = input.listenerCount('keypress');
+
+    const concurrent = hiddenInput.read('确认密码: ');
+
+    await expect(concurrent).rejects.toThrow('密码输入失败');
+    expect(input.listenerCount('keypress')).toBe(keypressListeners);
+    expect(setRawMode.mock.calls).toEqual([[true]]);
+    input.write('first secret\r');
+    await expect(first).resolves.toBe('first secret');
+    expect(setRawMode.mock.calls).toEqual([[true], [false]]);
+
+    const later = hiddenInput.read('密码: ');
+    input.write('later secret\r');
+    await expect(later).resolves.toBe('later secret');
+    expect(setRawMode.mock.calls).toEqual([[true], [false], [true], [false]]);
+  });
+
+  it.each(['isTTY', 'isRaw', 'isPaused', 'setRawMode'] as const)(
+    'turns an initial %s access failure into a stable error',
+    async (state) => {
+      const { hiddenInput, input } = terminal();
+      const fail = () => {
+        throw new Error(`sensitive ${state} detail`);
+      };
+      if (state === 'isPaused') {
+        input.isPaused = fail;
+      } else {
+        Object.defineProperty(input, state, { configurable: true, get: fail });
+      }
+
+      const reading = Promise.resolve().then(() => hiddenInput.read('密码: '));
+
+      await expect(reading).rejects.toThrow('密码输入失败');
+      await expect(reading).rejects.not.toThrow(`sensitive ${state} detail`);
+    },
+  );
+
+  it('continues restoring pause state when raw mode restoration fails', async () => {
+    const { hiddenInput, input, setRawMode } = terminal();
+    const pause = vi.spyOn(input, 'pause');
+    input.pause();
+    pause.mockClear();
+    setRawMode.mockImplementation((raw: boolean): PassThrough => {
+      if (!raw) throw new Error('sensitive raw restore detail');
+      input.isRaw = raw;
+      return input;
+    });
+
+    const reading = hiddenInput.read('密码: ');
+    input.write('top secret\r');
+
+    await expect(reading).rejects.toThrow('密码输入失败');
+    await expect(reading).rejects.not.toThrow('sensitive raw restore detail');
+    expect(pause).toHaveBeenCalledOnce();
+  });
+});
+
+describe('visible terminal input', () => {
+  function visibleTerminal() {
+    const input = new PassThrough() as PassThrough & { isTTY: boolean };
+    const output = new PassThrough() as PassThrough & { isTTY: boolean };
+    input.isTTY = true;
+    output.isTTY = true;
+    return { input, output, visibleInput: createVisibleInput(input, output) };
+  }
+
+  async function settleWithin<T>(promise: Promise<T>): Promise<T> {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('visible input did not settle')), 100);
+      }),
+    ]);
+  }
+
+  it('resolves only after receiving an answer and cleans up listeners', async () => {
+    const { input, visibleInput } = visibleTerminal();
+    const reading = visibleInput.readLine('用户名: ');
+    input.write('owner\n');
+
+    await expect(settleWithin(reading)).resolves.toBe('owner');
+    expect(input.listenerCount('data')).toBe(0);
+    expect(input.listenerCount('error')).toBe(0);
+    expect(input.listenerCount('end')).toBe(0);
+  });
+
+  it('rejects a username prompt on EOF instead of hanging', async () => {
+    const { input, visibleInput } = visibleTerminal();
+    const reading = visibleInput.readLine('用户名: ');
+    input.end();
+
+    await expect(settleWithin(reading)).rejects.toThrow('用户名输入失败');
+    expect(input.listenerCount('data')).toBe(0);
+    expect(input.listenerCount('error')).toBe(0);
+    expect(input.listenerCount('end')).toBe(0);
+  });
+
+  it('rejects when the input stream closes without an answer', async () => {
+    const { input, visibleInput } = visibleTerminal();
+    const reading = visibleInput.readLine('用户名: ');
+    input.emit('close');
+
+    await expect(settleWithin(reading)).rejects.toThrow('用户名输入失败');
+    expect(input.listenerCount('close')).toBe(0);
+  });
+
+  it('turns input errors into a stable rejection and removes listeners', async () => {
+    const { input, visibleInput } = visibleTerminal();
+    const reading = visibleInput.readLine('用户名: ');
+    input.emit('error', new Error('sensitive visible input detail'));
+
+    await expect(settleWithin(reading)).rejects.toThrow('用户名输入失败');
+    await expect(settleWithin(reading)).rejects.not.toThrow('sensitive visible input detail');
+    expect(input.listenerCount('data')).toBe(0);
+    expect(input.listenerCount('error')).toBe(0);
+    expect(input.listenerCount('end')).toBe(0);
+  });
+
+  it('rejects SIGINT and cleans up the readline interface', async () => {
+    const { input, visibleInput } = visibleTerminal();
+    const reading = visibleInput.readLine('用户名: ');
+    input.write('\x03');
+
+    await expect(settleWithin(reading)).rejects.toThrow('用户名输入失败');
+    expect(input.listenerCount('data')).toBe(0);
+    expect(input.listenerCount('error')).toBe(0);
+    expect(input.listenerCount('end')).toBe(0);
+  });
 });
 
 describe('CLI lifecycle', () => {
@@ -495,5 +627,43 @@ describe('CLI lifecycle', () => {
     expect(close).toHaveBeenCalledOnce();
     expect(output.write).toHaveBeenCalledWith('管理员命令执行失败\n');
     expect(output.write).not.toHaveBeenCalledWith(expect.stringContaining('sensitive runtime detail'));
+  });
+
+  it('returns a safe failure when closing the database throws', async () => {
+    const close = vi.fn(() => {
+      throw new Error('sensitive close detail');
+    });
+    const db = { close } as unknown as Database.Database;
+    const output = { write: vi.fn() };
+    const dependencies = runtime({ output, openDatabase: vi.fn(() => db) });
+
+    await expect(runCli(['admin', 'create'], dependencies)).resolves.toBe(1);
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(output.write).toHaveBeenCalledWith('管理员命令执行失败\n');
+    expect(output.write).not.toHaveBeenCalledWith(expect.stringContaining('sensitive close detail'));
+  });
+
+  it('returns a safe failure and closes the database when username input reaches EOF', async () => {
+    const inputStream = new PassThrough() as PassThrough & { isTTY: boolean };
+    const promptOutput = new PassThrough() as PassThrough & { isTTY: boolean };
+    inputStream.isTTY = true;
+    promptOutput.isTTY = true;
+    const close = vi.fn();
+    const db = { close } as unknown as Database.Database;
+    const output = { write: vi.fn() };
+    const dependencies = runtime({
+      input: createVisibleInput(inputStream, promptOutput),
+      output,
+      openDatabase: vi.fn(() => db),
+      runAdminCommand,
+    });
+
+    const running = runCli(['admin', 'create'], dependencies);
+    inputStream.end();
+
+    await expect(running).resolves.toBe(1);
+    expect(close).toHaveBeenCalledOnce();
+    expect(output.write).toHaveBeenCalledWith('管理员命令执行失败\n');
   });
 });

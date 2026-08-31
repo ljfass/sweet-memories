@@ -1,6 +1,12 @@
 // @vitest-environment node
 
-import { describe, expect, it } from 'vitest';
+import { argon2id, hash as argonHash, verify as argonVerify } from 'argon2';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('argon2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('argon2')>();
+  return { ...actual, verify: vi.fn(actual.verify) };
+});
 
 import {
   hashPassword,
@@ -52,6 +58,57 @@ describe('password hashing', () => {
     const hash = await hashPassword(password);
 
     await expect(verifyPassword(hash, password)).resolves.toBe(true);
+  });
+
+  it('rejects a real Argon2id hash with weaker parameters', async () => {
+    const password = 'a weak parameter password';
+    const verifyMock = vi.mocked(argonVerify);
+    const callsBefore = verifyMock.mock.calls.length;
+    const weakHash = await argonHash(password, {
+      type: argon2id,
+      memoryCost: 4_096,
+      timeCost: 1,
+      parallelism: 1,
+    });
+
+    await expect(verifyPassword(weakHash, password)).resolves.toBe(false);
+    expect(verifyMock).toHaveBeenCalledTimes(callsBefore);
+  });
+
+  it('accepts the supported PHC parameters in any order', async () => {
+    const password = 'a reordered parameter password';
+    const hash = await hashPassword(password);
+    const reordered = hash.replace('m=65536,p=1,t=3', 't=3,m=65536,p=1');
+
+    await expect(verifyPassword(reordered, password)).resolves.toBe(true);
+  });
+
+  it.each([
+    '$argon2id$v=18$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    '$argon2id$v=19$m=65536,t=3$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    '$argon2id$v=19$m=65536,t=3,p=1,m=65536$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    '$argon2id$v=19$m=65536,t=3,p=1,x=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    '$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAA=$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    '$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAA!$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    '$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    '$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    `$argon2id$v=19$m=65536,t=3,p=1$${'A'.repeat(220)}$${'A'.repeat(430)}`,
+  ])('rejects an unsupported or malformed PHC string before verification', async (hash) => {
+    const verifyMock = vi.mocked(argonVerify);
+    const callsBefore = verifyMock.mock.calls.length;
+
+    await expect(verifyPassword(hash, 'any password')).resolves.toBe(false);
+    expect(verifyMock).toHaveBeenCalledTimes(callsBefore);
+  });
+
+  it('short-circuits an oversized memory parameter before Argon2 verification', async () => {
+    const verifyMock = vi.mocked(argonVerify);
+    const callsBefore = verifyMock.mock.calls.length;
+    const oversized =
+      '$argon2id$v=19$m=4294967295,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+    await expect(verifyPassword(oversized, 'any password')).resolves.toBe(false);
+    expect(verifyMock).toHaveBeenCalledTimes(callsBefore);
   });
 
   it.each([
