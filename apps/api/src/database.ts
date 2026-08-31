@@ -21,7 +21,10 @@ export function openDatabase(config: ApiConfig): Database.Database {
 
     db = new Database(config.databasePath);
     db.pragma('foreign_keys = ON');
-    db.pragma('journal_mode = WAL');
+    const journalMode = db.pragma('journal_mode = WAL', { simple: true });
+    if (typeof journalMode !== 'string' || journalMode.toLowerCase() !== 'wal') {
+      throw new Error('SQLite 未能启用 WAL 模式');
+    }
     db.pragma('synchronous = FULL');
     db.pragma('busy_timeout = 5000');
     return db;

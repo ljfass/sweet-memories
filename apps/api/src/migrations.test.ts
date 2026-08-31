@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type Database from 'better-sqlite3';
@@ -8,9 +8,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { loadConfig } from './config.js';
 import { openDatabase } from './database.js';
+import { MigrationError } from './errors.js';
 import { runMigrations } from './migrations.js';
 
 const initialMigrationsRoot = resolve(import.meta.dirname, '../migrations');
+const initialMigrationSql = readFileSync(join(initialMigrationsRoot, '001_initial.sql'), 'utf8');
 const temporaryRoots: string[] = [];
 const openDatabases: Database.Database[] = [];
 
@@ -178,7 +180,7 @@ describe('runMigrations', () => {
     writeMigration(
       migrationsRoot,
       '001_start.sql',
-      `CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+      `${initialMigrationSql}
        CREATE TABLE migration_order(step TEXT NOT NULL);
        INSERT INTO migration_order(step) VALUES ('001');`,
     );
@@ -244,5 +246,134 @@ describe('runMigrations', () => {
     expect(() => runMigrations(db, migrationsRoot)).toThrow('执行迁移失败: 002_broken.sql');
     expect(migrationVersions(db)).toEqual(['001']);
     expect(db.prepare('SELECT value FROM retained').all()).toEqual([{ value: 'yes' }]);
+  });
+
+  it('rejects transaction control before COMMIT can escape the migration transaction', () => {
+    const { db } = createDatabase();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-transaction-escape-');
+    writeMigration(
+      migrationsRoot,
+      '001_escape.sql',
+      `CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+       CREATE TABLE leaked(value TEXT NOT NULL);
+       COMMIT;
+       INSERT INTO table_that_does_not_exist(value) VALUES ('fail');`,
+    );
+
+    expect(() => runMigrations(db, migrationsRoot)).toThrow(
+      '迁移文件包含禁止的事务控制关键字: COMMIT',
+    );
+    expect(
+      db
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name IN ('schema_migrations', 'leaked')`,
+        )
+        .all(),
+    ).toEqual([]);
+  });
+
+  it('allows transaction words inside quoted text, identifiers, and comments', () => {
+    const { db } = createDatabase();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-quoted-words-');
+    writeMigration(
+      migrationsRoot,
+      '001_quoted.sql',
+      `${initialMigrationSql}
+       CREATE TABLE quoted_words(
+         "BEGIN" TEXT,
+         \`COMMIT\` TEXT,
+         [ROLLBACK] TEXT,
+         "SAVEPOINT""escaped" TEXT,
+         \`RELEASE\`\`escaped\` TEXT
+       );
+       INSERT INTO quoted_words("BEGIN", \`COMMIT\`, [ROLLBACK])
+       VALUES ('END '' RELEASE', 'BEGIN COMMIT', 'SAVEPOINT');
+       -- ROLLBACK; BEGIN;
+       /* COMMIT; END; SAVEPOINT; RELEASE; */`,
+    );
+
+    runMigrations(db, migrationsRoot);
+
+    expect(migrationVersions(db)).toEqual(['001']);
+  });
+
+  it.each(['BEGIN', 'COMMIT', 'END', 'ROLLBACK', 'SAVEPOINT', 'RELEASE'])(
+    'rejects the standalone transaction keyword %s',
+    (keyword) => {
+      const { db } = createDatabase();
+      const migrationsRoot = createTemporaryRoot('sweet-memories-transaction-keyword-');
+      writeMigration(
+        migrationsRoot,
+        '001_keyword.sql',
+        `CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+         ${keyword};`,
+      );
+
+      expect(() => runMigrations(db, migrationsRoot)).toThrow(
+        `迁移文件包含禁止的事务控制关键字: ${keyword}`,
+      );
+    },
+  );
+
+  it('rejects an empty migration directory', () => {
+    const { db } = createDatabase();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-empty-migrations-');
+
+    expect(() => runMigrations(db, migrationsRoot)).toThrow('迁移目录不能为空');
+  });
+
+  it('rejects a migration set that does not start at version 001', () => {
+    const { db } = createDatabase();
+    const migrationsRoot = createTemporaryRoot('sweet-memories-missing-initial-');
+    writeMigration(
+      migrationsRoot,
+      '002_later.sql',
+      'CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);',
+    );
+
+    expect(() => runMigrations(db, migrationsRoot)).toThrow('迁移必须从 001 开始');
+  });
+
+  it('rejects migration versions recorded by the database but absent from disk', () => {
+    const { db } = createDatabase();
+    runMigrations(db, initialMigrationsRoot);
+    db.prepare(
+      `INSERT INTO schema_migrations(version, applied_at)
+       VALUES ('999', '2026-08-31T00:00:00.000Z')`,
+    ).run();
+
+    expect(() => runMigrations(db, initialMigrationsRoot)).toThrow(
+      '数据库包含未知迁移版本: 999',
+    );
+  });
+
+  it('rejects a forged initial version when required schema objects are missing', () => {
+    const { db } = createDatabase();
+    db.exec(
+      `CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+       INSERT INTO schema_migrations(version, applied_at)
+       VALUES ('001', '2026-08-31T00:00:00.000Z');`,
+    );
+
+    expect(() => runMigrations(db, initialMigrationsRoot)).toThrow(
+      '迁移后基础数据库对象缺失',
+    );
+  });
+
+  it('wraps malformed migration state reads in MigrationError with their cause', () => {
+    const { db } = createDatabase();
+    db.exec('CREATE TABLE schema_migrations(applied_at TEXT NOT NULL);');
+
+    let caught: unknown;
+    try {
+      runMigrations(db, initialMigrationsRoot);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(MigrationError);
+    expect(caught).toMatchObject({ message: '读取迁移状态失败' });
+    expect((caught as MigrationError).cause).toBeInstanceOf(Error);
   });
 });
