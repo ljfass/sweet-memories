@@ -196,9 +196,25 @@ class SqliteSessionService implements SessionService {
   }
 
   verifyCsrf(session: AuthenticatedSession, rawCsrf: string): boolean {
-    return (
-      isValidRawToken(rawCsrf) && tokenHashEquals(session.csrfHash, hashToken(rawCsrf))
-    );
+    if (
+      !isValidRawToken(rawCsrf) ||
+      !tokenHashEquals(session.tokenHash, session.tokenHash)
+    ) {
+      return false;
+    }
+    const now = this.currentTime();
+
+    return this.db.transaction(() => {
+      const currentSession = findSessionByTokenHash(this.db, session.tokenHash);
+      if (currentSession === undefined) {
+        return false;
+      }
+      if (this.isExpired(currentSession, now)) {
+        deleteSession(this.db, session.tokenHash);
+        return false;
+      }
+      return tokenHashEquals(currentSession.csrfHash, hashToken(rawCsrf));
+    })();
   }
 
   logout(rawToken: string): void {
@@ -230,7 +246,7 @@ class SqliteSessionService implements SessionService {
       !Number.isFinite(absoluteExpiresAt) ||
       !Number.isFinite(idleExpiresAt) ||
       now.getTime() >= absoluteExpiresAt ||
-      now.getTime() > idleExpiresAt
+      now.getTime() >= idleExpiresAt
     );
   }
 

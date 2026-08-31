@@ -336,10 +336,10 @@ describe('session lifecycle', () => {
     expect(service.authenticate(Buffer.alloc(32, 99).toString('base64url'))).toBeNull();
   });
 
-  it('keeps a session valid at the exact 12-hour idle boundary and refreshes activity', async () => {
+  it('keeps a session valid one millisecond before the 12-hour idle boundary', async () => {
     const context = await createContext();
     const created = await login(context);
-    context.setNow('2026-06-01T12:00:00.000Z');
+    context.setNow('2026-06-01T11:59:59.999Z');
 
     const session = context.service.authenticate(created.rawToken);
 
@@ -349,16 +349,16 @@ describe('session lifecycle', () => {
       tokenHash: hashToken(created.rawToken),
       csrfHash: hashToken(created.csrfToken),
       createdAt: '2026-06-01T00:00:00.000Z',
-      lastActivityAt: '2026-06-01T12:00:00.000Z',
-      idleExpiresAt: '2026-06-02T00:00:00.000Z',
+      lastActivityAt: '2026-06-01T11:59:59.999Z',
+      idleExpiresAt: '2026-06-01T23:59:59.999Z',
       absoluteExpiresAt: '2026-06-08T00:00:00.000Z',
     } satisfies AuthenticatedSession);
   });
 
-  it('deletes a session just beyond the idle boundary', async () => {
+  it('deletes a session at the exact 12-hour idle boundary', async () => {
     const context = await createContext();
     const created = await login(context);
-    context.setNow('2026-06-01T12:00:00.001Z');
+    context.setNow('2026-06-01T12:00:00.000Z');
 
     expect(context.service.authenticate(created.rawToken)).toBeNull();
     expect(context.db.prepare('SELECT 1 FROM sessions').get()).toBeUndefined();
@@ -404,9 +404,41 @@ describe('session lifecycle', () => {
     const rotatedSession = context.service.authenticate(created.rawToken) as AuthenticatedSession;
     expect(newCsrf).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(newCsrf).not.toBe(created.csrfToken);
-    expect(context.service.verifyCsrf(rotatedSession, created.csrfToken)).toBe(false);
+    expect(context.service.verifyCsrf(originalSession, created.csrfToken)).toBe(false);
+    expect(context.service.verifyCsrf(originalSession, newCsrf)).toBe(true);
     expect(context.service.verifyCsrf(rotatedSession, newCsrf)).toBe(true);
     expect(JSON.stringify(context.db.prepare('SELECT * FROM sessions').get())).not.toContain(newCsrf);
+  });
+
+  it('rejects CSRF against a logged-out session snapshot', async () => {
+    const context = await createContext();
+    const created = await login(context);
+    const session = context.service.authenticate(created.rawToken) as AuthenticatedSession;
+
+    context.service.logout(created.rawToken);
+
+    expect(context.service.verifyCsrf(session, created.csrfToken)).toBe(false);
+  });
+
+  it('rejects CSRF against an expired session snapshot', async () => {
+    const context = await createContext();
+    const created = await login(context);
+    const session = context.service.authenticate(created.rawToken) as AuthenticatedSession;
+    context.setNow('2026-06-01T12:00:00.000Z');
+
+    expect(context.service.verifyCsrf(session, created.csrfToken)).toBe(false);
+  });
+
+  it('rejects CSRF against a snapshot with an unknown token hash', async () => {
+    const context = await createContext();
+    const created = await login(context);
+    const session = context.service.authenticate(created.rawToken) as AuthenticatedSession;
+    const unknownSession = {
+      ...session,
+      tokenHash: hashToken(Buffer.alloc(32, 120).toString('base64url')),
+    };
+
+    expect(context.service.verifyCsrf(unknownSession, created.csrfToken)).toBe(false);
   });
 
   it('rejects CSRF rotation for unknown and expired sessions with one generic auth error', async () => {
