@@ -9,6 +9,7 @@ import {
   type SessionService,
 } from '../auth/session-service.js';
 import { buildApp } from '../app.js';
+import type { PhotoService } from '../services/photo-service.js';
 
 const publicOrigin = 'https://huangjianfen.cn';
 const rawSessionToken = 'A'.repeat(43);
@@ -27,6 +28,13 @@ const session: AuthenticatedSession = {
   absoluteExpiresAt: '2026-09-08T00:00:00.000Z',
 };
 const applications: FastifyInstance[] = [];
+const photoService: PhotoService = {
+  listPublicPhotos: () => [],
+  listAdminPhotos: () => [],
+  updatePhoto: () => {
+    throw new Error('Unexpected photo update');
+  },
+};
 
 interface SessionSpies {
   readonly service: SessionService;
@@ -69,7 +77,12 @@ function createSessionSpies(): SessionSpies {
 }
 
 function createApp(spies: SessionSpies): FastifyInstance {
-  const app = buildApp({ publicOrigin, sessionService: spies.service, logger: false });
+  const app = buildApp({
+    publicOrigin,
+    sessionService: spies.service,
+    photoService,
+    logger: false,
+  });
   applications.push(app);
   return app;
 }

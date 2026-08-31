@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionService } from './auth/session-service.js';
 import { buildApp } from './app.js';
+import type { PhotoService } from './services/photo-service.js';
 
 const publicOrigin = 'https://huangjianfen.cn';
 const rawSessionToken = 'A'.repeat(43);
@@ -28,6 +29,17 @@ function createSessionService(overrides: Partial<SessionService> = {}): SessionS
   };
 }
 
+function createPhotoService(overrides: Partial<PhotoService> = {}): PhotoService {
+  return {
+    listPublicPhotos: () => [],
+    listAdminPhotos: () => [],
+    updatePhoto: () => {
+      throw new Error('Unexpected photo update');
+    },
+    ...overrides,
+  };
+}
+
 function track(app: FastifyInstance): FastifyInstance {
   applications.push(app);
   return app;
@@ -38,10 +50,27 @@ afterEach(async () => {
 });
 
 describe('buildApp security boundary', () => {
+  it('requires and registers the production photo catalog dependency', async () => {
+    const listPublicPhotos = vi.fn<PhotoService['listPublicPhotos']>(() => []);
+    const app = track(buildApp({
+      publicOrigin,
+      sessionService: createSessionService(),
+      photoService: createPhotoService({ listPublicPhotos }),
+      logger: false,
+    }));
+
+    const response = await app.inject({ method: 'GET', url: '/api/photos' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([]);
+    expect(listPublicPhotos).toHaveBeenCalledOnce();
+  });
+
   it('returns only the minimal health status and registers multipart parsing', async () => {
     const app = track(buildApp({
       publicOrigin,
       sessionService: createSessionService(),
+      photoService: createPhotoService(),
       logger: false,
     }));
     await app.ready();
@@ -64,6 +93,7 @@ describe('buildApp security boundary', () => {
     const app = track(buildApp({
       publicOrigin,
       sessionService: createSessionService({ login }),
+      photoService: createPhotoService(),
       logger: false,
     }));
 
@@ -89,6 +119,7 @@ describe('buildApp security boundary', () => {
     const app = track(buildApp({
       publicOrigin,
       sessionService: createSessionService(),
+      photoService: createPhotoService(),
       logger: false,
     }));
 
@@ -119,6 +150,7 @@ describe('buildApp security boundary', () => {
     const app = track(buildApp({
       publicOrigin,
       sessionService: createSessionService(),
+      photoService: createPhotoService(),
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },
@@ -153,6 +185,7 @@ describe('buildApp security boundary', () => {
     const app = track(buildApp({
       publicOrigin,
       sessionService: createSessionService(),
+      photoService: createPhotoService(),
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },
@@ -202,6 +235,7 @@ describe('buildApp security boundary', () => {
     const app = track(buildApp({
       publicOrigin,
       sessionService: createSessionService({ login }),
+      photoService: createPhotoService(),
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },

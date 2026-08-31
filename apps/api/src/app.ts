@@ -16,13 +16,17 @@ import {
   type ApiErrorBody,
 } from './http/security.js';
 import { registerAdminSessionRoutes } from './routes/admin-session.js';
+import { registerAdminPhotoRoutes } from './routes/admin-photos.js';
 import { registerHealthRoute } from './routes/health.js';
+import { registerPublicPhotoRoutes } from './routes/public-photos.js';
+import type { PhotoService } from './services/photo-service.js';
 
 export type { ApiErrorBody } from './http/security.js';
 
 export interface AppDependencies {
   readonly publicOrigin: string;
   readonly sessionService: SessionService;
+  readonly photoService: PhotoService;
   readonly logger?: false | FastifyLoggerOptions;
 }
 
@@ -109,6 +113,8 @@ export function buildApp(dependencies: AppDependencies): FastifyInstance {
 
   registerHealthRoute(app);
   registerAdminSessionRoutes(app, dependencies);
+  registerPublicPhotoRoutes(app, dependencies);
+  registerAdminPhotoRoutes(app, dependencies);
 
   return app;
 }
