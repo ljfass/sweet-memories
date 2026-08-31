@@ -35,8 +35,8 @@ export interface UpdatePhotoRecordInput {
   readonly updatedAt: string;
 }
 
-export type UpdatePhotoRecordResult =
-  | { readonly kind: 'updated'; readonly photo: PhotoRecord }
+export type UpdatePhotoRecordResult<T = PhotoRecord> =
+  | { readonly kind: 'updated'; readonly photo: T }
   | { readonly kind: 'conflict' }
   | { readonly kind: 'not_found' };
 
@@ -150,6 +150,14 @@ export function updatePhotoRecord(
   db: Database.Database,
   input: UpdatePhotoRecordInput,
 ): UpdatePhotoRecordResult {
+  return updatePhotoRecordAtomically(db, input, (photo) => photo);
+}
+
+export function updatePhotoRecordAtomically<T>(
+  db: Database.Database,
+  input: UpdatePhotoRecordInput,
+  mapUpdatedPhoto: (photo: PhotoRecord) => T,
+): UpdatePhotoRecordResult<T> {
   return db.transaction(() => {
     const update = db.prepare(
       `UPDATE photos
@@ -170,7 +178,7 @@ export function updatePhotoRecord(
       if (photo === undefined) {
         throw new Error('Updated photo disappeared inside transaction');
       }
-      return { kind: 'updated' as const, photo };
+      return { kind: 'updated' as const, photo: mapUpdatedPhoto(photo) };
     }
 
     const exists = db.prepare('SELECT 1 FROM photos WHERE id = ?').get(input.id);

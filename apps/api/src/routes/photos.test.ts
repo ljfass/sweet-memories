@@ -419,6 +419,85 @@ describe('PATCH /api/admin/photos/:id', () => {
     });
   });
 
+  it.each([
+    'missing assets',
+    'no responsive JPEG',
+    'unsafe relative path',
+  ] as const)(
+    'rolls back every edited column when the migration record has %s',
+    async (invalidMedia) => {
+      const { app, db, cookie, csrf } = await createContext();
+      seedPhoto(db, {
+        id: 'migration-edit',
+        title: 'Original title',
+        description: 'Original description',
+        capturedDate: null,
+        status: 'migration_pending',
+      });
+      if (invalidMedia === 'no responsive JPEG') {
+        seedAsset(db, { photoId: 'migration-edit', format: 'avif', width: 320 });
+        seedAsset(db, { photoId: 'migration-edit', format: 'webp', width: 320 });
+      } else if (invalidMedia === 'unsafe relative path') {
+        seedAsset(db, {
+          photoId: 'migration-edit',
+          format: 'jpeg',
+          width: 320,
+          relativePath: '../private-file.jpg',
+        });
+      }
+      const readStoredEdit = () => db.prepare(
+        `SELECT title, description, captured_date, version, updated_at
+         FROM photos WHERE id = ?`,
+      ).get('migration-edit');
+      const before = readStoredEdit();
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: '/api/admin/photos/migration-edit',
+        headers: { origin: publicOrigin, cookie, 'x-csrf-token': csrf },
+        payload: validPayload,
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        error: { code: 'INTERNAL_ERROR', message: '服务器暂时无法处理请求' },
+      });
+      expect(readStoredEdit()).toEqual(before);
+    },
+  );
+
+  it.each([
+    [{ ...validPayload, title: '\u0000' }, 'title-only NUL'],
+    [{ ...validPayload, title: 'a\u0000' }, 'title trailing NUL'],
+    [{ ...validPayload, description: '\u0000details' }, 'description leading NUL'],
+    [{ ...validPayload, description: 'details\u0000more' }, 'description middle NUL'],
+  ])('rejects %s (%s) before changing the database', async (payload) => {
+    const { app, db, cookie, csrf } = await createContext();
+    seedCompletePhoto(db, {
+      id: 'editable',
+      title: 'Original title',
+      description: 'Original description',
+    });
+    const readStoredEdit = () => db.prepare(
+      `SELECT title, description, captured_date, version, updated_at
+       FROM photos WHERE id = ?`,
+    ).get('editable');
+    const before = readStoredEdit();
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/photos/editable',
+      headers: { origin: publicOrigin, cookie, 'x-csrf-token': csrf },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: { code: 'INVALID_PHOTO_EDIT', message: '照片编辑内容无效' },
+    });
+    expect(readStoredEdit()).toEqual(before);
+  });
+
   it.each(invalidPayloads)('rejects an invalid exact edit payload: %s (%s)', async (payload) => {
     const { app, db, cookie, csrf } = await createContext();
     seedCompletePhoto(db, { id: 'editable' });

@@ -4,7 +4,7 @@ import { ApiHttpError } from '../http/security.js';
 import {
   listAdminPhotoRecords,
   listPublicPhotoRecords,
-  updatePhotoRecord,
+  updatePhotoRecordAtomically,
   type PhotoAssetRecord,
   type PhotoRecord,
 } from '../repositories/photos.js';
@@ -194,21 +194,25 @@ class SqlitePhotoService implements PhotoService {
     if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
       throw new Error('Invalid clock value');
     }
-    const result = updatePhotoRecord(this.db, {
-      id: input.id,
-      title: input.title,
-      description: input.description,
-      capturedDate: input.capturedDate,
-      expectedVersion: input.version,
-      updatedAt: now.toISOString(),
-    });
+    const result = updatePhotoRecordAtomically(
+      this.db,
+      {
+        id: input.id,
+        title: input.title,
+        description: input.description,
+        capturedDate: input.capturedDate,
+        expectedVersion: input.version,
+        updatedAt: now.toISOString(),
+      },
+      adminPhoto,
+    );
     if (result.kind === 'not_found') {
       throw new ApiHttpError(404, 'PHOTO_NOT_FOUND', '照片不存在');
     }
     if (result.kind === 'conflict') {
       throw new ApiHttpError(409, 'PHOTO_VERSION_CONFLICT', '照片已被更新，请刷新后重试');
     }
-    return adminPhoto(result.photo);
+    return result.photo;
   }
 }
 
@@ -247,6 +251,8 @@ export function normalizePhotoEditBody(body: unknown): Omit<UpdatePhotoInput, 'i
   const normalizedDescription = rawDescription?.normalize('NFC').trim() ?? null;
   const description = normalizedDescription === '' ? null : normalizedDescription;
   if (
+    title.includes('\u0000') ||
+    description?.includes('\u0000') === true ||
     Array.from(title).length < 1 ||
     Array.from(title).length > 120 ||
     (description !== null && Array.from(description).length > 500) ||
