@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runMigrations } from '../migrations.js';
+import { resetAdminPassword } from '../repositories/admins.js';
 import { hashPassword, verifyPassword } from './passwords.js';
 import {
   AuthenticationError,
@@ -29,6 +30,31 @@ interface TestContext {
 }
 
 const databases: Database.Database[] = [];
+
+function createDeferredVerifier(): {
+  readonly started: Promise<void>;
+  readonly verify: (passwordHash: string, password: string) => Promise<boolean>;
+  resolve(accepted: boolean): void;
+} {
+  let markStarted = (): void => undefined;
+  let resolveVerification!: (accepted: boolean) => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const result = new Promise<boolean>((resolve) => {
+    resolveVerification = resolve;
+  });
+  return {
+    started,
+    async verify() {
+      markStarted();
+      return result;
+    },
+    resolve(accepted) {
+      resolveVerification(accepted);
+    },
+  };
+}
 
 function createDatabase(): Database.Database {
   const db = new Database(':memory:');
@@ -200,6 +226,48 @@ describe('login sessions', () => {
     await expectAuthenticationFailure(wrong);
     expect(verify).toHaveBeenCalledTimes(2);
     expect(verify).toHaveBeenLastCalledWith('stored-password-hash', 'wrong-password');
+  });
+
+  it('rejects a verified password when its administrator hash changed during verification', async () => {
+    const deferred = createDeferredVerifier();
+    const { db, service, verify } = await createContext({ verify: deferred.verify });
+    const login = service.login({
+      username: 'alice',
+      password: 'old-password',
+      ip: '192.0.2.40',
+    });
+    await deferred.started;
+    expect(verify).toHaveBeenCalledWith('stored-password-hash', 'old-password');
+
+    resetAdminPassword(db, {
+      username: 'alice',
+      passwordHash: 'replacement-password-hash',
+      timestamp: '2026-06-01T00:00:01.000Z',
+    });
+    deferred.resolve(true);
+
+    await expectAuthenticationFailure(login);
+    expect(db.prepare('SELECT 1 FROM sessions').get()).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM login_attempts').get()).toBeUndefined();
+  });
+
+  it('completes a deferred successful login when the administrator hash is unchanged', async () => {
+    const deferred = createDeferredVerifier();
+    const { db, service } = await createContext({ verify: deferred.verify });
+    const login = service.login({
+      username: 'alice',
+      password: 'correct-password',
+      ip: '192.0.2.41',
+    });
+    await deferred.started;
+
+    deferred.resolve(true);
+
+    await expect(login).resolves.toMatchObject({
+      idleExpiresAt: '2026-06-01T12:00:00.000Z',
+      absoluteExpiresAt: '2026-06-08T00:00:00.000Z',
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sessions').get()).toEqual({ count: 1 });
   });
 
   it('is compatible with the production Argon2id password helpers', async () => {

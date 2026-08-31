@@ -130,20 +130,33 @@ class SqliteSessionService implements SessionService {
         throw new AuthenticationError();
       }
 
-      clearLoginFailures(this.db, input.ip);
-      const rawToken = createRawToken(this.randomBytes);
-      const csrfToken = createRawToken(this.randomBytes);
-      const idleExpiresAt = addMilliseconds(now, IDLE_MILLISECONDS).toISOString();
-      const absoluteExpiresAt = addMilliseconds(now, ABSOLUTE_MILLISECONDS).toISOString();
-      insertSession(this.db, {
-        tokenHash: hashToken(rawToken),
-        adminId: admin.id,
-        csrfHash: hashToken(csrfToken),
-        createdAt: timestamp,
-        lastActivityAt: timestamp,
-        absoluteExpiresAt,
-      });
-      return { rawToken, csrfToken, idleExpiresAt, absoluteExpiresAt };
+      return this.db
+        .transaction(() => {
+          const currentAdmin = findAdminByUsername(this.db, input.username);
+          if (
+            currentAdmin === undefined ||
+            currentAdmin.id !== admin.id ||
+            currentAdmin.passwordHash !== admin.passwordHash
+          ) {
+            throw new AuthenticationError();
+          }
+
+          clearLoginFailures(this.db, input.ip);
+          const rawToken = createRawToken(this.randomBytes);
+          const csrfToken = createRawToken(this.randomBytes);
+          const idleExpiresAt = addMilliseconds(now, IDLE_MILLISECONDS).toISOString();
+          const absoluteExpiresAt = addMilliseconds(now, ABSOLUTE_MILLISECONDS).toISOString();
+          insertSession(this.db, {
+            tokenHash: hashToken(rawToken),
+            adminId: currentAdmin.id,
+            csrfHash: hashToken(csrfToken),
+            createdAt: timestamp,
+            lastActivityAt: timestamp,
+            absoluteExpiresAt,
+          });
+          return { rawToken, csrfToken, idleExpiresAt, absoluteExpiresAt };
+        })
+        .immediate();
     });
   }
 
