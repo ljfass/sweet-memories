@@ -202,6 +202,24 @@ describe('GET /api/admin/session', () => {
     expect(response.body).not.toContain(rawSessionToken);
   });
 
+  it('does not expose an implicit HEAD route that rotates the CSRF secret', async () => {
+    const spies = createSessionSpies();
+    const app = createApp(spies);
+
+    const response = await app.inject({
+      method: 'HEAD',
+      url: '/api/admin/session',
+      headers: { cookie: cookieHeader },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      error: { code: 'NOT_FOUND', message: '请求的资源不存在' },
+    });
+    expect(spies.authenticate).not.toHaveBeenCalled();
+    expect(spies.rotateCsrf).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, null])('returns the same 401 for a missing or invalid session', async (value) => {
     const spies = createSessionSpies();
     spies.authenticate.mockReturnValue(value === null ? null : session);

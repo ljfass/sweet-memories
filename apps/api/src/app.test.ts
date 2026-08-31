@@ -113,6 +113,74 @@ describe('buildApp security boundary', () => {
     });
   });
 
+  it('preserves a sanitized 413 for an oversized JSON request without logging it as internal', async () => {
+    const sensitiveValue = 'oversized-private-password';
+    const lines: string[] = [];
+    const app = track(buildApp({
+      publicOrigin,
+      sessionService: createSessionService(),
+      logger: {
+        level: 'error',
+        stream: { write: (line) => lines.push(line) },
+      },
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/session',
+      headers: { origin: publicOrigin, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        username: 'admin',
+        password: `${sensitiveValue}${'x'.repeat(1_100_000)}`,
+      }),
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toEqual({
+      error: { code: 'PAYLOAD_TOO_LARGE', message: '请求内容过大' },
+    });
+    const externallyVisible = `${response.body}\n${lines.join('\n')}`;
+    expect(externallyVisible).not.toContain(sensitiveValue);
+    expect(externallyVisible).not.toMatch(
+      /INTERNAL_ERROR|FST_ERR|node_modules|\/var\/|stack|fastify/i,
+    );
+    expect(lines).toHaveLength(0);
+  });
+
+  it('preserves a sanitized 415 for unsupported media without logging it as internal', async () => {
+    const sensitiveValue = 'private-unsupported-payload';
+    const lines: string[] = [];
+    const app = track(buildApp({
+      publicOrigin,
+      sessionService: createSessionService(),
+      logger: {
+        level: 'error',
+        stream: { write: (line) => lines.push(line) },
+      },
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/session',
+      headers: {
+        origin: publicOrigin,
+        'content-type': 'application/x-private-upload',
+      },
+      payload: sensitiveValue,
+    });
+
+    expect(response.statusCode).toBe(415);
+    expect(response.json()).toEqual({
+      error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: '不支持的内容类型' },
+    });
+    const externallyVisible = `${response.body}\n${lines.join('\n')}`;
+    expect(externallyVisible).not.toContain(sensitiveValue);
+    expect(externallyVisible).not.toMatch(
+      /INTERNAL_ERROR|FST_ERR|node_modules|\/var\/|stack|fastify/i,
+    );
+    expect(lines).toHaveLength(0);
+  });
+
   it('logs an unknown failure by request id without exposing request or error secrets', async () => {
     const password = 'do-not-log-password';
     const cookie = '__Host-sweet_memories_session=do-not-log-cookie';
@@ -122,9 +190,14 @@ describe('buildApp security boundary', () => {
     const absolutePath = '/var/lib/sweet-memories/staging/private-original-photo.jpg';
     const lines: string[] = [];
     const login = vi.fn<SessionService['login']>(async () => {
-      throw new Error(
+      const error = new Error(
         `${password} ${cookie} ${leakedSession} ${leakedCsrf} ${originalFilename} ${absolutePath}`,
       );
+      Object.assign(error, {
+        code: 'FST_ERR_CTP_BODY_TOO_LARGE',
+        statusCode: 413,
+      });
+      throw error;
     });
     const app = track(buildApp({
       publicOrigin,

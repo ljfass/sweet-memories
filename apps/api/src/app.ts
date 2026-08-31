@@ -26,17 +26,48 @@ export interface AppDependencies {
   readonly logger?: false | FastifyLoggerOptions;
 }
 
-function isBadRequestError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    Reflect.get(error, 'statusCode') === 400
-  );
+interface KnownClientError {
+  readonly statusCode: 400 | 413 | 415;
+  readonly code: string;
+  readonly message: string;
+}
+
+function knownFastifyClientError(error: unknown): KnownClientError | null {
+  if (
+    (error instanceof Fastify.errorCodes.FST_ERR_CTP_INVALID_JSON_BODY ||
+      error instanceof Fastify.errorCodes.FST_ERR_CTP_EMPTY_JSON_BODY ||
+      error instanceof Fastify.errorCodes.FST_ERR_CTP_INVALID_CONTENT_LENGTH ||
+      error instanceof Fastify.errorCodes.FST_ERR_VALIDATION) &&
+    error.statusCode === 400
+  ) {
+    return { statusCode: 400, code: 'INVALID_REQUEST', message: '请求内容无效' };
+  }
+
+  if (
+    error instanceof Fastify.errorCodes.FST_ERR_CTP_BODY_TOO_LARGE &&
+    error.statusCode === 413
+  ) {
+    return { statusCode: 413, code: 'PAYLOAD_TOO_LARGE', message: '请求内容过大' };
+  }
+
+  if (
+    error instanceof Fastify.errorCodes.FST_ERR_CTP_INVALID_MEDIA_TYPE &&
+    error.statusCode === 415
+  ) {
+    return {
+      statusCode: 415,
+      code: 'UNSUPPORTED_MEDIA_TYPE',
+      message: '不支持的内容类型',
+    };
+  }
+
+  return null;
 }
 
 export function buildApp(dependencies: AppDependencies): FastifyInstance {
   const app = Fastify({
     trustProxy: ['127.0.0.1', '::1'],
+    exposeHeadRoutes: false,
     logger: dependencies.logger ?? { level: 'info' },
     logController: new LogController({ disableRequestLogging: true }),
   });
@@ -53,6 +84,7 @@ export function buildApp(dependencies: AppDependencies): FastifyInstance {
   app.setErrorHandler(async (error, request, reply) => {
     let statusCode: number;
     let body: ApiErrorBody;
+    const clientError = knownFastifyClientError(error);
 
     if (error instanceof ApiHttpError) {
       statusCode = error.statusCode;
@@ -60,9 +92,9 @@ export function buildApp(dependencies: AppDependencies): FastifyInstance {
     } else if (error instanceof AuthenticationError) {
       statusCode = 401;
       body = apiErrorBody(error.code, error.message);
-    } else if (isBadRequestError(error)) {
-      statusCode = 400;
-      body = apiErrorBody('INVALID_REQUEST', '请求内容无效');
+    } else if (clientError !== null) {
+      statusCode = clientError.statusCode;
+      body = apiErrorBody(clientError.code, clientError.message);
     } else {
       statusCode = 500;
       body = apiErrorBody('INTERNAL_ERROR', '服务器暂时无法处理请求');
