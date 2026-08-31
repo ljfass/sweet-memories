@@ -1,10 +1,13 @@
-import * as exifr from 'exifr';
+import { open } from 'node:fs/promises';
+
+import exifr from 'exifr';
 import { fileTypeFromFile, type FileTypeResult } from 'file-type';
 import sharp from 'sharp';
 
 import { inspectHeif, type HeifDimensions } from './heif-tools.js';
 
 export const MAX_IMAGE_PIXELS = 60_000_000;
+const MAX_FTYP_BOX_BYTES = 4096;
 
 export type SupportedImageKind = 'heic' | 'heif' | 'jpeg' | 'png' | 'webp';
 export type InputInspectionErrorCode =
@@ -138,6 +141,75 @@ function validateDimensions(dimensions: ImageMetadata): HeifDimensions {
   return { width: safeWidth, height: safeHeight };
 }
 
+function unsupportedHeifContainer(): InputInspectionError {
+  return new InputInspectionError('UNSUPPORTED_IMAGE', 'HEIF 文件容器无效');
+}
+
+function readPrintableBrand(box: Buffer, offset: number): string {
+  for (let index = offset; index < offset + 4; index += 1) {
+    const byte = box[index];
+    if (byte === undefined || byte < 0x20 || byte > 0x7e) {
+      throw unsupportedHeifContainer();
+    }
+  }
+
+  return box.toString('ascii', offset, offset + 4);
+}
+
+async function validateHeifFileTypeBox(
+  inputPath: string,
+  kind: 'heic' | 'heif',
+): Promise<void> {
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    file = await open(inputPath, 'r');
+    const header = Buffer.alloc(16);
+    const headerRead = await file.read(header, 0, header.length, 0);
+    if (headerRead.bytesRead !== header.length || header.toString('ascii', 4, 8) !== 'ftyp') {
+      throw unsupportedHeifContainer();
+    }
+
+    const boxSize = header.readUInt32BE(0);
+    if (
+      boxSize < 16
+      || boxSize > MAX_FTYP_BOX_BYTES
+      || (boxSize - 16) % 4 !== 0
+    ) {
+      throw unsupportedHeifContainer();
+    }
+
+    const box = Buffer.alloc(boxSize);
+    const boxRead = await file.read(box, 0, box.length, 0);
+    if (boxRead.bytesRead !== box.length || box.toString('ascii', 4, 8) !== 'ftyp') {
+      throw unsupportedHeifContainer();
+    }
+
+    const majorBrand = readPrintableBrand(box, 8);
+    if (
+      (kind === 'heic' && majorBrand !== 'heic' && majorBrand !== 'heix')
+      || (kind === 'heif' && majorBrand !== 'mif1')
+    ) {
+      throw unsupportedHeifContainer();
+    }
+
+    const brands = [majorBrand];
+    for (let offset = 16; offset < box.length; offset += 4) {
+      brands.push(readPrintableBrand(box, offset));
+    }
+    if (brands.some((brand) => brand === 'avif' || brand === 'avis')) {
+      throw new InputInspectionError('UNSUPPORTED_IMAGE', '不支持 AVIF 图片');
+    }
+  } catch (error) {
+    if (error instanceof InputInspectionError) {
+      throw error;
+    }
+
+    throw unsupportedHeifContainer();
+  } finally {
+    await file?.close().catch(() => undefined);
+  }
+}
+
 async function readTakenDate(inputPath: string, parseExif: ExifParser): Promise<string | null> {
   try {
     const metadata = await parseExif(inputPath, exifOptions);
@@ -172,6 +244,7 @@ export async function inspectInput(
 
   let metadata: ImageMetadata;
   if (supportedType.kind === 'heic' || supportedType.kind === 'heif') {
+    await validateHeifFileTypeBox(inputPath, supportedType.kind);
     metadata = await (dependencies.inspectHeif ?? inspectHeif)(inputPath);
   } else {
     try {

@@ -23,6 +23,8 @@ let jpegPath: string;
 let pngPath: string;
 let webpPath: string;
 let heifPath: string;
+let avifPath: string;
+let exifJpegPath: string;
 
 beforeAll(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'sweet-memories-inspect-'));
@@ -30,12 +32,21 @@ beforeAll(async () => {
   pngPath = join(temporaryDirectory, 'renamed-as-jpeg.jpg');
   webpPath = join(temporaryDirectory, 'photo.webp');
   heifPath = join(temporaryDirectory, 'photo.heif');
+  avifPath = join(temporaryDirectory, 'photo.avif');
+  exifJpegPath = join(temporaryDirectory, 'photo-with-exif.jpg');
 
   const pixels = Buffer.from([255, 0, 0, 255]);
   await Promise.all([
     sharp(pixels, { raw: { width: 1, height: 1, channels: 4 } }).jpeg().toFile(jpegPath),
     sharp(pixels, { raw: { width: 1, height: 1, channels: 4 } }).png().toFile(pngPath),
     sharp(pixels, { raw: { width: 1, height: 1, channels: 4 } }).webp().toFile(webpPath),
+    sharp({ create: { width: 2, height: 2, channels: 3, background: '#ff0000' } })
+      .avif()
+      .toFile(avifPath),
+    sharp(pixels, { raw: { width: 1, height: 1, channels: 4 } })
+      .jpeg()
+      .withExif({ IFD2: { DateTimeOriginal: '2024:02:29 23:59:59' } })
+      .toFile(exifJpegPath),
   ]);
 
   const heif = await readFile(validHeic);
@@ -88,7 +99,7 @@ describe('inspectInput format recognition', () => {
       return path;
     }],
     ['AVIF', async () => {
-      const path = join(temporaryDirectory, 'photo.avif');
+      const path = join(temporaryDirectory, 'minimal.avif');
       await writeFile(path, Buffer.from('00000018667479706176696600000000617669666d696631', 'hex'));
       return path;
     }],
@@ -108,6 +119,51 @@ describe('inspectInput format recognition', () => {
     await writeFile(damagedJpeg, Buffer.from('ffd8ffe000104a4649460001', 'hex'));
 
     await expect(inspectInput(damagedJpeg)).rejects.toMatchObject({ code: 'UNSUPPORTED_IMAGE' });
+  });
+
+  it('rejects a real AVIF image', async () => {
+    await expect(inspectInput(avifPath, heifDependencies())).rejects.toMatchObject({
+      code: 'UNSUPPORTED_IMAGE',
+    });
+  });
+
+  it('rejects AVIF data disguised with a mif1 major brand before HEIF inspection', async () => {
+    const avif = await readFile(avifPath);
+    expect(avif.toString('ascii', 4, 8)).toBe('ftyp');
+    expect(avif.toString('ascii', 8, 12)).toBe('avif');
+    const ftypSize = avif.readUInt32BE(0);
+    const compatibleBrands = Array.from(
+      { length: (ftypSize - 16) / 4 },
+      (_, index) => avif.toString('ascii', 16 + index * 4, 20 + index * 4),
+    );
+    expect(compatibleBrands).toContain('avif');
+
+    const disguised = Buffer.from(avif);
+    disguised.write('mif1', 8, 'ascii');
+    const disguisedPath = join(temporaryDirectory, 'disguised-avif.heif');
+    await writeFile(disguisedPath, disguised);
+    await expect(sharp(disguisedPath).metadata()).resolves.toMatchObject({ width: 2, height: 2 });
+    const inspectHeif = vi.fn().mockResolvedValue({ width: 2, height: 2 });
+
+    await expect(inspectInput(disguisedPath, {
+      inspectHeif,
+      parseExif: vi.fn().mockResolvedValue(undefined),
+    })).rejects.toMatchObject({ code: 'UNSUPPORTED_IMAGE' });
+    expect(inspectHeif).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed mif1 ftyp box before HEIF inspection', async () => {
+    const malformed = await readFile(heifPath);
+    malformed.writeUInt32BE(18, 0);
+    const malformedPath = join(temporaryDirectory, 'malformed-ftyp.heif');
+    await writeFile(malformedPath, malformed);
+    const inspectHeif = vi.fn().mockResolvedValue({ width: 64, height: 48 });
+
+    await expect(inspectInput(malformedPath, {
+      inspectHeif,
+      parseExif: vi.fn().mockResolvedValue(undefined),
+    })).rejects.toMatchObject({ code: 'UNSUPPORTED_IMAGE' });
+    expect(inspectHeif).not.toHaveBeenCalled();
   });
 });
 
@@ -153,6 +209,22 @@ describe('inspectInput dimensions', () => {
 });
 
 describe('EXIF calendar dates', () => {
+  it('reads DateTimeOriginal through the Node ESM default export used in production', async () => {
+    const actualExifr = await vi.importActual<typeof import('exifr')>('exifr');
+    vi.doMock('exifr', () => ({ default: actualExifr.default }));
+    vi.resetModules();
+
+    try {
+      const productionModule = await import('./inspect-input.js');
+      await expect(productionModule.inspectInput(exifJpegPath)).resolves.toMatchObject({
+        takenDate: '2024-02-29',
+      });
+    } finally {
+      vi.doUnmock('exifr');
+      vi.resetModules();
+    }
+  });
+
   it.each([
     ['2024:02:29 23:59:59', '2024-02-29'],
     ['2000:02:29 00:00:00', '2000-02-29'],
