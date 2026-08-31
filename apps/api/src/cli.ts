@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface, emitKeypressEvents } from 'node:readline';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 
 import {
@@ -305,7 +306,17 @@ export async function runCli(
 
 function isDirectExecution(): boolean {
   const entry = process.argv[1];
-  return entry !== undefined && import.meta.url === pathToFileURL(resolve(entry)).href;
+  if (entry === undefined) {
+    return false;
+  }
+  try {
+    return (
+      realpathSync.native(fileURLToPath(import.meta.url)) ===
+      realpathSync.native(resolve(entry))
+    );
+  } catch {
+    return false;
+  }
 }
 
 if (isDirectExecution()) {

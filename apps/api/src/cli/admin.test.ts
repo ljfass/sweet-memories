@@ -1,11 +1,13 @@
 // @vitest-environment node
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { hashPassword, verifyPassword } from '../auth/passwords.js';
 import { createHiddenInput, createVisibleInput, runCli, type CliRuntime } from '../cli.js';
@@ -22,12 +24,33 @@ import {
 } from './admin.js';
 
 const migrationsRoot = resolve(import.meta.dirname, '../../migrations');
+const apiRoot = resolve(import.meta.dirname, '../..');
+const repositoryRoot = resolve(apiRoot, '../..');
+const builtCliPath = join(apiRoot, 'dist/cli.js');
 const temporaryRoots: string[] = [];
 const openDatabases: Database.Database[] = [];
 
+function createTemporaryRoot(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  temporaryRoots.push(root);
+  return root;
+}
+
+beforeAll(() => {
+  if (!import.meta.dirname.includes(`${join('src', 'cli')}`)) {
+    return;
+  }
+  const build = spawnSync('pnpm', ['--dir', apiRoot, 'build'], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+  });
+  if (build.status !== 0) {
+    throw new Error('无法为 CLI 子进程测试构建 API');
+  }
+});
+
 function createDatabase(): Database.Database {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'sweet-memories-admin-'));
-  temporaryRoots.push(dataRoot);
+  const dataRoot = createTemporaryRoot('sweet-memories-admin-');
   const config = loadConfig({
     NODE_ENV: 'test',
     SWEET_MEMORIES_DATA_ROOT: dataRoot,
@@ -665,5 +688,91 @@ describe('CLI lifecycle', () => {
     await expect(running).resolves.toBe(1);
     expect(close).toHaveBeenCalledOnce();
     expect(output.write).toHaveBeenCalledWith('管理员命令执行失败\n');
+  });
+});
+
+describe('CLI executable entry', () => {
+  function runCliProcess(entry: string, args: readonly string[], dataRoot?: string) {
+    return spawnSync(process.execPath, [entry, ...args], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      env: dataRoot === undefined
+        ? process.env
+        : { ...process.env, SWEET_MEMORIES_DATA_ROOT: dataRoot },
+    });
+  }
+
+  it('runs help through the real built entry without opening the database', () => {
+    const root = createTemporaryRoot('sweet-memories-real-cli-');
+    const dataRoot = join(root, 'data');
+
+    const result = runCliProcess(builtCliPath, ['--help'], dataRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(adminHelp);
+    expect(result.stderr).toBe('');
+    expect(existsSync(dataRoot)).toBe(false);
+  });
+
+  it('runs help through a symlink without opening the database', () => {
+    const root = createTemporaryRoot('sweet-memories-symlink-cli-');
+    const entry = join(root, 'sweet-memories-admin');
+    const dataRoot = join(root, 'data');
+    symlinkSync(builtCliPath, entry);
+
+    const result = runCliProcess(entry, ['--help'], dataRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(adminHelp);
+    expect(result.stderr).toBe('');
+    expect(existsSync(dataRoot)).toBe(false);
+  });
+
+  it('fails closed for an unknown command through a symlink', () => {
+    const root = createTemporaryRoot('sweet-memories-symlink-unknown-');
+    const entry = join(root, 'sweet-memories-admin');
+    symlinkSync(builtCliPath, entry);
+
+    const result = runCliProcess(entry, ['admin', 'delete']);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe(adminHelp);
+    expect(result.stderr).toBe('');
+  });
+
+  it('has no side effects when imported as a module', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', 'await import(process.env.CLI_MODULE)'],
+      {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+        env: { ...process.env, CLI_MODULE: pathToFileURL(builtCliPath).href },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+  });
+
+  it('fails closed when an imported module sees a missing argv entry', () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        "process.argv[1] = '/missing/sweet-memories-cli'; await import(process.env.CLI_MODULE)",
+      ],
+      {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+        env: { ...process.env, CLI_MODULE: pathToFileURL(builtCliPath).href },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
   });
 });
