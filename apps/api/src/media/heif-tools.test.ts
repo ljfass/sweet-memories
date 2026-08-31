@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -21,13 +23,32 @@ describe('inspectHeif', () => {
       '  color profile: no',
     ].join('\n'));
 
-    await expect(inspectHeif('/staging/photo;touch-pwned.heic', runner)).resolves.toEqual({
+    await expect(inspectHeif('/staging/photo;touch-pwned.heic', { runner })).resolves.toEqual({
       width: 4032,
       height: 3024,
     });
     expect(runner).toHaveBeenCalledWith(
       'heif-info',
       ['/staging/photo;touch-pwned.heic'],
+      {
+        encoding: 'utf8',
+        maxBuffer: HEIF_MAX_BUFFER_BYTES,
+        shell: false,
+        timeout: HEIF_TOOL_TIMEOUT_MS,
+      },
+    );
+  });
+
+  it('uses the configured heif-info executable path without changing the input argument', async () => {
+    const runner = successfulRunner('image: 48x64 (id=1), primary');
+
+    await expect(inspectHeif('/staging/photo file.heic', {
+      executable: '/opt/libheif/bin/heif-info',
+      runner,
+    })).resolves.toEqual({ width: 48, height: 64 });
+    expect(runner).toHaveBeenCalledWith(
+      '/opt/libheif/bin/heif-info',
+      ['/staging/photo file.heic'],
       {
         encoding: 'utf8',
         maxBuffer: HEIF_MAX_BUFFER_BYTES,
@@ -44,7 +65,9 @@ describe('inspectHeif', () => {
     ['multiple images', 'image: 10x10 (id=1), primary\nimage: 10x10 (id=2)'],
     ['multiple primary images', 'image: 10x10 (id=1), primary\nimage: 10x10 (id=2), primary'],
   ])('rejects %s', async (_label, stdout) => {
-    await expect(inspectHeif('/staging/photo.heic', successfulRunner(stdout))).rejects.toMatchObject({
+    await expect(inspectHeif('/staging/photo.heic', {
+      runner: successfulRunner(stdout),
+    })).rejects.toMatchObject({
       code: 'HEIF_SEQUENCE_UNSUPPORTED',
     });
   });
@@ -57,7 +80,9 @@ describe('inspectHeif', () => {
     ['negative width', 'image: -1x10 (id=1), primary'],
     ['unsafe width', 'image: 9007199254740992x1 (id=1), primary'],
   ])('rejects malformed output: %s', async (_label, stdout) => {
-    await expect(inspectHeif('/staging/photo.heic', successfulRunner(stdout))).rejects.toMatchObject({
+    await expect(inspectHeif('/staging/photo.heic', {
+      runner: successfulRunner(stdout),
+    })).rejects.toMatchObject({
       code: 'HEIF_INVALID_OUTPUT',
     });
   });
@@ -70,9 +95,19 @@ describe('inspectHeif', () => {
   ])('maps %s to a stable typed error without leaking command output', async (_label, failure, code) => {
     const runner: HeifCommandRunner = vi.fn().mockRejectedValue(failure);
 
-    const result = inspectHeif('/secret/path/photo.heic', runner);
+    const result = inspectHeif('/secret/path/photo.heic', { runner });
     await expect(result).rejects.toMatchObject({ code });
     await expect(result).rejects.not.toThrow(/secret|stdout|stderr|photo\.heic/iu);
+  });
+
+  it('rejects an empty executable before invoking the runner', async () => {
+    const runner = successfulRunner('image: 48x64 (id=1), primary');
+
+    await expect(inspectHeif('/staging/photo.heic', {
+      executable: '   ',
+      runner,
+    })).rejects.toMatchObject({ code: 'HEIF_TOOL_UNAVAILABLE' });
+    expect(runner).not.toHaveBeenCalled();
   });
 });
 
@@ -81,11 +116,30 @@ describe('convertHeif', () => {
     const runner = successfulRunner();
 
     await expect(
-      convertHeif('/staging/input;rm.heic', '/staging/output file.png', runner),
+      convertHeif('/staging/input;rm.heic', '/staging/output file.png', { runner }),
     ).resolves.toBeUndefined();
     expect(runner).toHaveBeenCalledWith(
       'heif-convert',
       ['/staging/input;rm.heic', '/staging/output file.png'],
+      {
+        encoding: 'utf8',
+        maxBuffer: HEIF_MAX_BUFFER_BYTES,
+        shell: false,
+        timeout: HEIF_TOOL_TIMEOUT_MS,
+      },
+    );
+  });
+
+  it('uses the configured heif-convert executable path with separate file arguments', async () => {
+    const runner = successfulRunner();
+
+    await expect(convertHeif('/staging/input file.heic', '/staging/output file.png', {
+      executable: '/opt/libheif/bin/heif-convert',
+      runner,
+    })).resolves.toBeUndefined();
+    expect(runner).toHaveBeenCalledWith(
+      '/opt/libheif/bin/heif-convert',
+      ['/staging/input file.heic', '/staging/output file.png'],
       {
         encoding: 'utf8',
         maxBuffer: HEIF_MAX_BUFFER_BYTES,
@@ -100,9 +154,19 @@ describe('convertHeif', () => {
       Object.assign(new Error('private stdout /staging/input.heic'), { code: 1 }),
     );
 
-    const result = convertHeif('/staging/input.heic', '/staging/output.png', runner);
+    const result = convertHeif('/staging/input.heic', '/staging/output.png', { runner });
     await expect(result).rejects.toBeInstanceOf(HeifToolError);
     await expect(result).rejects.toMatchObject({ code: 'HEIF_TOOL_FAILED' });
     await expect(result).rejects.not.toThrow(/private|staging|input|output/iu);
+  });
+
+  it('rejects an empty executable before invoking the conversion runner', async () => {
+    const runner = successfulRunner();
+
+    await expect(convertHeif('/staging/input.heic', '/staging/output.png', {
+      executable: '',
+      runner,
+    })).rejects.toMatchObject({ code: 'HEIF_TOOL_UNAVAILABLE' });
+    expect(runner).not.toHaveBeenCalled();
   });
 });

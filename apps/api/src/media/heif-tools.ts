@@ -39,6 +39,11 @@ export type HeifCommandRunner = (
   options: HeifCommandOptions,
 ) => Promise<HeifCommandResult>;
 
+export interface HeifToolOptions {
+  readonly executable?: string;
+  readonly runner?: HeifCommandRunner;
+}
+
 export interface HeifDimensions {
   width: number;
   height: number;
@@ -91,6 +96,15 @@ function outputText(output: string | Buffer): string {
   return typeof output === 'string' ? output : output.toString('utf8');
 }
 
+function resolveExecutable(executable: string | undefined, defaultExecutable: string): string {
+  const resolved = executable ?? defaultExecutable;
+  if (typeof resolved !== 'string' || resolved.trim().length === 0) {
+    throw new HeifToolError('HEIF_TOOL_UNAVAILABLE', 'HEIF 处理工具不可用');
+  }
+
+  return resolved;
+}
+
 function parseDimensions(stdout: string): HeifDimensions {
   const lines = stdout.split(/\r?\n/u).map((line) => line.trim());
   const declaresSequence = lines.some((line) => (
@@ -136,10 +150,12 @@ function parseDimensions(stdout: string): HeifDimensions {
 
 export async function inspectHeif(
   inputPath: string,
-  runner: HeifCommandRunner = runExecFile,
+  options: HeifToolOptions = {},
 ): Promise<HeifDimensions> {
+  const executable = resolveExecutable(options.executable, 'heif-info');
+  const runner = options.runner ?? runExecFile;
   try {
-    const result = await runner('heif-info', [inputPath], commandOptions);
+    const result = await runner(executable, [inputPath], commandOptions);
     return parseDimensions(outputText(result.stdout));
   } catch (error) {
     if (error instanceof HeifToolError) {
@@ -153,10 +169,12 @@ export async function inspectHeif(
 export async function convertHeif(
   inputPath: string,
   outputPngPath: string,
-  runner: HeifCommandRunner = runExecFile,
+  options: HeifToolOptions = {},
 ): Promise<void> {
+  const executable = resolveExecutable(options.executable, 'heif-convert');
+  const runner = options.runner ?? runExecFile;
   try {
-    await runner('heif-convert', [inputPath, outputPngPath], commandOptions);
+    await runner(executable, [inputPath, outputPngPath], commandOptions);
   } catch (error) {
     throw mapCommandFailure(error);
   }
