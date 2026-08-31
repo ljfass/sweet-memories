@@ -107,4 +107,12 @@ describe('photo API workspace contract', () => {
 
     expect(nodeConfig?.files).toContain('apps/api/src/**/*.ts')
   })
+
+  it('ignores build output at every workspace depth', () => {
+    const ignoreConfig = eslintConfig.find((config) =>
+      Array.isArray(config.ignores),
+    )
+
+    expect(ignoreConfig?.ignores).toContain('**/dist/**')
+  })
 })

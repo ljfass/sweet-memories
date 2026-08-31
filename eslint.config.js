@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint'
 import vue from 'eslint-plugin-vue'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'coverage/**', 'src/assets/generated/**', 'codebase/**'] },
+  { ignores: ['**/dist/**', 'coverage/**', 'src/assets/generated/**', 'codebase/**'] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   ...vue.configs['flat/recommended'],
