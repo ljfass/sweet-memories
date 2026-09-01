@@ -458,6 +458,24 @@ describe('POST /api/admin/photos', () => {
     db.prepare("UPDATE settings SET value = 'true' WHERE key = 'uploads_enabled'").run();
   }
 
+  it('authenticates before checking Origin or CSRF', async () => {
+    const { app, db } = await createContext();
+    await enableUploads(db);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: {
+        'content-type': validFile.contentType,
+        'idempotency-key': requestId,
+      },
+      payload: validFile.body,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(photoCountFor(db)).toBe(0);
+  });
+
   it('requires exact Origin, authentication, one current CSRF value, and a canonical request id', async () => {
     const { app, db, cookie, csrf } = await createContext();
     await enableUploads(db);

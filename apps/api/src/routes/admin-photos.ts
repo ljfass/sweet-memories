@@ -146,8 +146,8 @@ export function registerAdminPhotoRoutes(
 
   app.post('/api/admin/photos', async (request, reply) => {
     preventAdminCaching(reply);
-    requireExactOrigin(request, dependencies.publicOrigin);
     const authenticated = requireAuthenticatedRequest(request, dependencies.sessionService);
+    requireExactOrigin(request, dependencies.publicOrigin);
     requireCsrf(request, dependencies.sessionService, authenticated.session);
     const requestId = idempotencyKey(request);
     try {
