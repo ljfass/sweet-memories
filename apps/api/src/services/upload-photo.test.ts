@@ -204,6 +204,43 @@ describe('upload service admission and idempotency', () => {
     expect(processPhoto).toHaveBeenCalledOnce();
   });
 
+  it('isolates new uploads and idempotent replay from an unrelated invalid migration record', async () => {
+    enableUploads();
+    db.prepare(
+      `INSERT INTO photos(
+         id, title, description, captured_date, status, rotation, offset_x, offset_y,
+         request_id, version, created_at, updated_at
+       ) VALUES (?, ?, NULL, NULL, 'migration_pending', 0, 0, 0, ?, 1, ?, ?)`,
+    ).run(
+      'unrelated-migration',
+      'Unrelated migration without JPEG fallback',
+      secondRequestId,
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+    );
+    const statfs = vi.fn(async () => ({ bavail: MIN_FREE_BYTES, bsize: 1n }));
+    const processPhoto = vi.fn(fakeProcessPhoto);
+    const service = createService({ statfs, processPhoto });
+
+    const created = await service.upload({
+      requestId: firstRequestId,
+      stream: Readable.from(Buffer.from('isolated image')),
+    });
+    const statfsCallsAfterCreate = statfs.mock.calls.length;
+    const replay = await service.upload({
+      requestId: firstRequestId,
+      stream: unreadableStream(),
+    });
+
+    expect(created.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+    expect(replay.photo.id).toBe(created.photo.id);
+    expect(photoCount()).toBe(2);
+    expect(await readdir(mediaRoot)).toEqual([firstPhotoId]);
+    expect(statfs).toHaveBeenCalledTimes(statfsCallsAfterCreate);
+    expect(processPhoto).toHaveBeenCalledOnce();
+  });
+
   it('creates distinct photos for distinct request ids', async () => {
     enableUploads();
     const service = createService();

@@ -34,6 +34,7 @@ interface TestContext {
   readonly csrf: string;
   readonly mediaRoot: string;
   readonly stagingRoot: string;
+  readonly logLines: readonly string[];
 }
 
 const currentGroupId = process.getgid?.();
@@ -145,6 +146,8 @@ function seedAsset(
 }
 
 interface ContextOptions {
+  readonly captureLogs?: boolean;
+  readonly processPhoto?: (options: ProcessPhotoOptions) => Promise<ProcessedPhotoManifest>;
   readonly processingQueue?: ProcessingQueue;
   readonly statfs?: (path: string) => Promise<{ bavail: bigint; bsize: bigint }>;
 }
@@ -160,6 +163,7 @@ async function createContext(options: ContextOptions = {}): Promise<TestContext>
   mkdirSync(mediaRoot);
   mkdirSync(stagingRoot);
   const db = new Database(join(root, 'routes.sqlite3'));
+  const logLines: string[] = [];
   databases.push(db);
   db.pragma('foreign_keys = ON');
   runMigrations(db, migrationsRoot);
@@ -211,7 +215,7 @@ async function createContext(options: ContextOptions = {}): Promise<TestContext>
       mime: 'image/jpeg',
       takenDate: '2026-09-01',
     }),
-    processPhoto: fakeProcessPhoto,
+    processPhoto: options.processPhoto ?? fakeProcessPhoto,
     heifInfoPath: '/configured/heif-info',
     heifConvertPath: '/configured/heif-convert',
     now: () => new Date('2026-09-01T12:00:00.000Z'),
@@ -222,7 +226,9 @@ async function createContext(options: ContextOptions = {}): Promise<TestContext>
     sessionService,
     photoService,
     uploadPhotoService,
-    logger: false,
+    logger: options.captureLogs
+      ? { level: 'error', stream: { write: (line) => logLines.push(line) } }
+      : false,
   });
   applications.push(app);
 
@@ -235,6 +241,7 @@ async function createContext(options: ContextOptions = {}): Promise<TestContext>
     csrf: login.csrfToken,
     mediaRoot,
     stagingRoot,
+    logLines,
   };
 }
 
@@ -635,6 +642,102 @@ describe('POST /api/admin/photos', () => {
     expect(response.json()).toEqual({
       error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: '请使用 multipart/form-data 上传' },
     });
+    expect(photoCountFor(db)).toBe(0);
+  });
+
+  it.each([
+    {
+      label: 'a missing boundary',
+      contentType: 'multipart/form-data',
+      body: 'private-no-boundary-body private-no-boundary.jpg /var/private-no-boundary',
+    },
+    {
+      label: 'a body that does not use its declared boundary',
+      contentType: 'multipart/form-data; boundary=fake-boundary',
+      body: 'private-nonmultipart-body private-fake.jpg /var/private-fake',
+    },
+    {
+      label: 'an incomplete part header',
+      contentType: 'multipart/form-data; boundary=bad-header-boundary',
+      body: [
+        '--bad-header-boundary',
+        'Content-Disposition: form-data; name="photo"; filename="private-header.jpg"',
+        'Broken-Private-Header',
+      ].join('\r\n'),
+    },
+    {
+      label: 'an unexpected end after a file body',
+      contentType: 'multipart/form-data; boundary=unexpected-end-boundary',
+      body: [
+        '--unexpected-end-boundary',
+        'Content-Disposition: form-data; name="photo"; filename="private-unexpected.jpg"',
+        'Content-Type: image/jpeg',
+        '',
+        'private-unexpected-body /var/private-unexpected',
+      ].join('\r\n'),
+    },
+  ])('maps multipart parser syntax failure for $label to a sanitized 400', async ({ contentType, body }) => {
+    const { app, db, cookie, csrf, mediaRoot, stagingRoot, logLines } = await createContext({
+      captureLogs: true,
+    });
+    await enableUploads(db);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: {
+        origin: publicOrigin,
+        cookie,
+        'x-csrf-token': csrf,
+        'idempotency-key': requestId,
+        'content-type': contentType,
+      },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: { code: 'INVALID_MULTIPART_UPLOAD', message: '请只上传一个 photo 文件' },
+    });
+    expect(logLines).toHaveLength(0);
+    const externallyVisible = `${response.body}\n${logLines.join('\n')}`;
+    expect(externallyVisible).not.toMatch(/private|filename|\.jpg|\/var\/|node_modules|stack/i);
+    expect(photoCountFor(db)).toBe(0);
+    expect(await readdir(mediaRoot)).toEqual([]);
+    expect(await readdir(stagingRoot)).toEqual([]);
+  });
+
+  it('keeps an unrelated plain upload service error as a sanitized 500', async () => {
+    const parserLikeServiceError = 'Unexpected end of multipart data';
+    const { app, db, cookie, csrf, logLines } = await createContext({
+      captureLogs: true,
+      processPhoto: async () => {
+        throw new Error(parserLikeServiceError);
+      },
+    });
+    await enableUploads(db);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: {
+        origin: publicOrigin,
+        cookie,
+        'x-csrf-token': csrf,
+        'idempotency-key': requestId,
+        'content-type': validFile.contentType,
+      },
+      payload: validFile.body,
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: { code: 'INTERNAL_ERROR', message: '服务器暂时无法处理请求' },
+    });
+    expect(logLines).toHaveLength(1);
+    const externallyVisible = `${response.body}\n${logLines.join('\n')}`;
+    expect(externallyVisible).not.toContain(parserLikeServiceError);
+    expect(externallyVisible).not.toMatch(/private|filename|\.jpg|\/var\/|node_modules|stack/i);
     expect(photoCountFor(db)).toBe(0);
   });
 

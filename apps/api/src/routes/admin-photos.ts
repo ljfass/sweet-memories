@@ -28,6 +28,10 @@ const MULTIPART_LIMITS = Object.freeze({
   fileSize: 10 * 1024 * 1024,
   parts: 1,
 });
+const MULTIPART_SYNTAX_ERRORS = new Set([
+  'Multipart: Boundary not found',
+  'Unexpected end of multipart data',
+]);
 
 function invalidMultipart(): ApiHttpError {
   return new ApiHttpError(
@@ -60,6 +64,9 @@ function multipartError(app: FastifyInstance, error: unknown): ApiHttpError | un
   ) {
     return invalidMultipart();
   }
+  if (error instanceof Error && MULTIPART_SYNTAX_ERRORS.has(error.message)) {
+    return invalidMultipart();
+  }
   return error;
 }
 
@@ -72,7 +79,7 @@ function idempotencyKey(request: FastifyRequest): string {
 }
 
 function photoUploadStream(app: FastifyInstance, request: FastifyRequest): Readable {
-  return Readable.from((async function* () {
+  const parsed = (async function* () {
     if (!request.isMultipart()) {
       throw new ApiHttpError(415, 'UNSUPPORTED_MEDIA_TYPE', '请使用 multipart/form-data 上传');
     }
@@ -118,6 +125,14 @@ function photoUploadStream(app: FastifyInstance, request: FastifyRequest): Reada
       }
       throw invalidMultipart();
     }
+  })();
+
+  return Readable.from((async function* () {
+    try {
+      yield* parsed;
+    } catch (error) {
+      throw multipartError(app, error);
+    }
   })());
 }
 
@@ -150,15 +165,11 @@ export function registerAdminPhotoRoutes(
     requireExactOrigin(request, dependencies.publicOrigin);
     requireCsrf(request, dependencies.sessionService, authenticated.session);
     const requestId = idempotencyKey(request);
-    try {
-      const result = await dependencies.uploadPhotoService.upload({
-        requestId,
-        stream: photoUploadStream(app, request),
-      });
-      return reply.code(result.replayed ? 200 : 201).send({ photo: result.photo });
-    } catch (error) {
-      throw multipartError(app, error);
-    }
+    const result = await dependencies.uploadPhotoService.upload({
+      requestId,
+      stream: photoUploadStream(app, request),
+    });
+    return reply.code(result.replayed ? 200 : 201).send({ photo: result.photo });
   });
 
   app.patch('/api/admin/photos/:id', async (request, reply) => {

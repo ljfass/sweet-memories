@@ -24,15 +24,13 @@ import {
   ProcessingQueueError,
 } from '../media/processing-queue.js';
 import type { MediaStorage } from '../media/storage.js';
-import {
-  createPhotoService,
-  type AdminPhotoDto,
-} from './photo-service.js';
+import type { AdminPhotoDto } from './photo-service.js';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MIN_FREE_BYTES = 5n * 1024n * 1024n * 1024n;
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 
 type InspectUploadedInput = (
   inputPath: string,
@@ -71,6 +69,26 @@ export interface CreateUploadPhotoServiceOptions {
   readonly heifConvertPath: string;
   readonly now?: () => Date;
   readonly createPhotoId?: () => string;
+}
+
+interface UploadPhotoRow {
+  readonly id: string;
+  readonly title: string;
+  readonly description: string | null;
+  readonly captured_date: string | null;
+  readonly status: AdminPhotoDto['status'];
+  readonly rotation: number;
+  readonly offset_x: number;
+  readonly offset_y: number;
+  readonly version: number;
+}
+
+interface UploadPhotoAssetRow {
+  readonly kind: 'master' | 'responsive';
+  readonly format: 'avif' | 'webp' | 'jpeg';
+  readonly width: number;
+  readonly height: number;
+  readonly relative_path: string;
 }
 
 class UploadPhotoError extends ApiHttpError {
@@ -213,8 +231,101 @@ function insertPhoto<T>(
   }).immediate();
 }
 
+function mediaUrl(photoId: string, relativePath: string): string {
+  const segments = relativePath.split('/');
+  if (
+    !SAFE_PATH_SEGMENT.test(photoId)
+    || relativePath.startsWith('/')
+    || relativePath.includes('\\')
+    || segments.length !== 2
+    || segments[0] !== photoId
+    || segments[1] === undefined
+    || !SAFE_PATH_SEGMENT.test(segments[1])
+    || segments.some((segment) => segment === '.' || segment === '..')
+  ) {
+    throw new Error('Unsafe media path');
+  }
+  return `/media/${relativePath}`;
+}
+
+function assertAsset(asset: UploadPhotoAssetRow, photoId: string): void {
+  if (
+    !Number.isSafeInteger(asset.width)
+    || !Number.isSafeInteger(asset.height)
+    || asset.width <= 0
+    || asset.height <= 0
+  ) {
+    throw new Error('Invalid media dimensions');
+  }
+  mediaUrl(photoId, asset.relative_path);
+}
+
+function findAdminPhotoByRequestId(
+  db: Database.Database,
+  requestId: string,
+): AdminPhotoDto | undefined {
+  const row = db.prepare(
+    `SELECT id, title, description, captured_date, status,
+            rotation, offset_x, offset_y, version
+     FROM photos
+     WHERE request_id = ?`,
+  ).get(requestId) as UploadPhotoRow | undefined;
+  if (row === undefined) {
+    return undefined;
+  }
+
+  const assets = db.prepare(
+    `SELECT kind, format, width, height, relative_path
+     FROM photo_assets
+     WHERE photo_id = ?
+     ORDER BY
+       CASE kind WHEN 'master' THEN 0 ELSE 1 END ASC,
+       CASE format WHEN 'avif' THEN 0 WHEN 'webp' THEN 1 ELSE 2 END ASC,
+       width ASC,
+       height ASC,
+       relative_path ASC`,
+  ).all(row.id) as UploadPhotoAssetRow[];
+  for (const asset of assets) {
+    assertAsset(asset, row.id);
+  }
+
+  const responsive = assets.filter((asset) => asset.kind === 'responsive');
+  const source = (format: UploadPhotoAssetRow['format']) => responsive
+    .filter((asset) => asset.format === format)
+    .sort((left, right) => left.width - right.width)
+    .map((asset) => ({ url: mediaUrl(row.id, asset.relative_path), width: asset.width }));
+  const jpeg = source('jpeg');
+  const fallback = responsive
+    .filter((asset) => asset.format === 'jpeg')
+    .sort((left, right) => right.width - left.width)[0];
+  if (fallback === undefined) {
+    throw new Error('Photo has no JPEG fallback');
+  }
+  const description = row.description?.trim();
+
+  return {
+    id: row.id,
+    title: row.title,
+    alt: description === undefined || description.length === 0 ? row.title : description,
+    description: row.description,
+    capturedDate: row.captured_date,
+    status: row.status,
+    version: row.version,
+    transform: { rotation: row.rotation, x: row.offset_x, y: row.offset_y },
+    sources: {
+      avif: source('avif'),
+      webp: source('webp'),
+      jpeg,
+      fallback: {
+        url: mediaUrl(row.id, fallback.relative_path),
+        width: fallback.width,
+        height: fallback.height,
+      },
+    },
+  };
+}
+
 class SqliteUploadPhotoService implements UploadPhotoService {
-  private readonly catalog;
   private readonly queue: ProcessingQueue;
   private readonly statfs: StatFileSystem;
   private readonly inspectInput: InspectUploadedInput;
@@ -223,7 +334,6 @@ class SqliteUploadPhotoService implements UploadPhotoService {
   private readonly createPhotoId: () => string;
 
   constructor(private readonly options: CreateUploadPhotoServiceOptions) {
-    this.catalog = createPhotoService({ db: options.db });
     this.queue = options.processingQueue ?? new ProcessingQueue();
     this.statfs = options.statfs ?? defaultStatfs;
     this.inspectInput = options.inspectInput ?? defaultInspectInput;
@@ -321,17 +431,7 @@ class SqliteUploadPhotoService implements UploadPhotoService {
   }
 
   private findByRequestId(requestId: string): AdminPhotoDto | undefined {
-    const row = this.options.db.prepare(
-      'SELECT id FROM photos WHERE request_id = ?',
-    ).get(requestId) as { id: string } | undefined;
-    if (row === undefined) {
-      return undefined;
-    }
-    const photo = this.catalog.listAdminPhotos().find((candidate) => candidate.id === row.id);
-    if (photo === undefined) {
-      throw new Error('Photo request id points to a missing photo');
-    }
-    return photo;
+    return findAdminPhotoByRequestId(this.options.db, requestId);
   }
 }
 
