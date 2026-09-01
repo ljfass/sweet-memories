@@ -88,6 +88,10 @@ function rootsOverlap(left: string, right: string): boolean {
   return contained(left, right) || contained(right, left);
 }
 
+function compareNames(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function child(root: string, segment: string): string {
   const candidate = resolve(root, segment);
   if (candidate === root || !contained(root, candidate)) {
@@ -210,6 +214,11 @@ class BoundedMaintenanceService implements MaintenanceService {
   private readonly stagingRoot: string;
   private readonly now: () => Date;
   private readonly remove: RemoveMaintenanceTree;
+  private readonly scanCursors = new Map<
+    'removedMedia' | 'removedStaging' | 'removedDeleting',
+    string
+  >();
+  private sessionCursor: string | undefined;
 
   constructor(private readonly options: CreateMaintenanceServiceOptions) {
     if (!isAbsolute(options.mediaRoot) || !isAbsolute(options.stagingRoot)) {
@@ -267,10 +276,18 @@ class BoundedMaintenanceService implements MaintenanceService {
     } catch {
       throw new MaintenanceSafetyError();
     }
-    const bounded = entries
+    const ordered = entries
       .filter((entry) => entry.name !== ignoredName)
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, SOURCE_BUDGET);
+      .sort((left, right) => compareNames(left.name, right.name));
+    const cursor = this.scanCursors.get(counter);
+    const afterCursor = cursor === undefined
+      ? 0
+      : ordered.findIndex((entry) => compareNames(entry.name, cursor) > 0);
+    const start = afterCursor < 0 ? 0 : afterCursor;
+    const bounded = [
+      ...ordered.slice(start),
+      ...ordered.slice(0, start),
+    ].slice(0, SOURCE_BUDGET);
     for (const entry of bounded) {
       summary.inspected += 1;
       try {
@@ -309,6 +326,11 @@ class BoundedMaintenanceService implements MaintenanceService {
         summary.failures += 1;
       }
     }
+    const lastInspected = bounded.at(-1);
+    if (lastInspected !== undefined) {
+      // Retained and failing prefixes must still advance so later entries get a turn.
+      this.scanCursors.set(counter, lastInspected.name);
+    }
   }
 
   private cleanupSessions(now: Date, summary: MutableSummary): void {
@@ -316,13 +338,26 @@ class BoundedMaintenanceService implements MaintenanceService {
     const idleCutoff = new Date(now.getTime() - IDLE_MILLISECONDS).toISOString();
     let sessions: Array<{ readonly token_hash: string }>;
     try {
-      sessions = this.options.db.prepare(
-        `SELECT token_hash
-         FROM sessions
-         WHERE absolute_expires_at <= ? OR last_activity_at <= ?
-         ORDER BY absolute_expires_at ASC, last_activity_at ASC, token_hash ASC
-         LIMIT ?`,
-      ).all(nowIso, idleCutoff, SOURCE_BUDGET) as Array<{ readonly token_hash: string }>;
+      sessions = this.sessionCursor === undefined
+        ? this.options.db.prepare(
+          `SELECT token_hash
+           FROM sessions
+           WHERE absolute_expires_at <= ? OR last_activity_at <= ?
+           ORDER BY token_hash ASC
+           LIMIT ?`,
+        ).all(nowIso, idleCutoff, SOURCE_BUDGET) as Array<{ readonly token_hash: string }>
+        : this.options.db.prepare(
+          `SELECT token_hash
+           FROM sessions
+           WHERE absolute_expires_at <= ? OR last_activity_at <= ?
+           ORDER BY CASE WHEN token_hash > ? THEN 0 ELSE 1 END ASC, token_hash ASC
+           LIMIT ?`,
+        ).all(
+          nowIso,
+          idleCutoff,
+          this.sessionCursor,
+          SOURCE_BUDGET,
+        ) as Array<{ readonly token_hash: string }>;
     } catch {
       summary.failures += 1;
       return;
@@ -340,6 +375,11 @@ class BoundedMaintenanceService implements MaintenanceService {
       } catch {
         summary.failures += 1;
       }
+    }
+    const lastInspected = sessions.at(-1);
+    if (lastInspected !== undefined) {
+      // A row-specific deletion failure must not starve later expired sessions.
+      this.sessionCursor = lastInspected.token_hash;
     }
   }
 }

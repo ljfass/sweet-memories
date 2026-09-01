@@ -167,6 +167,68 @@ describe('MaintenanceService', () => {
     expect(removed).toEqual(names.slice().sort().slice(0, 25).map((name) => join(stagingRoot, name)));
   });
 
+  it('rotates past 25 fresh staging entries so a later stale entry is inspected next run', async () => {
+    const freshNames = Array.from({ length: 25 }, (_, index) => uuid(500 + index));
+    const staleName = uuid(525);
+    for (const name of freshNames) {
+      await directory(join(stagingRoot, name), fresh);
+    }
+    await directory(join(stagingRoot, staleName), stale);
+    const service = createMaintenanceService({ db, mediaRoot, stagingRoot, now: () => now });
+
+    const first = await service.run();
+    const second = await service.run();
+
+    expect(first).toMatchObject({ inspected: 25, removedStaging: 0 });
+    expect(second).toMatchObject({ inspected: 25, removedStaging: 1 });
+    await expect(stat(join(stagingRoot, staleName))).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const name of freshNames) {
+      await expect(stat(join(stagingRoot, name))).resolves.toBeDefined();
+    }
+  });
+
+  it('rotates past 25 database-owned media entries so a later stale orphan is inspected', async () => {
+    const retainedNames = Array.from({ length: 25 }, (_, index) => uuid(600 + index));
+    const orphanName = uuid(625);
+    for (const name of retainedNames) {
+      seedPhoto(name);
+      await directory(join(mediaRoot, name), stale);
+    }
+    await directory(join(mediaRoot, orphanName), stale);
+    const service = createMaintenanceService({ db, mediaRoot, stagingRoot, now: () => now });
+
+    const first = await service.run();
+    const second = await service.run();
+
+    expect(first).toMatchObject({ inspected: 25, removedMedia: 0 });
+    expect(second).toMatchObject({ inspected: 25, removedMedia: 1 });
+    await expect(stat(join(mediaRoot, orphanName))).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const name of retainedNames) {
+      await expect(stat(join(mediaRoot, name))).resolves.toBeDefined();
+    }
+  });
+
+  it('rotates past 25 failed expired-session deletions so later sessions are attempted', async () => {
+    for (let index = 1; index <= 30; index += 1) {
+      seedSession(index, '2026-08-01T00:00:00.000Z', '2026-08-02T00:00:00.000Z');
+    }
+    db.exec(`
+      CREATE TEMP TRIGGER retain_first_expired_sessions BEFORE DELETE ON sessions
+      WHEN OLD.token_hash <= 'token-0025'
+      BEGIN SELECT RAISE(FAIL, 'simulated row failure'); END;
+    `);
+    const service = createMaintenanceService({ db, mediaRoot, stagingRoot, now: () => now });
+
+    const first = await service.run();
+    const second = await service.run();
+
+    expect(first).toMatchObject({ inspected: 25, expiredSessions: 0, failures: 25 });
+    expect(second).toMatchObject({ inspected: 25, expiredSessions: 5 });
+    expect(
+      (db.prepare('SELECT count(*) AS count FROM sessions').get() as { count: number }).count,
+    ).toBe(25);
+  });
+
   it('does not follow or remove symlinks, special entries, or noncanonical names', async () => {
     const outside = join(root, 'outside.txt');
     await writeFile(outside, 'outside survives');
