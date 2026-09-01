@@ -6,11 +6,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SessionService } from './auth/session-service.js';
 import { buildApp } from './app.js';
 import type { PhotoService } from './services/photo-service.js';
+import type { UploadPhotoService } from './services/upload-photo.js';
 
 const publicOrigin = 'https://huangjianfen.cn';
 const rawSessionToken = 'A'.repeat(43);
 const rawCsrfToken = 'B'.repeat(43);
 const applications: FastifyInstance[] = [];
+const uploadPhotoService: UploadPhotoService = {
+  upload: async () => {
+    throw new Error('Unexpected photo upload');
+  },
+};
 
 function createSessionService(overrides: Partial<SessionService> = {}): SessionService {
   return {
@@ -56,6 +62,7 @@ describe('buildApp security boundary', () => {
       publicOrigin,
       sessionService: createSessionService(),
       photoService: createPhotoService({ listPublicPhotos }),
+      uploadPhotoService,
       logger: false,
     }));
 
@@ -71,6 +78,7 @@ describe('buildApp security boundary', () => {
       publicOrigin,
       sessionService: createSessionService(),
       photoService: createPhotoService(),
+      uploadPhotoService,
       logger: false,
     }));
     await app.ready();
@@ -94,6 +102,7 @@ describe('buildApp security boundary', () => {
       publicOrigin,
       sessionService: createSessionService({ login }),
       photoService: createPhotoService(),
+      uploadPhotoService,
       logger: false,
     }));
 
@@ -120,6 +129,7 @@ describe('buildApp security boundary', () => {
       publicOrigin,
       sessionService: createSessionService(),
       photoService: createPhotoService(),
+      uploadPhotoService,
       logger: false,
     }));
 
@@ -151,6 +161,7 @@ describe('buildApp security boundary', () => {
       publicOrigin,
       sessionService: createSessionService(),
       photoService: createPhotoService(),
+      uploadPhotoService,
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },
@@ -186,6 +197,7 @@ describe('buildApp security boundary', () => {
       publicOrigin,
       sessionService: createSessionService(),
       photoService: createPhotoService(),
+      uploadPhotoService,
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },
@@ -236,6 +248,7 @@ describe('buildApp security boundary', () => {
       publicOrigin,
       sessionService: createSessionService({ login }),
       photoService: createPhotoService(),
+      uploadPhotoService,
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },

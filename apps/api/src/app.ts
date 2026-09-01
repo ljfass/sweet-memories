@@ -20,6 +20,7 @@ import { registerAdminPhotoRoutes } from './routes/admin-photos.js';
 import { registerHealthRoute } from './routes/health.js';
 import { registerPublicPhotoRoutes } from './routes/public-photos.js';
 import type { PhotoService } from './services/photo-service.js';
+import type { UploadPhotoService } from './services/upload-photo.js';
 
 export type { ApiErrorBody } from './http/security.js';
 
@@ -27,6 +28,7 @@ export interface AppDependencies {
   readonly publicOrigin: string;
   readonly sessionService: SessionService;
   readonly photoService: PhotoService;
+  readonly uploadPhotoService: UploadPhotoService;
   readonly logger?: false | FastifyLoggerOptions;
 }
 

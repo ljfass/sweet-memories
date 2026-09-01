@@ -1,6 +1,7 @@
 // @vitest-environment node
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,8 +11,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createSessionService, type SessionService } from '../auth/session-service.js';
 import { buildApp } from '../app.js';
+import type { ProcessPhotoOptions, ProcessedPhotoManifest } from '../media/processor.js';
+import { ProcessingQueue } from '../media/processing-queue.js';
+import { MediaStorage } from '../media/storage.js';
 import { runMigrations } from '../migrations.js';
 import { createPhotoService, type PhotoService } from '../services/photo-service.js';
+import { MIN_FREE_BYTES, createUploadPhotoService } from '../services/upload-photo.js';
 
 const migrationsRoot = fileURLToPath(new URL('../../migrations', import.meta.url));
 const publicOrigin = 'https://huangjianfen.cn';
@@ -27,6 +32,53 @@ interface TestContext {
   readonly sessionService: SessionService;
   readonly cookie: string;
   readonly csrf: string;
+  readonly mediaRoot: string;
+  readonly stagingRoot: string;
+}
+
+const currentGroupId = process.getgid?.();
+
+async function fakeProcessPhoto(options: ProcessPhotoOptions): Promise<ProcessedPhotoManifest> {
+  const content = await readFile(options.inputPath);
+  const master = {
+    kind: 'master' as const,
+    format: 'jpeg' as const,
+    width: 800,
+    height: 600,
+    relativePath: `${options.transaction.photoId}/master.jpg`,
+  };
+  const assets = [
+    {
+      kind: 'responsive' as const,
+      format: 'avif' as const,
+      width: 320,
+      height: 240,
+      relativePath: `${options.transaction.photoId}/320.avif`,
+    },
+    {
+      kind: 'responsive' as const,
+      format: 'webp' as const,
+      width: 320,
+      height: 240,
+      relativePath: `${options.transaction.photoId}/320.webp`,
+    },
+    {
+      kind: 'responsive' as const,
+      format: 'jpeg' as const,
+      width: 320,
+      height: 240,
+      relativePath: `${options.transaction.photoId}/320.jpeg`,
+    },
+  ];
+  await Promise.all([
+    writeFile(join(options.transaction.stagingDir, 'master.jpg'), content),
+    writeFile(join(options.transaction.stagingDir, '320.avif'), content),
+    writeFile(join(options.transaction.stagingDir, '320.webp'), content),
+    writeFile(join(options.transaction.stagingDir, '320.jpeg'), content),
+  ]);
+  await rm(options.inputPath, { force: true });
+  await options.transaction.commit();
+  return { master, assets };
 }
 
 function seedPhoto(
@@ -63,6 +115,10 @@ function seedPhoto(
   );
 }
 
+function photoCountFor(db: Database.Database): number {
+  return (db.prepare('SELECT count(*) AS count FROM photos').get() as { count: number }).count;
+}
+
 function seedAsset(
   db: Database.Database,
   input: {
@@ -88,9 +144,21 @@ function seedAsset(
   );
 }
 
-async function createContext(): Promise<TestContext> {
+interface ContextOptions {
+  readonly processingQueue?: ProcessingQueue;
+  readonly statfs?: (path: string) => Promise<{ bavail: bigint; bsize: bigint }>;
+}
+
+async function createContext(options: ContextOptions = {}): Promise<TestContext> {
+  if (currentGroupId === undefined) {
+    throw new Error('Photo route tests require a POSIX process');
+  }
   const root = mkdtempSync(join(tmpdir(), 'sweet-memories-photo-routes-'));
   temporaryRoots.push(root);
+  const mediaRoot = join(root, 'media');
+  const stagingRoot = join(root, 'staging');
+  mkdirSync(mediaRoot);
+  mkdirSync(stagingRoot);
   const db = new Database(join(root, 'routes.sqlite3'));
   databases.push(db);
   db.pragma('foreign_keys = ON');
@@ -124,10 +192,36 @@ async function createContext(): Promise<TestContext> {
     db,
     now: () => new Date('2026-09-01T12:00:00.000Z'),
   });
+  let photoIdCounter = 0;
+  const uploadPhotoService = createUploadPhotoService({
+    db,
+    diskPath: stagingRoot,
+    storage: new MediaStorage({
+      mediaRoot,
+      stagingRoot,
+      resolveMediaGroupId: async () => currentGroupId,
+      getProcessGroupId: () => currentGroupId,
+    }),
+    processingQueue: options.processingQueue ?? new ProcessingQueue(),
+    statfs: options.statfs ?? (async () => ({ bavail: MIN_FREE_BYTES, bsize: 1n })),
+    inspectInput: async () => ({
+      width: 800,
+      height: 600,
+      kind: 'jpeg',
+      mime: 'image/jpeg',
+      takenDate: '2026-09-01',
+    }),
+    processPhoto: fakeProcessPhoto,
+    heifInfoPath: '/configured/heif-info',
+    heifConvertPath: '/configured/heif-convert',
+    now: () => new Date('2026-09-01T12:00:00.000Z'),
+    createPhotoId: () => `0195c681-9c63-7db0-8000-${String(++photoIdCounter).padStart(12, '0')}`,
+  });
   const app = buildApp({
     publicOrigin,
     sessionService,
     photoService,
+    uploadPhotoService,
     logger: false,
   });
   applications.push(app);
@@ -139,6 +233,34 @@ async function createContext(): Promise<TestContext> {
     sessionService,
     cookie: `${cookieName}=${login.rawToken}`,
     csrf: login.csrfToken,
+    mediaRoot,
+    stagingRoot,
+  };
+}
+
+interface MultipartPart {
+  readonly fieldname: string;
+  readonly filename?: string;
+  readonly contentType?: string;
+  readonly value: Buffer | string;
+}
+
+function multipart(parts: readonly MultipartPart[], close = true) {
+  const boundary = 'sweet-memories-test-boundary';
+  const chunks: Buffer[] = [];
+  for (const part of parts) {
+    chunks.push(Buffer.from(`--${boundary}\r\n`));
+    const disposition = part.filename === undefined
+      ? `Content-Disposition: form-data; name="${part.fieldname}"\r\n\r\n`
+      : `Content-Disposition: form-data; name="${part.fieldname}"; filename="${part.filename}"\r\nContent-Type: ${part.contentType ?? 'application/octet-stream'}\r\n\r\n`;
+    chunks.push(Buffer.from(disposition), Buffer.isBuffer(part.value) ? part.value : Buffer.from(part.value), Buffer.from('\r\n'));
+  }
+  if (close) {
+    chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  }
+  return {
+    body: Buffer.concat(chunks),
+    contentType: `multipart/form-data; boundary=${boundary}`,
   };
 }
 
@@ -318,6 +440,256 @@ describe('GET /api/admin/photos', () => {
     expect(authenticated.body).not.toMatch(
       /private-request|master\.jpg|request_id|relative_path|token|csrf|password|\/var\//i,
     );
+  });
+});
+
+describe('POST /api/admin/photos', () => {
+  const requestId = '0195c681-9c63-7db0-8000-000000000101';
+  const validFile = multipart([
+    {
+      fieldname: 'photo',
+      filename: 'private-original-name.jpg',
+      contentType: 'image/jpeg',
+      value: Buffer.from('route image bytes'),
+    },
+  ]);
+
+  async function enableUploads(db: Database.Database): Promise<void> {
+    db.prepare("UPDATE settings SET value = 'true' WHERE key = 'uploads_enabled'").run();
+  }
+
+  it('requires exact Origin, authentication, one current CSRF value, and a canonical request id', async () => {
+    const { app, db, cookie, csrf } = await createContext();
+    await enableUploads(db);
+    const request = (headers: Record<string, string | string[]>) => app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: { 'content-type': validFile.contentType, ...headers },
+      payload: validFile.body,
+    });
+
+    const missingOrigin = await request({ cookie, 'x-csrf-token': csrf, 'idempotency-key': requestId });
+    const missingCookie = await request({ origin: publicOrigin, 'x-csrf-token': csrf, 'idempotency-key': requestId });
+    const invalidCsrf = await request({ origin: publicOrigin, cookie, 'x-csrf-token': 'wrong', 'idempotency-key': requestId });
+    const multipleCsrf = await request({ origin: publicOrigin, cookie, 'x-csrf-token': [csrf, csrf], 'idempotency-key': requestId });
+    const missingRequestId = await request({ origin: publicOrigin, cookie, 'x-csrf-token': csrf });
+    const noncanonicalRequestId = await request({ origin: publicOrigin, cookie, 'x-csrf-token': csrf, 'idempotency-key': requestId.toUpperCase() });
+
+    expect(missingOrigin.statusCode).toBe(403);
+    expect(missingCookie.statusCode).toBe(401);
+    expect(invalidCsrf.statusCode).toBe(403);
+    expect(multipleCsrf.statusCode).toBe(403);
+    expect(missingRequestId.statusCode).toBe(400);
+    expect(noncanonicalRequestId.statusCode).toBe(400);
+    expect(photoCountFor(db)).toBe(0);
+  });
+
+  it('is registered through buildApp, creates once with 201, and replays with 200', async () => {
+    const { app, db, cookie, csrf } = await createContext();
+    await enableUploads(db);
+    const headers = {
+      origin: publicOrigin,
+      cookie,
+      'x-csrf-token': csrf,
+      'idempotency-key': requestId,
+      'content-type': validFile.contentType,
+    };
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers,
+      payload: validFile.body,
+    });
+    const replayFile = multipart([
+      {
+        fieldname: 'photo',
+        filename: 'different-secret-name.jpg',
+        contentType: 'image/jpeg',
+        value: Buffer.from('must not be consumed'),
+      },
+    ]);
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: { ...headers, 'content-type': replayFile.contentType },
+      payload: replayFile.body,
+    });
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(200);
+    expect(first.headers['cache-control']).toBe('no-store');
+    expect(second.json().photo.id).toBe(first.json().photo.id);
+    expect(photoCountFor(db)).toBe(1);
+    const visible = `${first.body}\n${second.body}`;
+    expect(visible).not.toMatch(/private-original|different-secret|filename|requestId|staging|\/var\//i);
+  });
+
+  it('returns 423 before consuming multipart while uploads are disabled', async () => {
+    const { app, db, cookie, csrf } = await createContext();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: {
+        origin: publicOrigin,
+        cookie,
+        'x-csrf-token': csrf,
+        'idempotency-key': requestId,
+        'content-type': validFile.contentType,
+      },
+      payload: validFile.body,
+    });
+
+    expect(response.statusCode).toBe(423);
+    expect(response.json()).toEqual({
+      error: { code: 'UPLOADS_DISABLED', message: '图片上传暂未开放' },
+    });
+    expect(photoCountFor(db)).toBe(0);
+  });
+
+  it('returns stable 507 and 429 envelopes for disk and queue admission failures', async () => {
+    const lowDisk = await createContext({
+      statfs: async () => ({ bavail: MIN_FREE_BYTES - 1n, bsize: 1n }),
+    });
+    await enableUploads(lowDisk.db);
+    const headers = (context: TestContext) => ({
+      origin: publicOrigin,
+      cookie: context.cookie,
+      'x-csrf-token': context.csrf,
+      'idempotency-key': requestId,
+      'content-type': validFile.contentType,
+    });
+
+    const insufficient = await lowDisk.app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: headers(lowDisk),
+      payload: validFile.body,
+    });
+    expect(insufficient.statusCode).toBe(507);
+    expect(insufficient.json()).toEqual({
+      error: { code: 'INSUFFICIENT_STORAGE', message: '服务器存储空间不足' },
+    });
+
+    const queue = new ProcessingQueue();
+    let release!: () => void;
+    const blocker = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const occupied = Array.from({ length: 10 }, () => queue.run(async () => blocker));
+    const fullQueue = await createContext({ processingQueue: queue });
+    await enableUploads(fullQueue.db);
+    const busy = await fullQueue.app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: headers(fullQueue),
+      payload: validFile.body,
+    });
+    expect(busy.statusCode).toBe(429);
+    expect(busy.json()).toEqual({
+      error: { code: 'UPLOAD_QUEUE_FULL', message: '图片处理队列繁忙，请稍后重试' },
+    });
+    expect(photoCountFor(fullQueue.db)).toBe(0);
+    expect(await readdir(fullQueue.stagingRoot)).toEqual([]);
+
+    release();
+    await Promise.all(occupied);
+  });
+
+  it('rejects non-multipart content while uploads are enabled', async () => {
+    const { app, db, cookie, csrf } = await createContext();
+    await enableUploads(db);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: {
+        origin: publicOrigin,
+        cookie,
+        'x-csrf-token': csrf,
+        'idempotency-key': requestId,
+        'content-type': 'application/json',
+      },
+      payload: { private: 'not a photo' },
+    });
+
+    expect(response.statusCode).toBe(415);
+    expect(response.json()).toEqual({
+      error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: '请使用 multipart/form-data 上传' },
+    });
+    expect(photoCountFor(db)).toBe(0);
+  });
+
+  it.each([
+    ['no file', multipart([])],
+    ['a form field', multipart([{ fieldname: 'caption', value: 'private caption' }])],
+    ['wrong file part name', multipart([{ fieldname: 'avatar', filename: 'wrong.jpg', value: 'wrong' }])],
+    ['two files', multipart([
+      { fieldname: 'photo', filename: 'first.jpg', value: 'first' },
+      { fieldname: 'photo', filename: 'second.jpg', value: 'second' },
+    ])],
+    ['a truncated body', multipart([
+      { fieldname: 'photo', filename: 'truncated.jpg', value: 'truncated' },
+    ], false)],
+  ] as const)('rejects %s and cleans all upload state', async (_label, body) => {
+    const { app, db, cookie, csrf, mediaRoot, stagingRoot } = await createContext();
+    await enableUploads(db);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: {
+        origin: publicOrigin,
+        cookie,
+        'x-csrf-token': csrf,
+        'idempotency-key': requestId,
+        'content-type': body.contentType,
+      },
+      payload: body.body,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: { code: 'INVALID_MULTIPART_UPLOAD', message: '请只上传一个 photo 文件' },
+    });
+    expect(photoCountFor(db)).toBe(0);
+    expect(await readdir(mediaRoot)).toEqual([]);
+    expect(await readdir(stagingRoot)).toEqual([]);
+  });
+
+  it('rejects a file over 10 MiB with 413 and removes the partial staging file', async () => {
+    const { app, db, cookie, csrf, mediaRoot, stagingRoot } = await createContext();
+    await enableUploads(db);
+    const oversized = multipart([
+      {
+        fieldname: 'photo',
+        filename: 'oversized-private.jpg',
+        contentType: 'image/jpeg',
+        value: Buffer.alloc(10 * 1024 * 1024 + 1, 1),
+      },
+    ]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: {
+        origin: publicOrigin,
+        cookie,
+        'x-csrf-token': csrf,
+        'idempotency-key': requestId,
+        'content-type': oversized.contentType,
+      },
+      payload: oversized.body,
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toEqual({
+      error: { code: 'UPLOAD_TOO_LARGE', message: '单张图片不能超过 10MB' },
+    });
+    expect(response.body).not.toContain('oversized-private.jpg');
+    expect(photoCountFor(db)).toBe(0);
+    expect(await readdir(mediaRoot)).toEqual([]);
+    expect(await readdir(stagingRoot)).toEqual([]);
   });
 });
 

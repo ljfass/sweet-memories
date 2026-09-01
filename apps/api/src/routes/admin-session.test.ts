@@ -10,6 +10,7 @@ import {
 } from '../auth/session-service.js';
 import { buildApp } from '../app.js';
 import type { PhotoService } from '../services/photo-service.js';
+import type { UploadPhotoService } from '../services/upload-photo.js';
 
 const publicOrigin = 'https://huangjianfen.cn';
 const rawSessionToken = 'A'.repeat(43);
@@ -33,6 +34,11 @@ const photoService: PhotoService = {
   listAdminPhotos: () => [],
   updatePhoto: () => {
     throw new Error('Unexpected photo update');
+  },
+};
+const uploadPhotoService: UploadPhotoService = {
+  upload: async () => {
+    throw new Error('Unexpected photo upload');
   },
 };
 
@@ -81,6 +87,7 @@ function createApp(spies: SessionSpies): FastifyInstance {
     publicOrigin,
     sessionService: spies.service,
     photoService,
+    uploadPhotoService,
     logger: false,
   });
   applications.push(app);
