@@ -1,14 +1,16 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
   chmodSync,
   copyFileSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
   readdirSync,
-  rmSync,
+  rmdirSync,
+  unlinkSync,
 } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
@@ -97,6 +99,14 @@ export interface LegacyMigrationOptions {
   readonly db: Database.Database;
   readonly seedRoot: string;
   readonly mediaRoot: string;
+  readonly fileOperations?: Partial<LegacyMigrationFileOperations>;
+  readonly createImportId?: () => string;
+}
+
+export interface LegacyMigrationFileOperations {
+  copyFile(source: string, destination: string): void;
+  link(source: string, destination: string): void;
+  chmod(path: string, mode: number): void;
 }
 
 interface PhotoRow {
@@ -125,6 +135,8 @@ interface AssetRow {
 const CALENDAR_DATE = /^(\d{4})-(\d{2})-(\d{2})$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const TEMPORARY_ROOT_PREFIX = '.legacy-import-';
 
 function isDescendant(root: string, candidate: string): boolean {
   const fromRoot = relative(root, candidate);
@@ -269,26 +281,37 @@ function fileDigest(contents: Buffer): string {
   return createHash('sha256').update(contents).digest('hex');
 }
 
-function verifyPhotoMediaFiles(root: string, photo: PhotoMediaManifest): void {
+function inspectPhotoMediaSubset(root: string, photo: PhotoMediaManifest): ReadonlySet<string> {
   const photoRoot = join(root, photo.photoId);
-    const information = lstatSync(photoRoot);
-    const actualPhotoRoot = realpathSync.native(photoRoot);
-    if (
-      !information.isDirectory()
-      || information.isSymbolicLink()
-      || !isDescendant(root, actualPhotoRoot)
-      || readdirSync(photoRoot).sort().join('\0')
-        !== photo.assets.map((asset) => asset.relativePath.split('/')[1] as string).sort().join('\0')
-    ) {
-      throw new Error('照片媒体目录无效');
+  const information = lstatSync(photoRoot);
+  const actualPhotoRoot = realpathSync.native(photoRoot);
+  if (
+    !information.isDirectory()
+    || information.isSymbolicLink()
+    || !isDescendant(root, actualPhotoRoot)
+  ) {
+    throw new Error('照片媒体目录无效');
+  }
+  const expectedByName = new Map(photo.assets.map((asset) => [
+    asset.relativePath.split('/')[1] as string,
+    asset,
+  ]));
+  const present = new Set<string>();
+  for (const name of readdirSync(photoRoot)) {
+    const asset = expectedByName.get(name);
+    if (asset === undefined) throw new Error('照片媒体目录包含额外资源');
+    const contents = ordinaryFileInside(root, join(photoRoot, name));
+    if (contents.byteLength !== asset.size || fileDigest(contents) !== asset.sha256) {
+      throw new Error('照片媒体摘要不一致');
     }
-    for (const asset of photo.assets) {
-      const path = join(root, asset.relativePath);
-      const contents = ordinaryFileInside(root, path);
-      if (contents.byteLength !== asset.size || fileDigest(contents) !== asset.sha256) {
-        throw new Error('照片媒体摘要不一致');
-      }
-    }
+    present.add(name);
+  }
+  return present;
+}
+
+function verifyPhotoMediaFiles(root: string, photo: PhotoMediaManifest): void {
+  const present = inspectPhotoMediaSubset(root, photo);
+  if (present.size !== photo.assets.length) throw new Error('照片媒体目录不完整');
 }
 
 function verifyMediaFiles(root: string, manifest: LegacyMediaManifest): void {
@@ -421,54 +444,204 @@ interface OwnedDirectory {
   readonly inode: number;
 }
 
-function createMediaDirectories(
+interface OwnedFile {
+  readonly path: string;
+  readonly device: number;
+  readonly inode: number;
+}
+
+interface MediaImportOwnership {
+  readonly files: readonly OwnedFile[];
+  readonly directories: readonly OwnedDirectory[];
+}
+
+interface TemporaryRootInspection {
+  readonly root: OwnedDirectory;
+  readonly files: readonly OwnedFile[];
+}
+
+const NODE_FILE_OPERATIONS: LegacyMigrationFileOperations = Object.freeze({
+  copyFile: (source: string, destination: string) => {
+    copyFileSync(source, destination, constants.COPYFILE_EXCL);
+  },
+  link: (source: string, destination: string) => linkSync(source, destination),
+  chmod: (path: string, mode: number) => chmodSync(path, mode),
+});
+
+function fileOperations(options: LegacyMigrationOptions): LegacyMigrationFileOperations {
+  return { ...NODE_FILE_OPERATIONS, ...options.fileOperations };
+}
+
+function identity(path: string): { readonly device: number; readonly inode: number } {
+  const information = lstatSync(path);
+  return { device: information.dev, inode: information.ino };
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+function isAlreadyPresent(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'EEXIST';
+}
+
+function assertMode(path: string, mode: number): void {
+  if ((lstatSync(path).mode & 0o777) !== mode) throw new Error('迁移媒体权限归一失败');
+}
+
+function ownedByCurrentProcess(path: string): boolean {
+  return typeof process.geteuid !== 'function' || lstatSync(path).uid === process.geteuid();
+}
+
+function normalizePhotoModes(
   mediaRoot: string,
-  seedRoot: string,
-  manifest: LegacyMediaManifest,
-  preexistingPhotoIds: ReadonlySet<string>,
-): readonly OwnedDirectory[] {
-  const created: OwnedDirectory[] = [];
+  photo: PhotoMediaManifest,
+  operations: LegacyMigrationFileOperations,
+): void {
+  for (const asset of photo.assets) {
+    const path = join(mediaRoot, asset.relativePath);
+    operations.chmod(path, 0o640);
+    assertMode(path, 0o640);
+  }
+  const photoRoot = join(mediaRoot, photo.photoId);
+  operations.chmod(photoRoot, 0o750);
+  assertMode(photoRoot, 0o750);
+}
+
+function removeOwnedFile(owned: OwnedFile, failures: unknown[]): void {
   try {
-    for (const photo of manifest.photos) {
-      if (preexistingPhotoIds.has(photo.photoId)) continue;
-      const targetRoot = join(mediaRoot, photo.photoId);
-      mkdirSync(targetRoot, { mode: 0o700 });
-      const information = lstatSync(targetRoot);
-      created.push({ path: targetRoot, device: information.dev, inode: information.ino });
-      for (const asset of photo.assets) {
-        const fileName = asset.relativePath.split('/')[1] as string;
-        const source = join(seedRoot, 'media', asset.relativePath);
-        const target = join(targetRoot, fileName);
-        copyFileSync(source, target, constants.COPYFILE_EXCL);
-        chmodSync(target, 0o640);
-      }
-      chmodSync(targetRoot, 0o750);
+    const information = lstatSync(owned.path);
+    if (
+      !information.isFile()
+      || information.isSymbolicLink()
+      || information.dev !== owned.device
+      || information.ino !== owned.inode
+    ) {
+      failures.push(new Error('迁移媒体文件已被替换，拒绝清理'));
+      return;
     }
-    verifyMediaFiles(mediaRoot, manifest);
-    return created;
+    unlinkSync(owned.path);
   } catch (error) {
-    cleanupOwnedDirectories(created, error);
+    if (!isMissing(error)) failures.push(error);
   }
 }
 
-function cleanupOwnedDirectories(created: readonly OwnedDirectory[], cause: unknown): never {
-  const failures: unknown[] = [];
-  for (const owned of [...created].reverse()) {
-    try {
-      const information = lstatSync(owned.path);
-      if (
-        information.isDirectory()
-        && information.dev === owned.device
-        && information.ino === owned.inode
-      ) {
-        rmSync(owned.path, { recursive: true, force: true });
-      } else {
-        failures.push(new Error('迁移媒体目录已被替换，拒绝清理'));
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') failures.push(error);
+function removeOwnedDirectory(owned: OwnedDirectory, failures: unknown[]): void {
+  try {
+    const information = lstatSync(owned.path);
+    if (
+      !information.isDirectory()
+      || information.isSymbolicLink()
+      || information.dev !== owned.device
+      || information.ino !== owned.inode
+      || readdirSync(owned.path).length !== 0
+    ) {
+      failures.push(new Error('迁移媒体目录不再为空或已被替换，拒绝清理'));
+      return;
     }
+    rmdirSync(owned.path);
+  } catch (error) {
+    if (!isMissing(error)) failures.push(error);
+  }
+}
+
+function expectedTemporaryNames(manifest: LegacyMediaManifest): ReadonlySet<string> {
+  return new Set(manifest.photos.flatMap((photo) => photo.assets.map((asset) => {
+    const fileName = asset.relativePath.split('/')[1] as string;
+    return `${photo.photoId}-${fileName}.tmp`;
+  })));
+}
+
+function inspectTemporaryRoot(
+  path: string,
+  manifest: LegacyMediaManifest,
+): TemporaryRootInspection {
+  const rootInformation = lstatSync(path);
+  if (
+    !rootInformation.isDirectory()
+    || rootInformation.isSymbolicLink()
+    || (rootInformation.mode & 0o777) !== 0o700
+    || !ownedByCurrentProcess(path)
+  ) {
+    throw new Error('迁移临时目录无效，拒绝清理');
+  }
+  const allowedNames = expectedTemporaryNames(manifest);
+  const files = readdirSync(path).map((name): OwnedFile => {
+    if (!allowedNames.has(name)) throw new Error('迁移临时目录包含未知文件，拒绝清理');
+    const filePath = join(path, name);
+    const information = lstatSync(filePath);
+    if (
+      !information.isFile()
+      || information.isSymbolicLink()
+      || !ownedByCurrentProcess(filePath)
+      || (information.mode & 0o133) !== 0
+    ) {
+      throw new Error('迁移临时目录包含非普通或不安全文件，拒绝清理');
+    }
+    return { path: filePath, device: information.dev, inode: information.ino };
+  });
+  return {
+    root: { path, device: rootInformation.dev, inode: rootInformation.ino },
+    files,
+  };
+}
+
+function clearInspectedTemporaryRoot(inspection: TemporaryRootInspection): void {
+  const failures: unknown[] = [];
+  for (const file of inspection.files) removeOwnedFile(file, failures);
+  if (failures.length === 0) removeOwnedDirectory(inspection.root, failures);
+  if (failures.length > 0) throw new AggregateError(failures, '迁移临时目录清理失败');
+}
+
+function clearTemporaryRoot(owned: OwnedDirectory, manifest: LegacyMediaManifest): void {
+  let inspection: TemporaryRootInspection;
+  try {
+    const inspected = inspectTemporaryRoot(owned.path, manifest);
+    if (
+      inspected.root.device !== owned.device
+      || inspected.root.inode !== owned.inode
+    ) {
+      throw new Error('迁移临时目录已被替换，拒绝清理');
+    }
+    inspection = inspected;
+  } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+  clearInspectedTemporaryRoot(inspection);
+}
+
+function clearAbandonedTemporaryRoots(
+  mediaRoot: string,
+  manifest: LegacyMediaManifest,
+): void {
+  const inspections = readdirSync(mediaRoot)
+    .filter((name) => name.startsWith(TEMPORARY_ROOT_PREFIX))
+    .map((name): TemporaryRootInspection => {
+      const importId = name.slice(TEMPORARY_ROOT_PREFIX.length);
+      if (!UUID.test(importId)) throw new Error('迁移临时目录名称无效');
+      return inspectTemporaryRoot(join(mediaRoot, name), manifest);
+    });
+  for (const inspection of inspections) clearInspectedTemporaryRoot(inspection);
+}
+
+function cleanupMediaAttempt(
+  ownership: MediaImportOwnership,
+  temporaryRoot: OwnedDirectory | undefined,
+  manifest: LegacyMediaManifest,
+  cause: unknown,
+): never {
+  const failures: unknown[] = [];
+  if (temporaryRoot !== undefined) {
+    try {
+      clearTemporaryRoot(temporaryRoot, manifest);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  for (const file of [...ownership.files].reverse()) removeOwnedFile(file, failures);
+  for (const directory of [...ownership.directories].reverse()) {
+    removeOwnedDirectory(directory, failures);
   }
   if (failures.length > 0) {
     throw new AggregateError([cause, ...failures], '迁移失败且媒体补偿不完整', { cause });
@@ -476,8 +649,138 @@ function cleanupOwnedDirectories(created: readonly OwnedDirectory[], cause: unkn
   throw cause;
 }
 
-function insertLegacyDatabase(db: Database.Database, manifest: LegacyMediaManifest): void {
+function verifyExpectedFile(root: string, asset: MediaAssetManifest, path: string): void {
+  const contents = ordinaryFileInside(root, path);
+  if (contents.byteLength !== asset.size || fileDigest(contents) !== asset.sha256) {
+    throw new Error('照片媒体摘要不一致');
+  }
+}
+
+function createTemporaryRoot(mediaRoot: string, importId: string): OwnedDirectory {
+  if (!UUID.test(importId)) {
+    throw new Error('迁移尝试 ID 无效');
+  }
+  const path = join(mediaRoot, `${TEMPORARY_ROOT_PREFIX}${importId}`);
+  mkdirSync(path, { mode: 0o700 });
+  assertMode(path, 0o700);
+  return { path, ...identity(path) };
+}
+
+function installMissingAsset(
+  bundle: { readonly seedRoot: string; readonly mediaRoot: string },
+  asset: MediaAssetManifest,
+  temporaryRoot: OwnedDirectory,
+  operations: LegacyMigrationFileOperations,
+  installedFiles: OwnedFile[],
+): void {
+  const fileName = asset.relativePath.split('/')[1] as string;
+  const photoId = asset.relativePath.split('/')[0] as string;
+  const source = join(bundle.seedRoot, 'media', asset.relativePath);
+  const target = join(bundle.mediaRoot, asset.relativePath);
+  const temporary = join(temporaryRoot.path, `${photoId}-${fileName}.tmp`);
+  operations.copyFile(source, temporary);
+  operations.chmod(temporary, 0o600);
+  assertMode(temporary, 0o600);
+  verifyExpectedFile(temporaryRoot.path, asset, temporary);
+  const temporaryIdentity = identity(temporary);
+  let installed = false;
+  let publishError: unknown;
+  try {
+    operations.link(temporary, target);
+    const targetIdentity = identity(target);
+    if (
+      targetIdentity.device !== temporaryIdentity.device
+      || targetIdentity.inode !== temporaryIdentity.inode
+    ) {
+      throw new Error('迁移媒体原子发布身份不一致');
+    }
+    installedFiles.push({ path: target, ...targetIdentity });
+    installed = true;
+  } catch (error) {
+    if (isAlreadyPresent(error)) verifyExpectedFile(bundle.mediaRoot, asset, target);
+    else publishError = error;
+  }
+  let cleanupError: unknown;
+  try {
+    const current = identity(temporary);
+    if (current.device === temporaryIdentity.device && current.inode === temporaryIdentity.inode) {
+      unlinkSync(temporary);
+    }
+  } catch (error) {
+    if (!isMissing(error)) cleanupError = error;
+  }
+  if (publishError !== undefined && cleanupError !== undefined) {
+    throw new AggregateError([publishError, cleanupError], '迁移媒体发布与清理均失败');
+  }
+  if (publishError !== undefined) throw publishError;
+  if (cleanupError !== undefined) throw cleanupError;
+  if (!installed) verifyExpectedFile(bundle.mediaRoot, asset, target);
+}
+
+function prepareMediaDirectories(
+  options: LegacyMigrationOptions,
+  bundle: {
+    readonly seedRoot: string;
+    readonly mediaRoot: string;
+    readonly manifest: LegacyMediaManifest;
+  },
+): MediaImportOwnership {
+  const operations = fileOperations(options);
+  const files: OwnedFile[] = [];
+  const directories: OwnedDirectory[] = [];
+  let temporaryRoot: OwnedDirectory | undefined;
+  try {
+    clearAbandonedTemporaryRoots(bundle.mediaRoot, bundle.manifest);
+    const presentByPhoto = new Map<string, ReadonlySet<string> | undefined>();
+    for (const photo of bundle.manifest.photos) {
+      try {
+        presentByPhoto.set(photo.photoId, inspectPhotoMediaSubset(bundle.mediaRoot, photo));
+      } catch (error) {
+        if (isMissing(error)) presentByPhoto.set(photo.photoId, undefined);
+        else throw error;
+      }
+    }
+
+    for (const photo of bundle.manifest.photos) {
+      const photoRoot = join(bundle.mediaRoot, photo.photoId);
+      let present = presentByPhoto.get(photo.photoId);
+      if (present === undefined) {
+        try {
+          mkdirSync(photoRoot, { mode: 0o700 });
+          directories.push({ path: photoRoot, ...identity(photoRoot) });
+          present = new Set<string>();
+        } catch (error) {
+          if (!isAlreadyPresent(error)) throw error;
+          present = inspectPhotoMediaSubset(bundle.mediaRoot, photo);
+        }
+      }
+      for (const asset of photo.assets) {
+        const fileName = asset.relativePath.split('/')[1] as string;
+        if (present.has(fileName)) continue;
+        temporaryRoot ??= createTemporaryRoot(
+          bundle.mediaRoot,
+          (options.createImportId ?? randomUUID)(),
+        );
+        installMissingAsset(bundle, asset, temporaryRoot, operations, files);
+      }
+      verifyPhotoMediaFiles(bundle.mediaRoot, photo);
+      normalizePhotoModes(bundle.mediaRoot, photo, operations);
+    }
+    verifyMediaFiles(bundle.mediaRoot, bundle.manifest);
+    if (temporaryRoot !== undefined) clearTemporaryRoot(temporaryRoot, bundle.manifest);
+    return { files, directories };
+  } catch (error) {
+    return cleanupMediaAttempt({ files, directories }, temporaryRoot, bundle.manifest, error);
+  }
+}
+
+function insertLegacyDatabase(
+  db: Database.Database,
+  manifest: LegacyMediaManifest,
+  mediaRoot: string,
+): void {
   db.transaction(() => {
+    verifyMediaFiles(mediaRoot, manifest);
     const insertPhoto = db.prepare(
       `INSERT INTO photos(
          id, title, description, captured_date, status, rotation, offset_x, offset_y,
@@ -519,34 +822,22 @@ export async function importLegacyPhotos(
   options: LegacyMigrationOptions,
 ): Promise<{ readonly imported: number; readonly reused: number }> {
   const bundle = loadBundle(options);
+  const operations = fileOperations(options);
   const existing = databaseRows(options.db);
   if (existing.length > 0) {
     assertImportedDatabase(options.db, bundle.manifest, false);
     verifyMediaFiles(bundle.mediaRoot, bundle.manifest);
+    for (const photo of bundle.manifest.photos) {
+      normalizePhotoModes(bundle.mediaRoot, photo, operations);
+    }
     return { imported: 0, reused: 5 };
   }
-  const preexistingPhotoIds = new Set<string>();
-  for (const photo of bundle.manifest.photos) {
-    try {
-      lstatSync(join(bundle.mediaRoot, photo.photoId));
-      verifyPhotoMediaFiles(bundle.mediaRoot, photo);
-      preexistingPhotoIds.add(photo.photoId);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  }
-
-  const created = createMediaDirectories(
-    bundle.mediaRoot,
-    bundle.seedRoot,
-    bundle.manifest,
-    preexistingPhotoIds,
-  );
+  const ownership = prepareMediaDirectories(options, bundle);
   try {
-    insertLegacyDatabase(options.db, bundle.manifest);
+    insertLegacyDatabase(options.db, bundle.manifest, bundle.mediaRoot);
     return { imported: 5, reused: 0 };
   } catch (error) {
-    return cleanupOwnedDirectories(created, error);
+    return cleanupMediaAttempt(ownership, undefined, bundle.manifest, error);
   }
 }
 

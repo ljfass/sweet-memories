@@ -1,6 +1,22 @@
 // @vitest-environment node
 
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  constants,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -143,6 +159,172 @@ describe('legacy migration service', () => {
 
     await expect(importLegacyPhotos(partialOptions)).resolves.toEqual({ imported: 5, reused: 0 });
     expect(secondDb.prepare('SELECT COUNT(*) AS count FROM photos').get()).toEqual({ count: 5 });
+  });
+
+  it('resumes an individual UUID directory containing only an exact expected file subset', async () => {
+    const db = createDatabase();
+    const options = migrationOptions(db);
+    const firstId = '9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1';
+    const target = join(options.mediaRoot, firstId);
+    mkdirSync(target, { mode: 0o700 });
+    copyFileSync(join(seedRoot, 'media', firstId, '320.jpg'), join(target, '320.jpg'));
+
+    await expect(importLegacyPhotos(options)).resolves.toEqual({ imported: 5, reused: 0 });
+    expect(readdirSync(target).sort()).toEqual([
+      '320.avif', '320.jpg', '320.webp',
+      '640.avif', '640.jpg', '640.webp',
+      '960.avif', '960.jpg', '960.webp',
+      'master.jpg',
+    ]);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM photos').get()).toEqual({ count: 5 });
+  });
+
+  it('normalizes verified adopted directory and file permissions before import', async () => {
+    const db = createDatabase();
+    const options = migrationOptions(db);
+    cpSync(join(seedRoot, 'media'), options.mediaRoot, { recursive: true });
+    const firstId = '9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1';
+    const target = join(options.mediaRoot, firstId);
+    chmodSync(target, 0o700);
+    for (const name of readdirSync(target)) chmodSync(join(target, name), 0o600);
+
+    await importLegacyPhotos(options);
+
+    expect(statSync(target).mode & 0o777).toBe(0o750);
+    for (const name of readdirSync(target)) {
+      expect(statSync(join(target, name)).mode & 0o777).toBe(0o640);
+    }
+  });
+
+  it('removes a strictly named abandoned private temp copy and completes an empty fixed directory', async () => {
+    const db = createDatabase();
+    const options = migrationOptions(db);
+    const firstId = '9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1';
+    mkdirSync(join(options.mediaRoot, firstId), { mode: 0o700 });
+    const abandoned = join(
+      options.mediaRoot,
+      '.legacy-import-11111111-1111-4111-8111-111111111111',
+    );
+    mkdirSync(abandoned, { mode: 0o700 });
+    const temporaryFile = join(abandoned, `${firstId}-320.jpg.tmp`);
+    writeFileSync(temporaryFile, 'interrupted copy', { mode: 0o600 });
+
+    await expect(importLegacyPhotos(options)).resolves.toEqual({ imported: 5, reused: 0 });
+    expect(readdirSync(join(options.mediaRoot, firstId))).toHaveLength(10);
+    expect(existsSync(abandoned)).toBe(false);
+  });
+
+  it('fails closed without deleting a symlinked or special interrupted temp node', async () => {
+    const symlinkDb = createDatabase();
+    const symlinkOptions = migrationOptions(symlinkDb);
+    const outside = join(temporaryRoot('sweet-memories-temp-outside-'), 'outside');
+    mkdirSync(outside);
+    const symlinked = join(
+      symlinkOptions.mediaRoot,
+      '.legacy-import-22222222-2222-4222-8222-222222222222',
+    );
+    symlinkSync(outside, symlinked);
+
+    await expect(importLegacyPhotos(symlinkOptions)).rejects.toThrow();
+    expect(lstatSync(symlinked).isSymbolicLink()).toBe(true);
+
+    const specialDb = createDatabase();
+    const specialOptions = migrationOptions(specialDb);
+    const specialRoot = join(
+      specialOptions.mediaRoot,
+      '.legacy-import-33333333-3333-4333-8333-333333333333',
+    );
+    mkdirSync(specialRoot, { mode: 0o700 });
+    const fifo = join(
+      specialRoot,
+      '9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1-320.jpg.tmp',
+    );
+    const madeFifo = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
+    expect(madeFifo.status, madeFifo.stderr).toBe(0);
+
+    await expect(importLegacyPhotos(specialOptions)).rejects.toThrow();
+    expect(lstatSync(fifo).isFIFO()).toBe(true);
+  });
+
+  it('can rerun after a copy interruption without deleting a pre-existing exact subset', async () => {
+    const db = createDatabase();
+    const options = migrationOptions(db);
+    const firstId = '9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1';
+    const target = join(options.mediaRoot, firstId);
+    mkdirSync(target, { mode: 0o700 });
+    const adopted = join(target, '320.jpg');
+    copyFileSync(join(seedRoot, 'media', firstId, '320.jpg'), adopted);
+    const adoptedInode = statSync(adopted).ino;
+    let interrupted = false;
+
+    await expect(importLegacyPhotos({
+      ...options,
+      fileOperations: {
+        copyFile(source: string, destination: string): void {
+          if (!interrupted) {
+            interrupted = true;
+            writeFileSync(destination, 'partial temp');
+            throw new Error('simulated copy interruption');
+          }
+          copyFileSync(source, destination, constants.COPYFILE_EXCL);
+        },
+      },
+    })).rejects.toThrow();
+    expect(statSync(adopted).ino).toBe(adoptedInode);
+    expect(readdirSync(target)).toEqual(['320.jpg']);
+
+    await expect(importLegacyPhotos(options)).resolves.toEqual({ imported: 5, reused: 0 });
+    expect(readdirSync(target)).toHaveLength(10);
+  });
+
+  it('adopts an exact file that wins the no-replace publish race', async () => {
+    const db = createDatabase();
+    const options = migrationOptions(db);
+    let raced = false;
+    const link = vi.fn((source: string, destination: string) => {
+      if (!raced) {
+        raced = true;
+        const fileName = destination.split('/').at(-1) as string;
+        const photoId = destination.split('/').at(-2) as string;
+        copyFileSync(join(seedRoot, 'media', photoId, fileName), destination, constants.COPYFILE_EXCL);
+      }
+      linkSync(source, destination);
+    });
+
+    await expect(importLegacyPhotos({
+      ...options,
+      fileOperations: { link },
+    })).resolves.toEqual({ imported: 5, reused: 0 });
+    expect(link).toHaveBeenCalled();
+  });
+
+  it('removes only this attempt files after chmod failure and then reruns cleanly', async () => {
+    const db = createDatabase();
+    const options = migrationOptions(db);
+    const firstId = '9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1';
+    const target = join(options.mediaRoot, firstId);
+    mkdirSync(target, { mode: 0o700 });
+    const adopted = join(target, '320.jpg');
+    copyFileSync(join(seedRoot, 'media', firstId, '320.jpg'), adopted);
+    const adoptedInode = statSync(adopted).ino;
+    let failed = false;
+
+    await expect(importLegacyPhotos({
+      ...options,
+      fileOperations: {
+        chmod(path: string, mode: number): void {
+          if (!failed && path.endsWith('640.avif')) {
+            failed = true;
+            throw new Error('simulated chmod failure');
+          }
+          chmodSync(path, mode);
+        },
+      },
+    })).rejects.toThrow();
+    expect(statSync(adopted).ino).toBe(adoptedInode);
+    expect(readdirSync(target)).toEqual(['320.jpg']);
+
+    await expect(importLegacyPhotos(options)).resolves.toEqual({ imported: 5, reused: 0 });
   });
 
   it('fails closed without deleting pre-existing orphan media when its contents drift', async () => {
