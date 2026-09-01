@@ -31,6 +31,12 @@ const apiPackagePath = fileURLToPath(
 const apiEntryPath = fileURLToPath(
   new URL('../../apps/api/src/index.ts', import.meta.url),
 )
+const packageApiPath = fileURLToPath(
+  new URL('../deploy/package-api.sh', import.meta.url),
+)
+const packageApiTestPath = fileURLToPath(
+  new URL('../deploy/package-api.test.sh', import.meta.url),
+)
 
 function readRequiredFile(path: string, label: string): string {
   expect(existsSync(path), `${label} must exist`).toBe(true)
@@ -79,10 +85,14 @@ describe('photo API workspace contract', () => {
     })
   })
 
-  it('provides a minimal compilable API entry point', () => {
-    expect(readRequiredFile(apiEntryPath, 'apps/api/src/index.ts')).toBe(
-      'export {};\n',
+  it('provides a runnable API entry point', () => {
+    const source = readRequiredFile(apiEntryPath, 'apps/api/src/index.ts')
+
+    expect(source).toContain('export async function startApi(')
+    expect(source).toContain(
+      'await app.listen({ host: options.config.host, port: options.config.port })',
     )
+    expect(source).toContain('void startApi({ config: loadConfig() })')
   })
 
   it('runs frontend and API quality commands from the root', () => {
@@ -94,8 +104,27 @@ describe('photo API workspace contract', () => {
       'build:frontend': 'vite build',
       'build:api': 'pnpm --dir apps/api build',
       build: 'pnpm build:frontend && pnpm build:api',
-      'test:api': 'pnpm --dir apps/api test',
+      'test:api':
+        'pnpm --dir apps/api test && bash scripts/deploy/package-api.test.sh',
+      'package:api': 'bash scripts/deploy/package-api.sh',
     })
+  })
+
+  it('provides a guarded API runtime packaging script and its shell contract', () => {
+    const packageScript = readRequiredFile(
+      packageApiPath,
+      'scripts/deploy/package-api.sh',
+    )
+    const packageTest = readRequiredFile(
+      packageApiTestPath,
+      'scripts/deploy/package-api.test.sh',
+    )
+
+    expect(packageScript).toContain(
+      'pnpm --filter @sweet-memories/api deploy --prod',
+    )
+    expect(packageScript).toContain('--hard-dereference')
+    expect(packageTest).toContain('package-api tests passed')
   })
 
   it('lints API source files as Node TypeScript', () => {

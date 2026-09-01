@@ -13,13 +13,14 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && pnpm --dir apps/api typecheck",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
-    "test:api": "pnpm --dir apps/api test",
+    "test:api": "pnpm --dir apps/api test && bash scripts/deploy/package-api.test.sh",
     "test:watch": "vitest",
     "test:deploy": "bash scripts/deploy/manage-release.test.sh",
     "test:monitor": "python3 scripts/monitor/test_extract_assets.py && bash scripts/monitor/check-site.test.sh",
     "test:lighthouse": "vitest run scripts/lighthouse",
     "media:build": "node scripts/optimize-media.mjs",
-    "media:verify": "node scripts/verify-media.mjs"
+    "media:verify": "node scripts/verify-media.mjs",
+    "package:api": "bash scripts/deploy/package-api.sh"
   },
   "dependencies": {
     "@lucide/vue": "^1.33.0",
