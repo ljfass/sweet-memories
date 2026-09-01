@@ -26,6 +26,7 @@ let webpPath: string;
 let heifPath: string;
 let avifPath: string;
 let exifJpegPath: string;
+let terminalZeroSizedMdatPath: string;
 
 beforeAll(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'sweet-memories-inspect-'));
@@ -35,6 +36,7 @@ beforeAll(async () => {
   heifPath = join(temporaryDirectory, 'photo.heif');
   avifPath = join(temporaryDirectory, 'photo.avif');
   exifJpegPath = join(temporaryDirectory, 'photo-with-exif.jpg');
+  terminalZeroSizedMdatPath = join(temporaryDirectory, 'terminal-zero-sized-mdat.heic');
 
   const pixels = Buffer.from([255, 0, 0, 255]);
   await Promise.all([
@@ -53,7 +55,12 @@ beforeAll(async () => {
   const heif = await readFile(validHeic);
   const heifWithGenericBrand = Buffer.from(heif);
   heifWithGenericBrand.write('mif1', 8, 'ascii');
-  await writeFile(heifPath, heifWithGenericBrand);
+  const zeroSizedMdat = Buffer.from(heif);
+  zeroSizedMdat.writeUInt32BE(0, findTerminalTopLevelBoxOffset(zeroSizedMdat));
+  await Promise.all([
+    writeFile(heifPath, heifWithGenericBrand),
+    writeFile(terminalZeroSizedMdatPath, zeroSizedMdat),
+  ]);
 });
 
 afterAll(async () => {
@@ -67,11 +74,39 @@ function heifDependencies(): InspectInputDependencies {
   };
 }
 
+function findTerminalTopLevelBoxOffset(buffer: Buffer): number {
+  let offset = 0;
+  while (offset <= buffer.length - 8) {
+    const size32 = buffer.readUInt32BE(offset);
+    const size = size32 === 1
+      ? Number(buffer.readBigUInt64BE(offset + 8))
+      : size32;
+    if (size < 8 || offset + size > buffer.length) {
+      throw new Error('invalid test fixture');
+    }
+    if (offset + size === buffer.length) {
+      if (buffer.toString('ascii', offset + 4, offset + 8) !== 'mdat') {
+        throw new Error('expected terminal mdat fixture');
+      }
+      return offset;
+    }
+    offset += size;
+  }
+
+  throw new Error('terminal box missing from test fixture');
+}
+
 function bmffBox(type: string, payload: Buffer = Buffer.alloc(0)): Buffer {
   const box = Buffer.alloc(8 + payload.length);
   box.writeUInt32BE(box.length, 0);
   box.write(type, 4, 4, 'ascii');
   payload.copy(box, 8);
+  return box;
+}
+
+function zeroSizedBox(type: string, payload: Buffer = Buffer.alloc(0)): Buffer {
+  const box = bmffBox(type, payload);
+  box.writeUInt32BE(0, 0);
   return box;
 }
 
@@ -146,6 +181,60 @@ describe('inspectInput format recognition', () => {
       width: 64,
       height: 48,
     });
+  });
+
+  it('accepts a real HEIC whose terminal top-level mdat extends to EOF', async () => {
+    await expect(fileTypeFromFile(terminalZeroSizedMdatPath)).resolves.toMatchObject({
+      mime: 'image/heic',
+    });
+    await expect(sharp(terminalZeroSizedMdatPath).metadata()).resolves.toMatchObject({
+      width: 48,
+      height: 64,
+      compression: 'hevc',
+    });
+
+    const inspectHeif = vi.fn().mockResolvedValue({ width: 48, height: 64 });
+    await expect(inspectInput(terminalZeroSizedMdatPath, {
+      inspectHeif,
+      parseExif: vi.fn().mockResolvedValue(undefined),
+    })).resolves.toMatchObject({ kind: 'heic', width: 48, height: 64 });
+    expect(inspectHeif).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a nested zero-sized box even when HEVC metadata is otherwise valid', async () => {
+    const path = await writeSyntheticHeif(
+      'nested-zero-sized-box.heif',
+      metadataBox(
+        itemInformation(itemInfoEntry(2, 'hvc1')),
+        itemProperties(bmffBox('hvcC')),
+        zeroSizedBox('free'),
+      ),
+    );
+    await expectRejectedBeforeHeifInspection(path);
+  });
+
+  it('rejects a non-terminal nested zero-sized box before following siblings', async () => {
+    const path = await writeSyntheticHeif(
+      'non-terminal-nested-zero-sized-box.heif',
+      metadataBox(
+        zeroSizedBox('free'),
+        itemInformation(itemInfoEntry(2, 'hvc1')),
+        itemProperties(bmffBox('hvcC')),
+      ),
+    );
+    await expectRejectedBeforeHeifInspection(path);
+  });
+
+  it('rejects an incomplete top-level box boundary', async () => {
+    const path = await writeSyntheticHeif(
+      'incomplete-top-level-box.heif',
+      metadataBox(
+        itemInformation(itemInfoEntry(2, 'hvc1')),
+        itemProperties(bmffBox('hvcC')),
+      ),
+      Buffer.alloc(7),
+    );
+    await expectRejectedBeforeHeifInspection(path);
   });
 
   it.each([

@@ -173,6 +173,8 @@ interface BmffInspectionState {
   metadataBoxCount: number;
 }
 
+type BmffScope = 'nested' | 'root';
+
 function assertBmffDepth(depth: number): void {
   if (depth > MAX_BMFF_DEPTH) {
     throw unsupportedHeifContainer();
@@ -184,6 +186,7 @@ function parseBmffBox(
   offset: number,
   parentEnd: number,
   state: BmffInspectionState,
+  scope: BmffScope,
 ): BmffBox {
   if (offset < 0 || parentEnd > buffer.length || offset > parentEnd - 8) {
     throw unsupportedHeifContainer();
@@ -192,7 +195,13 @@ function parseBmffBox(
   const size32 = buffer.readUInt32BE(offset);
   let size: number;
   let headerSize: number;
-  if (size32 === 1) {
+  if (size32 === 0) {
+    if (scope !== 'root') {
+      throw unsupportedHeifContainer();
+    }
+    size = parentEnd - offset;
+    headerSize = 8;
+  } else if (size32 === 1) {
     if (offset > parentEnd - 16) {
       throw unsupportedHeifContainer();
     }
@@ -229,11 +238,12 @@ function walkBmffBoxes(
   start: number,
   end: number,
   state: BmffInspectionState,
+  scope: BmffScope,
   visit: (box: BmffBox) => void,
 ): void {
   let offset = start;
   while (offset < end) {
-    const box = parseBmffBox(buffer, offset, end, state);
+    const box = parseBmffBox(buffer, offset, end, state, scope);
     visit(box);
     offset = box.end;
   }
@@ -309,7 +319,7 @@ function inspectItemInformation(
   }
 
   let parsedEntries = 0;
-  walkBmffBoxes(buffer, entriesStart, box.end, state, (entry) => {
+  walkBmffBoxes(buffer, entriesStart, box.end, state, 'nested', (entry) => {
     if (entry.type !== 'infe') {
       throw unsupportedHeifContainer();
     }
@@ -328,7 +338,7 @@ function inspectItemPropertyContainer(
   state: BmffInspectionState,
 ): void {
   assertBmffDepth(depth);
-  walkBmffBoxes(buffer, box.payloadStart, box.end, state, (property) => {
+  walkBmffBoxes(buffer, box.payloadStart, box.end, state, 'nested', (property) => {
     if (property.type === 'av1C') {
       throw new InputInspectionError('UNSUPPORTED_IMAGE', '不支持 AVIF 图片');
     }
@@ -345,7 +355,7 @@ function inspectItemProperties(
   state: BmffInspectionState,
 ): void {
   assertBmffDepth(depth);
-  walkBmffBoxes(buffer, box.payloadStart, box.end, state, (child) => {
+  walkBmffBoxes(buffer, box.payloadStart, box.end, state, 'nested', (child) => {
     if (child.type === 'ipco') {
       inspectItemPropertyContainer(buffer, child, depth + 1, state);
     } else if (child.type === 'iprp') {
@@ -368,7 +378,7 @@ function inspectMetadataBox(
   }
 
   state.metadataBoxCount += 1;
-  walkBmffBoxes(buffer, box.payloadStart + 4, box.end, state, (child) => {
+  walkBmffBoxes(buffer, box.payloadStart + 4, box.end, state, 'nested', (child) => {
     if (child.type === 'iinf') {
       inspectItemInformation(buffer, child, depth + 1, state);
     } else if (child.type === 'iprp') {
@@ -455,7 +465,7 @@ async function validateHeifContainer(
       metadataBoxCount: 0,
     };
     let firstBox = true;
-    walkBmffBoxes(buffer, 0, buffer.length, state, (box) => {
+    walkBmffBoxes(buffer, 0, buffer.length, state, 'root', (box) => {
       if (firstBox) {
         validateFileTypeBox(buffer, box, kind);
         firstBox = false;
