@@ -9,6 +9,7 @@ import {
   type SessionService,
 } from '../auth/session-service.js';
 import { buildApp } from '../app.js';
+import type { DeletePhotoService } from '../services/delete-photo.js';
 import type { PhotoService } from '../services/photo-service.js';
 import type { UploadPhotoService } from '../services/upload-photo.js';
 
@@ -39,6 +40,11 @@ const photoService: PhotoService = {
 const uploadPhotoService: UploadPhotoService = {
   upload: async () => {
     throw new Error('Unexpected photo upload');
+  },
+};
+const deletePhotoService: DeletePhotoService = {
+  delete: async () => {
+    throw new Error('Unexpected photo deletion');
   },
 };
 
@@ -88,6 +94,7 @@ function createApp(spies: SessionSpies): FastifyInstance {
     sessionService: spies.service,
     photoService,
     uploadPhotoService,
+    deletePhotoService,
     logger: false,
   });
   applications.push(app);

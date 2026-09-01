@@ -19,6 +19,7 @@ import { registerAdminSessionRoutes } from './routes/admin-session.js';
 import { registerAdminPhotoRoutes } from './routes/admin-photos.js';
 import { registerHealthRoute } from './routes/health.js';
 import { registerPublicPhotoRoutes } from './routes/public-photos.js';
+import type { DeletePhotoService } from './services/delete-photo.js';
 import type { PhotoService } from './services/photo-service.js';
 import type { UploadPhotoService } from './services/upload-photo.js';
 
@@ -29,6 +30,7 @@ export interface AppDependencies {
   readonly sessionService: SessionService;
   readonly photoService: PhotoService;
   readonly uploadPhotoService: UploadPhotoService;
+  readonly deletePhotoService: DeletePhotoService;
   readonly logger?: false | FastifyLoggerOptions;
 }
 

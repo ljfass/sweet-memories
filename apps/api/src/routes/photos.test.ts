@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,7 @@ import type { ProcessPhotoOptions, ProcessedPhotoManifest } from '../media/proce
 import { ProcessingQueue } from '../media/processing-queue.js';
 import { MediaStorage } from '../media/storage.js';
 import { runMigrations } from '../migrations.js';
+import { createDeletePhotoService } from '../services/delete-photo.js';
 import { createPhotoService, type PhotoService } from '../services/photo-service.js';
 import { MIN_FREE_BYTES, createUploadPhotoService } from '../services/upload-photo.js';
 
@@ -118,6 +119,10 @@ function seedPhoto(
 
 function photoCountFor(db: Database.Database): number {
   return (db.prepare('SELECT count(*) AS count FROM photos').get() as { count: number }).count;
+}
+
+function photoExists(db: Database.Database, id: string): boolean {
+  return db.prepare('SELECT 1 FROM photos WHERE id = ?').get(id) !== undefined;
 }
 
 function seedAsset(
@@ -226,6 +231,7 @@ async function createContext(options: ContextOptions = {}): Promise<TestContext>
     sessionService,
     photoService,
     uploadPhotoService,
+    deletePhotoService: createDeletePhotoService({ db, mediaRoot }),
     logger: options.captureLogs
       ? { level: 'error', stream: { write: (line) => logLines.push(line) } }
       : false,
@@ -1056,5 +1062,144 @@ describe('PATCH /api/admin/photos/:id', () => {
     expect(missing.json()).toEqual({
       error: { code: 'PHOTO_NOT_FOUND', message: '照片不存在' },
     });
+  });
+});
+
+describe('DELETE /api/admin/photos/:id', () => {
+  const deletableId = '0195c681-9c63-7db0-8000-000000000301';
+
+  async function seedDeletablePhoto(
+    context: TestContext,
+    version = 1,
+  ): Promise<void> {
+    seedCompletePhoto(context.db, { id: deletableId, version });
+    const directory = join(context.mediaRoot, deletableId);
+    await mkdir(directory);
+    await writeFile(join(directory, 'master.jpg'), 'private media');
+  }
+
+  it('authenticates before Origin, CSRF, id, and If-Match validation', async () => {
+    const context = await createContext();
+    await seedDeletablePhoto(context);
+
+    const response = await context.app.inject({
+      method: 'DELETE',
+      url: '/api/admin/photos/not-a-server-id',
+      headers: { 'if-match': 'invalid' },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(photoExists(context.db, deletableId)).toBe(true);
+  });
+
+  it('requires exact Origin, then current CSRF, then a canonical strong If-Match', async () => {
+    const context = await createContext();
+    await seedDeletablePhoto(context);
+    const request = (headers: Record<string, string | string[]>) => context.app.inject({
+      method: 'DELETE',
+      url: `/api/admin/photos/${deletableId}`,
+      headers,
+    });
+
+    const missingOrigin = await request({
+      cookie: context.cookie,
+      'x-csrf-token': context.csrf,
+      'if-match': '"1"',
+    });
+    const missingCsrf = await request({
+      cookie: context.cookie,
+      origin: publicOrigin,
+      'if-match': '"1"',
+    });
+    const invalidCsrf = await request({
+      cookie: context.cookie,
+      origin: publicOrigin,
+      'x-csrf-token': 'wrong',
+      'if-match': '"1"',
+    });
+
+    expect(missingOrigin.statusCode).toBe(403);
+    expect(missingOrigin.json().error.code).toBe('ORIGIN_FORBIDDEN');
+    expect(missingCsrf.statusCode).toBe(403);
+    expect(missingCsrf.json().error.code).toBe('CSRF_FORBIDDEN');
+    expect(invalidCsrf.statusCode).toBe(403);
+    expect(photoExists(context.db, deletableId)).toBe(true);
+  });
+
+  it.each([
+    undefined,
+    '1',
+    'W/"1"',
+    '"0"',
+    '"01"',
+    '"+1"',
+    '"1.0"',
+    '"9007199254740992"',
+    '"1", "1"',
+  ])('rejects malformed, weak, duplicate, or unsafe If-Match: %s', async (ifMatch) => {
+    const context = await createContext();
+    await seedDeletablePhoto(context);
+    const headers: Record<string, string> = {
+      cookie: context.cookie,
+      origin: publicOrigin,
+      'x-csrf-token': context.csrf,
+    };
+    if (ifMatch !== undefined) headers['if-match'] = ifMatch;
+
+    const response = await context.app.inject({
+      method: 'DELETE',
+      url: `/api/admin/photos/${deletableId}`,
+      headers,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('INVALID_IF_MATCH');
+    expect(photoExists(context.db, deletableId)).toBe(true);
+  });
+
+  it('returns 409 and restores media for a stale version', async () => {
+    const context = await createContext();
+    await seedDeletablePhoto(context, 2);
+
+    const response = await context.app.inject({
+      method: 'DELETE',
+      url: `/api/admin/photos/${deletableId}`,
+      headers: {
+        cookie: context.cookie,
+        origin: publicOrigin,
+        'x-csrf-token': context.csrf,
+        'if-match': '"1"',
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe('PHOTO_VERSION_CONFLICT');
+    expect(photoExists(context.db, deletableId)).toBe(true);
+    await expect(stat(join(context.mediaRoot, deletableId))).resolves.toBeDefined();
+  });
+
+  it('returns empty 204 for a successful deletion and every idempotent replay', async () => {
+    const context = await createContext();
+    await seedDeletablePhoto(context);
+    const request = () => context.app.inject({
+      method: 'DELETE',
+      url: `/api/admin/photos/${deletableId}`,
+      headers: {
+        cookie: context.cookie,
+        origin: publicOrigin,
+        'x-csrf-token': context.csrf,
+        'if-match': '"1"',
+      },
+    });
+
+    const first = await request();
+    const replay = await request();
+
+    expect(first.statusCode).toBe(204);
+    expect(first.body).toBe('');
+    expect(replay.statusCode).toBe(204);
+    expect(replay.body).toBe('');
+    expect(photoExists(context.db, deletableId)).toBe(false);
+    await expect(stat(join(context.mediaRoot, deletableId))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

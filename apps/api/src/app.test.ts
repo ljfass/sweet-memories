@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionService } from './auth/session-service.js';
 import { buildApp } from './app.js';
+import type { DeletePhotoService } from './services/delete-photo.js';
 import type { PhotoService } from './services/photo-service.js';
 import type { UploadPhotoService } from './services/upload-photo.js';
 
@@ -15,6 +16,11 @@ const applications: FastifyInstance[] = [];
 const uploadPhotoService: UploadPhotoService = {
   upload: async () => {
     throw new Error('Unexpected photo upload');
+  },
+};
+const deletePhotoService: DeletePhotoService = {
+  delete: async () => {
+    throw new Error('Unexpected photo deletion');
   },
 };
 
@@ -63,6 +69,7 @@ describe('buildApp security boundary', () => {
       sessionService: createSessionService(),
       photoService: createPhotoService({ listPublicPhotos }),
       uploadPhotoService,
+      deletePhotoService,
       logger: false,
     }));
 
@@ -79,6 +86,7 @@ describe('buildApp security boundary', () => {
       sessionService: createSessionService(),
       photoService: createPhotoService(),
       uploadPhotoService,
+      deletePhotoService,
       logger: false,
     }));
     await app.ready();
@@ -103,6 +111,7 @@ describe('buildApp security boundary', () => {
       sessionService: createSessionService({ login }),
       photoService: createPhotoService(),
       uploadPhotoService,
+      deletePhotoService,
       logger: false,
     }));
 
@@ -130,6 +139,7 @@ describe('buildApp security boundary', () => {
       sessionService: createSessionService(),
       photoService: createPhotoService(),
       uploadPhotoService,
+      deletePhotoService,
       logger: false,
     }));
 
@@ -162,6 +172,7 @@ describe('buildApp security boundary', () => {
       sessionService: createSessionService(),
       photoService: createPhotoService(),
       uploadPhotoService,
+      deletePhotoService,
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },
@@ -198,6 +209,7 @@ describe('buildApp security boundary', () => {
       sessionService: createSessionService(),
       photoService: createPhotoService(),
       uploadPhotoService,
+      deletePhotoService,
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },
@@ -249,6 +261,7 @@ describe('buildApp security boundary', () => {
       sessionService: createSessionService({ login }),
       photoService: createPhotoService(),
       uploadPhotoService,
+      deletePhotoService,
       logger: {
         level: 'error',
         stream: { write: (line) => lines.push(line) },

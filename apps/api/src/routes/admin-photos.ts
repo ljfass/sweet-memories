@@ -8,6 +8,7 @@ import {
   requireCsrf,
   requireExactOrigin,
 } from '../http/security.js';
+import type { DeletePhotoService } from '../services/delete-photo.js';
 import {
   normalizePhotoEditBody,
   type PhotoService,
@@ -19,6 +20,7 @@ export interface AdminPhotoRouteDependencies {
   readonly sessionService: SessionService;
   readonly photoService: PhotoService;
   readonly uploadPhotoService: UploadPhotoService;
+  readonly deletePhotoService: DeletePhotoService;
 }
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -149,6 +151,22 @@ function photoId(request: FastifyRequest): string {
   return typeof id === 'string' ? id : '';
 }
 
+function ifMatchVersion(request: FastifyRequest): number {
+  const value = request.headers['if-match'];
+  if (typeof value !== 'string') {
+    throw new ApiHttpError(400, 'INVALID_IF_MATCH', '照片版本号无效');
+  }
+  const match = /^"([1-9][0-9]*)"$/u.exec(value);
+  if (match?.[1] === undefined) {
+    throw new ApiHttpError(400, 'INVALID_IF_MATCH', '照片版本号无效');
+  }
+  const version = Number(match[1]);
+  if (!Number.isSafeInteger(version)) {
+    throw new ApiHttpError(400, 'INVALID_IF_MATCH', '照片版本号无效');
+  }
+  return version;
+}
+
 export function registerAdminPhotoRoutes(
   app: FastifyInstance,
   dependencies: AdminPhotoRouteDependencies,
@@ -179,5 +197,15 @@ export function registerAdminPhotoRoutes(
     requireCsrf(request, dependencies.sessionService, authenticated.session);
     const edit = normalizePhotoEditBody(request.body);
     return dependencies.photoService.updatePhoto({ id: photoId(request), ...edit });
+  });
+
+  app.delete('/api/admin/photos/:id', async (request, reply) => {
+    preventAdminCaching(reply);
+    const authenticated = requireAuthenticatedRequest(request, dependencies.sessionService);
+    requireExactOrigin(request, dependencies.publicOrigin);
+    requireCsrf(request, dependencies.sessionService, authenticated.session);
+    const version = ifMatchVersion(request);
+    await dependencies.deletePhotoService.delete({ id: photoId(request), version });
+    return reply.code(204).send();
   });
 }
