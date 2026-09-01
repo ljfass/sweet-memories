@@ -6,6 +6,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   rmdir,
@@ -58,6 +59,20 @@ function storageRoot(name: string, value: string): string {
     throw new MediaStorageError('INVALID_STORAGE_ROOT', `${name} 必须是绝对路径`);
   }
   return resolve(value);
+}
+
+function isSameOrDescendant(root: string, candidate: string): boolean {
+  const fromRoot = relative(root, candidate);
+  return fromRoot.length === 0
+    || (
+      fromRoot !== '..'
+      && !fromRoot.startsWith(`..${sep}`)
+      && !isAbsolute(fromRoot)
+    );
+}
+
+function rootsOverlap(left: string, right: string): boolean {
+  return isSameOrDescendant(left, right) || isSameOrDescendant(right, left);
 }
 
 function resolveInside(root: string, segment: string): string {
@@ -178,38 +193,49 @@ async function reserveEmptyDirectory(path: string): Promise<FileIdentity> {
   return { device: information.dev, inode: information.ino };
 }
 
-async function matchesIdentity(path: string, identity: FileIdentity): Promise<boolean> {
+type IdentityStatus = 'match' | 'missing' | 'replaced';
+
+async function identityStatus(path: string, identity: FileIdentity): Promise<IdentityStatus> {
   try {
     const information = await lstat(path);
     return information.isDirectory()
       && information.dev === identity.device
-      && information.ino === identity.inode;
+      && information.ino === identity.inode
+      ? 'match'
+      : 'replaced';
   } catch (error) {
     if (isNodeError(error) && error.code === 'ENOENT') {
-      return false;
+      return 'missing';
     }
     throw error;
   }
 }
 
 async function assertEmptyReservation(path: string, identity: FileIdentity): Promise<void> {
-  if (!await matchesIdentity(path, identity) || (await readdir(path)).length !== 0) {
+  if (await identityStatus(path, identity) !== 'match' || (await readdir(path)).length !== 0) {
     throw new MediaStorageError('MEDIA_TARGET_EXISTS', '照片媒体目录已经存在');
   }
 }
 
-async function removeOwnedReservation(path: string, identity: FileIdentity): Promise<void> {
-  if (!await matchesIdentity(path, identity)) {
-    return;
+type ReservationRemoval = 'missing' | 'removed' | 'replaced' | 'retained';
+
+async function removeOwnedReservation(
+  path: string,
+  identity: FileIdentity,
+): Promise<ReservationRemoval> {
+  const status = await identityStatus(path, identity);
+  if (status !== 'match') {
+    return status;
   }
   try {
     await rmdir(path);
+    return 'removed';
   } catch (error) {
-    if (
-      isNodeError(error)
-      && (error.code === 'ENOENT' || error.code === 'ENOTEMPTY' || error.code === 'EEXIST')
-    ) {
-      return;
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return 'missing';
+    }
+    if (isNodeError(error) && (error.code === 'ENOTEMPTY' || error.code === 'EEXIST')) {
+      return 'retained';
     }
     throw error;
   }
@@ -255,11 +281,18 @@ class FileMediaTransaction implements MediaTransaction {
       const cleanupErrors: unknown[] = [];
       if (this.reservationIdentity !== undefined) {
         try {
-          await removeOwnedReservation(this.finalDir, this.reservationIdentity);
+          const removal = await removeOwnedReservation(this.finalDir, this.reservationIdentity);
+          if (removal === 'retained') {
+            cleanupErrors.push(new MediaStorageError(
+              'MEDIA_TARGET_EXISTS',
+              '媒体占位目录无法安全清理',
+            ));
+          } else {
+            this.reservationIdentity = undefined;
+          }
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
         }
-        this.reservationIdentity = undefined;
       }
       try {
         await rm(this.stagingDir, { recursive: true, force: true });
@@ -283,17 +316,19 @@ class FileMediaTransaction implements MediaTransaction {
     }
 
     if (this.reservationIdentity !== undefined) {
-      await removeOwnedReservation(this.finalDir, this.reservationIdentity);
+      const removal = await removeOwnedReservation(this.finalDir, this.reservationIdentity);
+      if (removal === 'retained') {
+        throw new MediaStorageError('MEDIA_TARGET_EXISTS', '媒体占位目录无法安全清理');
+      }
       this.reservationIdentity = undefined;
     }
     await rm(this.stagingDir, { recursive: true, force: true });
-    if (
-      this.ownedFinalIdentity !== undefined
-      && await matchesIdentity(this.finalDir, this.ownedFinalIdentity)
-    ) {
-      await rm(this.finalDir, { recursive: true, force: true });
+    if (this.ownedFinalIdentity !== undefined) {
+      if (await identityStatus(this.finalDir, this.ownedFinalIdentity) === 'match') {
+        await rm(this.finalDir, { recursive: true, force: true });
+      }
+      this.ownedFinalIdentity = undefined;
     }
-    this.ownedFinalIdentity = undefined;
     this.state = 'rolled_back';
   }
 }
@@ -308,7 +343,7 @@ export class MediaStorage {
   constructor(options: MediaStorageOptions) {
     this.mediaRoot = storageRoot('mediaRoot', options.mediaRoot);
     this.stagingRoot = storageRoot('stagingRoot', options.stagingRoot);
-    if (this.mediaRoot === this.stagingRoot) {
+    if (rootsOverlap(this.mediaRoot, this.stagingRoot)) {
       throw new MediaStorageError('INVALID_STORAGE_ROOT', '媒体目录与暂存目录必须分离');
     }
     this.resolveMediaGroupId = options.resolveMediaGroupId ?? resolveSystemGroupId;
@@ -319,6 +354,24 @@ export class MediaStorage {
   async createTransaction(photoId: string): Promise<MediaTransaction> {
     if (!CANONICAL_UUID.test(photoId)) {
       throw new MediaStorageError('INVALID_PHOTO_ID', '照片 ID 必须是服务端规范 UUID');
+    }
+
+    let realMediaRoot: string;
+    let realStagingRoot: string;
+    try {
+      [realMediaRoot, realStagingRoot] = await Promise.all([
+        realpath(this.mediaRoot),
+        realpath(this.stagingRoot),
+      ]);
+    } catch (cause) {
+      throw new MediaStorageError(
+        'INVALID_STORAGE_ROOT',
+        '媒体目录与暂存目录不可用',
+        { cause },
+      );
+    }
+    if (rootsOverlap(realMediaRoot, realStagingRoot)) {
+      throw new MediaStorageError('INVALID_STORAGE_ROOT', '媒体目录与暂存目录必须分离');
     }
 
     const finalDir = resolveInside(this.mediaRoot, photoId);

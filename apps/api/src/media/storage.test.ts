@@ -9,6 +9,7 @@ import {
   rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -37,6 +38,9 @@ const publishRace = vi.hoisted(() => ({
   competingTargetIdentity: null as FileIdentity | null,
   observeRenameTarget: null as string | null,
   publishObservation: null as PublishObservation | null,
+  renameFailureTarget: null as string | null,
+  rmdirFailureTarget: null as string | null,
+  rmdirFailuresRemaining: 0,
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -71,7 +75,20 @@ vi.mock('node:fs/promises', async (importOriginal) => {
           mode: information.mode & 0o777,
         };
       }
+      if (publishRace.renameFailureTarget === destination) {
+        throw Object.assign(new Error('cross-device publish failure'), { code: 'EXDEV' });
+      }
       await actual.rename(source, destination);
+    },
+    rmdir: async (path: string): Promise<void> => {
+      if (
+        publishRace.rmdirFailureTarget === path
+        && publishRace.rmdirFailuresRemaining > 0
+      ) {
+        publishRace.rmdirFailuresRemaining -= 1;
+        throw Object.assign(new Error('reservation cleanup denied'), { code: 'EACCES' });
+      }
+      await actual.rmdir(path);
     },
   };
 });
@@ -97,6 +114,9 @@ beforeEach(async () => {
   publishRace.competingTargetIdentity = null;
   publishRace.observeRenameTarget = null;
   publishRace.publishObservation = null;
+  publishRace.renameFailureTarget = null;
+  publishRace.rmdirFailureTarget = null;
+  publishRace.rmdirFailuresRemaining = 0;
 });
 
 afterEach(async () => {
@@ -116,6 +136,53 @@ function createStorage(): MediaStorage {
 }
 
 describe('MediaStorage path and group boundaries', () => {
+  it.each([
+    ['media contains staging', () => [mediaRoot, join(mediaRoot, 'private-staging')]],
+    ['staging contains media', () => [join(stagingRoot, 'public-media'), stagingRoot]],
+  ])('rejects lexical root overlap when %s', (_label, roots) => {
+    const [overlappingMediaRoot, overlappingStagingRoot] = roots();
+
+    expect(() => new MediaStorage({
+      mediaRoot: overlappingMediaRoot as string,
+      stagingRoot: overlappingStagingRoot as string,
+    })).toThrow(expect.objectContaining({ code: 'INVALID_STORAGE_ROOT' }));
+  });
+
+  it('rejects existing roots that overlap after resolving a symlink without creating files', async () => {
+    const actualRoot = join(temporaryDirectory, 'actual-data');
+    const actualStaging = join(actualRoot, 'staging');
+    const aliasedRoot = join(temporaryDirectory, 'aliased-data');
+    await mkdir(actualStaging, { recursive: true });
+    await symlink(actualRoot, aliasedRoot);
+    const storage = new MediaStorage({
+      mediaRoot: actualRoot,
+      stagingRoot: join(aliasedRoot, 'staging'),
+      resolveMediaGroupId: async () => currentGroupId as number,
+      getProcessGroupId: () => currentGroupId as number,
+    });
+
+    await expect(storage.createTransaction(randomUUID())).rejects.toMatchObject({
+      code: 'INVALID_STORAGE_ROOT',
+    });
+    expect(await readdir(actualStaging)).toEqual([]);
+    expect((await readdir(actualRoot)).sort()).toEqual(['staging']);
+  });
+
+  it('fails closed with a stable error when a configured root cannot be resolved', async () => {
+    const missingRoot = join(temporaryDirectory, 'missing-staging-root');
+    const storage = new MediaStorage({
+      mediaRoot,
+      stagingRoot: missingRoot,
+      resolveMediaGroupId: async () => currentGroupId as number,
+      getProcessGroupId: () => currentGroupId as number,
+    });
+
+    const result = storage.createTransaction(randomUUID());
+    await expect(result).rejects.toMatchObject({ code: 'INVALID_STORAGE_ROOT' });
+    await expect(result).rejects.not.toThrow(temporaryDirectory);
+    expect(await readdir(mediaRoot)).toEqual([]);
+  });
+
   it.each([
     '../outside',
     'not-a-uuid',
@@ -260,6 +327,37 @@ describe('MediaTransaction commit and rollback', () => {
     await transaction.rollback();
 
     await expect(readFile(join(transaction.finalDir, 'replacement.txt'), 'utf8')).resolves.toBe('keep');
+  });
+
+  it('retains a reservation after commit cleanup fails so rollback can retry it', async () => {
+    const transaction = await createStorage().createTransaction(randomUUID());
+    await writeFile(join(transaction.stagingDir, 'master.jpg'), 'new');
+    publishRace.renameFailureTarget = transaction.finalDir;
+    publishRace.rmdirFailureTarget = transaction.finalDir;
+    publishRace.rmdirFailuresRemaining = 1;
+
+    await expect(transaction.commit()).rejects.toBeInstanceOf(AggregateError);
+    await expect(stat(transaction.finalDir)).resolves.toMatchObject({ mode: expect.any(Number) });
+    await expect(stat(transaction.stagingDir)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await transaction.rollback();
+
+    await expect(stat(transaction.finalDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps rollback recoverable when reservation cleanup fails repeatedly', async () => {
+    const transaction = await createStorage().createTransaction(randomUUID());
+    await writeFile(join(transaction.stagingDir, 'master.jpg'), 'new');
+    publishRace.renameFailureTarget = transaction.finalDir;
+    publishRace.rmdirFailureTarget = transaction.finalDir;
+    publishRace.rmdirFailuresRemaining = 2;
+    await expect(transaction.commit()).rejects.toBeInstanceOf(AggregateError);
+
+    await expect(transaction.rollback()).rejects.toMatchObject({ code: 'EACCES' });
+    await expect(stat(transaction.finalDir)).resolves.toBeDefined();
+
+    await transaction.rollback();
+    await expect(stat(transaction.finalDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects links and cleans the transaction instead of publishing them', async () => {
