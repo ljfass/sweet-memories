@@ -1,17 +1,80 @@
 // @vitest-environment node
 
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   MEDIA_GROUP_NAME,
   MediaStorage,
   MediaStorageError,
 } from './storage.js';
+
+interface FileIdentity {
+  readonly device: number;
+  readonly inode: number;
+}
+
+interface PublishObservation {
+  readonly entries: readonly string[];
+  readonly mode: number;
+}
+
+const publishRace = vi.hoisted(() => ({
+  competingTarget: null as string | null,
+  competingTargetIdentity: null as FileIdentity | null,
+  observeRenameTarget: null as string | null,
+  publishObservation: null as PublishObservation | null,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const makeDirectory = actual.mkdir as (
+    path: string,
+    options?: { mode?: number; recursive?: boolean },
+  ) => Promise<string | undefined>;
+
+  return {
+    ...actual,
+    mkdir: async (
+      path: string,
+      options?: { mode?: number; recursive?: boolean },
+    ): Promise<string | undefined> => {
+      if (publishRace.competingTarget === path) {
+        publishRace.competingTarget = null;
+        await makeDirectory(path, { mode: 0o700 });
+        const identity = await actual.lstat(path);
+        publishRace.competingTargetIdentity = {
+          device: identity.dev,
+          inode: identity.ino,
+        };
+      }
+      return makeDirectory(path, options);
+    },
+    rename: async (source: string, destination: string): Promise<void> => {
+      if (publishRace.observeRenameTarget === destination) {
+        const information = await actual.lstat(destination);
+        publishRace.publishObservation = {
+          entries: await actual.readdir(destination),
+          mode: information.mode & 0o777,
+        };
+      }
+      await actual.rename(source, destination);
+    },
+  };
+});
 
 const currentGroupId = process.getgid?.();
 
@@ -30,6 +93,10 @@ beforeEach(async () => {
     mkdir(mediaRoot, { recursive: true }),
     mkdir(stagingRoot, { recursive: true }),
   ]);
+  publishRace.competingTarget = null;
+  publishRace.competingTargetIdentity = null;
+  publishRace.observeRenameTarget = null;
+  publishRace.publishObservation = null;
 });
 
 afterEach(async () => {
@@ -140,6 +207,36 @@ describe('MediaTransaction commit and rollback', () => {
     await expect(stat(transaction.stagingDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('preserves an empty target that wins the final namespace claim', async () => {
+    const transaction = await createStorage().createTransaction(randomUUID());
+    await writeFile(join(transaction.stagingDir, 'master.jpg'), 'new');
+    publishRace.competingTarget = transaction.finalDir;
+
+    await expect(transaction.commit()).rejects.toMatchObject({
+      code: 'MEDIA_TARGET_EXISTS',
+    });
+
+    expect(publishRace.competingTargetIdentity).not.toBeNull();
+    const existingTarget = await stat(transaction.finalDir);
+    expect({ device: existingTarget.dev, inode: existingTarget.ino }).toEqual(
+      publishRace.competingTargetIdentity,
+    );
+    expect(await readdir(transaction.finalDir)).toEqual([]);
+    await expect(stat(transaction.stagingDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('publishes the complete directory over a private empty reservation in one rename', async () => {
+    const transaction = await createStorage().createTransaction(randomUUID());
+    await writeFile(join(transaction.stagingDir, 'master.jpg'), 'master');
+    await writeFile(join(transaction.stagingDir, '320.jpeg'), 'responsive');
+    publishRace.observeRenameTarget = transaction.finalDir;
+
+    await transaction.commit();
+
+    expect(publishRace.publishObservation).toEqual({ entries: [], mode: 0o700 });
+    expect((await readdir(transaction.finalDir)).sort()).toEqual(['320.jpeg', 'master.jpg']);
+  });
+
   it('rolls back staging and an owned published directory idempotently', async () => {
     const transaction = await createStorage().createTransaction(randomUUID());
     await writeFile(join(transaction.stagingDir, 'master.jpg'), 'new');
@@ -150,6 +247,19 @@ describe('MediaTransaction commit and rollback', () => {
 
     await expect(stat(transaction.stagingDir)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(transaction.finalDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not delete a published target that was replaced after commit', async () => {
+    const transaction = await createStorage().createTransaction(randomUUID());
+    await writeFile(join(transaction.stagingDir, 'master.jpg'), 'owned');
+    await transaction.commit();
+    await rename(transaction.finalDir, join(temporaryDirectory, 'displaced-owned-media'));
+    await mkdir(transaction.finalDir);
+    await writeFile(join(transaction.finalDir, 'replacement.txt'), 'keep');
+
+    await transaction.rollback();
+
+    await expect(readFile(join(transaction.finalDir, 'replacement.txt'), 'utf8')).resolves.toBe('keep');
   });
 
   it('rejects links and cleans the transaction instead of publishing them', async () => {

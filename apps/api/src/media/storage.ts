@@ -8,6 +8,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
 } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
@@ -151,9 +152,73 @@ async function preparePublishedTree(path: string, groupId: number): Promise<void
   await chmod(path, 0o750);
 }
 
+interface FileIdentity {
+  readonly device: number;
+  readonly inode: number;
+}
+
+async function reserveEmptyDirectory(path: string): Promise<FileIdentity> {
+  try {
+    await mkdir(path, { mode: 0o700 });
+  } catch (cause) {
+    if (isNodeError(cause) && cause.code === 'EEXIST') {
+      throw new MediaStorageError(
+        'MEDIA_TARGET_EXISTS',
+        '照片媒体目录已经存在',
+        { cause },
+      );
+    }
+    throw cause;
+  }
+
+  const information = await lstat(path);
+  if (!information.isDirectory()) {
+    throw new MediaStorageError('MEDIA_TARGET_EXISTS', '照片媒体目录已经存在');
+  }
+  return { device: information.dev, inode: information.ino };
+}
+
+async function matchesIdentity(path: string, identity: FileIdentity): Promise<boolean> {
+  try {
+    const information = await lstat(path);
+    return information.isDirectory()
+      && information.dev === identity.device
+      && information.ino === identity.inode;
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function assertEmptyReservation(path: string, identity: FileIdentity): Promise<void> {
+  if (!await matchesIdentity(path, identity) || (await readdir(path)).length !== 0) {
+    throw new MediaStorageError('MEDIA_TARGET_EXISTS', '照片媒体目录已经存在');
+  }
+}
+
+async function removeOwnedReservation(path: string, identity: FileIdentity): Promise<void> {
+  if (!await matchesIdentity(path, identity)) {
+    return;
+  }
+  try {
+    await rmdir(path);
+  } catch (error) {
+    if (
+      isNodeError(error)
+      && (error.code === 'ENOENT' || error.code === 'ENOTEMPTY' || error.code === 'EEXIST')
+    ) {
+      return;
+    }
+    throw error;
+  }
+}
+
 class FileMediaTransaction implements MediaTransaction {
   private state: 'active' | 'published' | 'rolled_back' = 'active';
-  private ownsFinalDirectory = false;
+  private ownedFinalIdentity: FileIdentity | undefined;
+  private reservationIdentity: FileIdentity | undefined;
 
   constructor(
     readonly photoId: string,
@@ -175,14 +240,39 @@ class FileMediaTransaction implements MediaTransaction {
         throw new MediaStorageError('MEDIA_TARGET_EXISTS', '照片媒体目录已经存在');
       }
       await preparePublishedTree(this.stagingDir, this.groupId);
-      if (await exists(this.finalDir)) {
-        throw new MediaStorageError('MEDIA_TARGET_EXISTS', '照片媒体目录已经存在');
-      }
+      this.reservationIdentity = await reserveEmptyDirectory(this.finalDir);
+      await assertEmptyReservation(this.finalDir, this.reservationIdentity);
+      const preparedDirectory = await lstat(this.stagingDir);
+      const preparedIdentity = {
+        device: preparedDirectory.dev,
+        inode: preparedDirectory.ino,
+      };
       await rename(this.stagingDir, this.finalDir);
-      this.ownsFinalDirectory = true;
+      this.reservationIdentity = undefined;
+      this.ownedFinalIdentity = preparedIdentity;
       this.state = 'published';
     } catch (error) {
-      await rm(this.stagingDir, { recursive: true, force: true });
+      const cleanupErrors: unknown[] = [];
+      if (this.reservationIdentity !== undefined) {
+        try {
+          await removeOwnedReservation(this.finalDir, this.reservationIdentity);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+        this.reservationIdentity = undefined;
+      }
+      try {
+        await rm(this.stagingDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          '媒体发布与补偿清理均失败',
+          { cause: error },
+        );
+      }
       throw error;
     }
   }
@@ -192,11 +282,18 @@ class FileMediaTransaction implements MediaTransaction {
       return;
     }
 
-    await rm(this.stagingDir, { recursive: true, force: true });
-    if (this.ownsFinalDirectory) {
-      await rm(this.finalDir, { recursive: true, force: true });
-      this.ownsFinalDirectory = false;
+    if (this.reservationIdentity !== undefined) {
+      await removeOwnedReservation(this.finalDir, this.reservationIdentity);
+      this.reservationIdentity = undefined;
     }
+    await rm(this.stagingDir, { recursive: true, force: true });
+    if (
+      this.ownedFinalIdentity !== undefined
+      && await matchesIdentity(this.finalDir, this.ownedFinalIdentity)
+    ) {
+      await rm(this.finalDir, { recursive: true, force: true });
+    }
+    this.ownedFinalIdentity = undefined;
     this.state = 'rolled_back';
   }
 }
