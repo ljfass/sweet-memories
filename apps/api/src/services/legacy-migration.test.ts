@@ -58,6 +58,22 @@ function createDatabase(): Database.Database {
   return db;
 }
 
+function createSharedDatabases(): readonly [Database.Database, Database.Database] {
+  const path = join(temporaryRoot('sweet-memories-shared-migration-db-'), 'db.sqlite3');
+  const first = new Database(path);
+  databases.push(first);
+  first.pragma('foreign_keys = ON');
+  first.pragma('journal_mode = WAL');
+  first.pragma('busy_timeout = 1');
+  runMigrations(first, migrationsRoot);
+  const second = new Database(path);
+  databases.push(second);
+  second.pragma('foreign_keys = ON');
+  second.pragma('journal_mode = WAL');
+  second.pragma('busy_timeout = 1');
+  return [first, second];
+}
+
 function datesReady(db: Database.Database, date = '2024-01-02'): void {
   db.prepare("UPDATE photos SET captured_date = ? WHERE request_id LIKE 'legacy-photo-%'").run(date);
 }
@@ -369,6 +385,46 @@ describe('legacy migration service', () => {
     expect((await import('node:fs/promises')).readdir(options.mediaRoot)).resolves.toEqual([]);
   });
 
+  it('serializes media ownership across two database connections in either winner order', async () => {
+    const lastPhotoId = 'c9608cd6-3480-43fb-84ab-623899262ff9';
+    for (const winnerIndex of [0, 1]) {
+      const connections = createSharedDatabases();
+      const mediaRoot = temporaryRoot(`sweet-memories-concurrent-media-${winnerIndex}-`);
+      const winner = connections[winnerIndex] as Database.Database;
+      const contender = connections[1 - winnerIndex] as Database.Database;
+      const contenderOptions = { db: contender, seedRoot, mediaRoot };
+      let contenderAttempt: ReturnType<typeof importLegacyPhotos> | undefined;
+      let triggered = false;
+
+      await expect(importLegacyPhotos({
+        db: winner,
+        seedRoot,
+        mediaRoot,
+        fileOperations: {
+          chmod(path: string, mode: number): void {
+            chmodSync(path, mode);
+            if (!triggered && path.endsWith(`/${lastPhotoId}`) && mode === 0o750) {
+              triggered = true;
+              contenderAttempt = importLegacyPhotos(contenderOptions);
+            }
+          },
+        },
+      })).resolves.toEqual({ imported: 5, reused: 0 });
+
+      expect(contenderAttempt).toBeDefined();
+      await expect(contenderAttempt).rejects.toThrow(/busy|locked/iu);
+      await expect(importLegacyPhotos(contenderOptions)).resolves.toEqual({ imported: 0, reused: 5 });
+      expect(winner.prepare('SELECT COUNT(*) AS count FROM photos').get()).toEqual({ count: 5 });
+      expect(contender.prepare('SELECT COUNT(*) AS count FROM photo_assets').get())
+        .toEqual({ count: 50 });
+      expect(readdirSync(mediaRoot).filter((name) => name.startsWith('.legacy-import-')))
+        .toEqual([]);
+      for (const name of readdirSync(mediaRoot)) {
+        expect(readdirSync(join(mediaRoot, name))).toHaveLength(10);
+      }
+    }
+  });
+
   it('requires complete exact metadata, valid dates, expected ordering, and verified media', async () => {
     const db = createDatabase();
     const options = migrationOptions(db);
@@ -383,6 +439,47 @@ describe('legacy migration service', () => {
     db.prepare("UPDATE photos SET captured_date = '2024-01-02' WHERE request_id = 'legacy-photo-2'").run();
     db.prepare("UPDATE photos SET created_at = '1999-01-01T00:00:00.000Z' WHERE request_id = 'legacy-photo-5'").run();
     await expect(checkLegacyReadiness(options)).rejects.toThrow();
+  });
+
+  it('rejects stored metadata outside the canonical admin edit contract without activation', async () => {
+    const db = createDatabase();
+    const options = migrationOptions(db);
+    await importLegacyPhotos(options);
+    datesReady(db);
+    const targetRequest = 'legacy-photo-2';
+    const canonical = (): void => {
+      db.prepare(
+        `UPDATE photos SET title = '规范标题', description = '规范描述',
+                           captured_date = '2024-01-02', version = 7
+         WHERE request_id = ?`,
+      ).run(targetRequest);
+    };
+    const probes: readonly (() => void)[] = [
+      () => db.prepare('UPDATE photos SET title = ? WHERE request_id = ?')
+        .run('Cafe\u0301', targetRequest),
+      () => db.prepare('UPDATE photos SET description = ? WHERE request_id = ?')
+        .run('描述 ', targetRequest),
+      () => db.prepare('UPDATE photos SET title = ? WHERE request_id = ?')
+        .run('标题\u0000尾部', targetRequest),
+      () => db.prepare('UPDATE photos SET version = ? WHERE request_id = ?')
+        .run(Number.MAX_SAFE_INTEGER + 1, targetRequest),
+      () => {
+        db.pragma('ignore_check_constraints = ON');
+        db.prepare('UPDATE photos SET title = ? WHERE request_id = ?')
+          .run('x'.repeat(121), targetRequest);
+        db.pragma('ignore_check_constraints = OFF');
+      },
+    ];
+
+    for (const probe of probes) {
+      canonical();
+      probe();
+      await expect(checkLegacyReadiness(options)).rejects.toThrow();
+      await expect(activateLegacyPhotos(options)).rejects.toThrow();
+      expect(listPublicPhotoRecords(db)).toEqual([]);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM photos WHERE status = 'published'").get())
+        .toEqual({ count: 0 });
+    }
   });
 
   it('ignores unrelated records but rejects missing, extra, unsafe, or drifted legacy media', async () => {

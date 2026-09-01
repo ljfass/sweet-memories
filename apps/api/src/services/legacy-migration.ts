@@ -16,6 +16,8 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 
 import type Database from 'better-sqlite3';
 
+import { normalizePhotoEditBody } from './photo-service.js';
+
 interface LegacyPhoto {
   readonly legacyId: string;
   readonly photoId: string;
@@ -396,6 +398,23 @@ function nonemptyText(value: string | null): boolean {
   return value !== null && value.trim().length > 0;
 }
 
+function hasCanonicalStoredEdit(row: PhotoRow): boolean {
+  try {
+    const normalized = normalizePhotoEditBody({
+      title: row.title,
+      description: row.description,
+      capturedDate: row.captured_date,
+      version: row.version,
+    });
+    return normalized.title === row.title
+      && normalized.description === row.description
+      && normalized.capturedDate === row.captured_date
+      && normalized.version === row.version;
+  } catch {
+    return false;
+  }
+}
+
 function assertImportedDatabase(
   db: Database.Database,
   manifest: LegacyMediaManifest,
@@ -418,7 +437,7 @@ function assertImportedDatabase(
       || !Number.isSafeInteger(row.version)
       || row.version < 1
       || (requireReady
-        ? !canonicalCalendarDate(row.captured_date)
+        ? !hasCanonicalStoredEdit(row)
         : row.captured_date !== null && !canonicalCalendarDate(row.captured_date))
     ) {
       throw new Error('迁移照片数据库记录不一致');
@@ -779,43 +798,41 @@ function insertLegacyDatabase(
   manifest: LegacyMediaManifest,
   mediaRoot: string,
 ): void {
-  db.transaction(() => {
-    verifyMediaFiles(mediaRoot, manifest);
-    const insertPhoto = db.prepare(
-      `INSERT INTO photos(
-         id, title, description, captured_date, status, rotation, offset_x, offset_y,
-         request_id, version, created_at, updated_at
-       ) VALUES (?, ?, ?, NULL, 'migration_pending', ?, ?, ?, ?, 1, ?, ?)`,
+  verifyMediaFiles(mediaRoot, manifest);
+  const insertPhoto = db.prepare(
+    `INSERT INTO photos(
+       id, title, description, captured_date, status, rotation, offset_x, offset_y,
+       request_id, version, created_at, updated_at
+     ) VALUES (?, ?, ?, NULL, 'migration_pending', ?, ?, ?, ?, 1, ?, ?)`,
+  );
+  const insertAsset = db.prepare(
+    `INSERT INTO photo_assets(photo_id, kind, format, width, height, relative_path)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  for (const photo of LEGACY_PHOTOS) {
+    const timestamp = createdAt(photo);
+    insertPhoto.run(
+      photo.photoId,
+      photo.title,
+      photo.description,
+      photo.rotation,
+      photo.x,
+      photo.y,
+      `legacy-photo-${photo.legacyId}`,
+      timestamp,
+      timestamp,
     );
-    const insertAsset = db.prepare(
-      `INSERT INTO photo_assets(photo_id, kind, format, width, height, relative_path)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    );
-    for (const photo of LEGACY_PHOTOS) {
-      const timestamp = createdAt(photo);
-      insertPhoto.run(
+    for (const asset of expectedAssets(manifest, photo.photoId)) {
+      insertAsset.run(
         photo.photoId,
-        photo.title,
-        photo.description,
-        photo.rotation,
-        photo.x,
-        photo.y,
-        `legacy-photo-${photo.legacyId}`,
-        timestamp,
-        timestamp,
+        asset.kind,
+        asset.format,
+        asset.width,
+        asset.height,
+        asset.relativePath,
       );
-      for (const asset of expectedAssets(manifest, photo.photoId)) {
-        insertAsset.run(
-          photo.photoId,
-          asset.kind,
-          asset.format,
-          asset.width,
-          asset.height,
-          asset.relativePath,
-        );
-      }
     }
-  }).immediate();
+  }
 }
 
 export async function importLegacyPhotos(
@@ -823,22 +840,24 @@ export async function importLegacyPhotos(
 ): Promise<{ readonly imported: number; readonly reused: number }> {
   const bundle = loadBundle(options);
   const operations = fileOperations(options);
-  const existing = databaseRows(options.db);
-  if (existing.length > 0) {
-    assertImportedDatabase(options.db, bundle.manifest, false);
-    verifyMediaFiles(bundle.mediaRoot, bundle.manifest);
-    for (const photo of bundle.manifest.photos) {
-      normalizePhotoModes(bundle.mediaRoot, photo, operations);
+  return options.db.transaction(() => {
+    const existing = databaseRows(options.db);
+    if (existing.length > 0) {
+      assertImportedDatabase(options.db, bundle.manifest, false);
+      verifyMediaFiles(bundle.mediaRoot, bundle.manifest);
+      for (const photo of bundle.manifest.photos) {
+        normalizePhotoModes(bundle.mediaRoot, photo, operations);
+      }
+      return { imported: 0, reused: 5 } as const;
     }
-    return { imported: 0, reused: 5 };
-  }
-  const ownership = prepareMediaDirectories(options, bundle);
-  try {
-    insertLegacyDatabase(options.db, bundle.manifest, bundle.mediaRoot);
-    return { imported: 5, reused: 0 };
-  } catch (error) {
-    return cleanupMediaAttempt(ownership, undefined, bundle.manifest, error);
-  }
+    const ownership = prepareMediaDirectories(options, bundle);
+    try {
+      insertLegacyDatabase(options.db, bundle.manifest, bundle.mediaRoot);
+      return { imported: 5, reused: 0 } as const;
+    } catch (error) {
+      return cleanupMediaAttempt(ownership, undefined, bundle.manifest, error);
+    }
+  }).immediate();
 }
 
 export async function checkLegacyReadiness(
