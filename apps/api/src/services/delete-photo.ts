@@ -7,6 +7,7 @@ import {
   realpath,
   rename as fileSystemRename,
   rm as fileSystemRemove,
+  utimes as fileSystemTouch,
 } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
@@ -18,6 +19,7 @@ const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]
 const MAX_TREE_ENTRIES = 10_000;
 
 export type RenameMediaTree = (source: string, target: string) => Promise<void>;
+export type TouchMediaTree = (path: string) => Promise<void>;
 export type RemoveMediaTree = (
   path: string,
   options: { readonly recursive: true; readonly force: false },
@@ -41,6 +43,7 @@ export interface CreateDeletePhotoServiceOptions {
   readonly mediaRoot: string;
   readonly createUuid?: () => string;
   readonly rename?: RenameMediaTree;
+  readonly touch?: TouchMediaTree;
   readonly remove?: RemoveMediaTree;
 }
 
@@ -222,6 +225,7 @@ class FileDeletePhotoService implements DeletePhotoService {
   private readonly mediaRoot: string;
   private readonly createUuid: () => string;
   private readonly rename: RenameMediaTree;
+  private readonly touch: TouchMediaTree;
   private readonly remove: RemoveMediaTree;
   private readonly tails = new Map<string, Promise<void>>();
 
@@ -232,6 +236,10 @@ class FileDeletePhotoService implements DeletePhotoService {
     this.mediaRoot = resolve(options.mediaRoot);
     this.createUuid = options.createUuid ?? randomUUID;
     this.rename = options.rename ?? fileSystemRename;
+    this.touch = options.touch ?? (async (path) => {
+      const timestamp = new Date();
+      await fileSystemTouch(path, timestamp, timestamp);
+    });
     this.remove = options.remove ?? fileSystemRemove;
   }
 
@@ -276,8 +284,42 @@ class FileDeletePhotoService implements DeletePhotoService {
     } catch (cause) {
       throw unsafeMediaPath(cause);
     }
-    if (!(await sameDirectory(target, identity)) || !(await missing(source))) {
-      throw unsafeMediaPath();
+    const targetStillIsolated = await sameDirectory(target, identity);
+    const sourceStillMissing = await missing(source);
+    if (!targetStillIsolated || !sourceStillMissing) {
+      const postRenameError = unsafeMediaPath();
+      if (targetStillIsolated) {
+        await this.restoreOrAggregate(
+          source,
+          target,
+          identity,
+          canonicalMediaRoot,
+          postRenameError,
+        );
+      }
+      throw postRenameError;
+    }
+    try {
+      await this.touch(target);
+    } catch (cause) {
+      const touchError = unsafeMediaPath(cause);
+      await this.restoreOrAggregate(source, target, identity, canonicalMediaRoot, touchError);
+      throw touchError;
+    }
+    const targetStillIsolatedAfterTouch = await sameDirectory(target, identity);
+    const sourceStillMissingAfterTouch = await missing(source);
+    if (!targetStillIsolatedAfterTouch || !sourceStillMissingAfterTouch) {
+      const postTouchError = unsafeMediaPath();
+      if (targetStillIsolatedAfterTouch) {
+        await this.restoreOrAggregate(
+          source,
+          target,
+          identity,
+          canonicalMediaRoot,
+          postTouchError,
+        );
+      }
+      throw postTouchError;
     }
 
     let result: DatabaseDeleteResult;

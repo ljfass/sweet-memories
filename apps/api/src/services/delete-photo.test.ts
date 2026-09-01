@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -109,6 +109,96 @@ describe('DeletePhotoService', () => {
     expect(observations).toEqual([
       { sourceExists: false, databaseExists: false, deletingMode: 0o700 },
     ]);
+  });
+
+  it('refreshes an old media directory after rename before deleting its database row', async () => {
+    seedPhoto();
+    const directory = await createMedia();
+    const old = new Date(Date.now() - 48 * 60 * 60 * 1_000);
+    await utimes(directory, old, old);
+    const target = join(mediaRoot, '.deleting', `${photoId}-${deleteId}`);
+    db.function('deleting_target_is_fresh', () => {
+      try {
+        return statSync(target).mtimeMs > Date.now() - 5_000 ? 1 : 0;
+      } catch {
+        return 0;
+      }
+    });
+    db.exec(`
+      CREATE TEMP TRIGGER require_fresh_delete_target BEFORE DELETE ON photos
+      BEGIN
+        SELECT CASE WHEN deleting_target_is_fresh() = 1
+          THEN 1 ELSE RAISE(ABORT, 'delete target was immediately stale') END;
+      END;
+    `);
+    const service = createDeletePhotoService({ db, mediaRoot, createUuid: () => deleteId });
+
+    await expect(service.delete({ id: photoId, version: 1 })).resolves.toEqual({ deleted: true });
+
+    expect(photoExists()).toBe(false);
+  });
+
+  it('restores media and preserves the database row when refreshing the delete target fails', async () => {
+    seedPhoto();
+    const directory = await createMedia();
+    const service = createDeletePhotoService({
+      db,
+      mediaRoot,
+      createUuid: () => deleteId,
+      touch: async () => {
+        throw new Error('simulated timestamp failure');
+      },
+    });
+
+    await expect(service.delete({ id: photoId, version: 1 })).rejects.toMatchObject({
+      code: 'UNSAFE_MEDIA_PATH',
+    });
+
+    expect(photoExists()).toBe(true);
+    await expect(readFile(join(directory, 'master.jpg'), 'utf8')).resolves.toBe('private-photo-media');
+    expect(await readdir(join(mediaRoot, '.deleting'))).toEqual([]);
+  });
+
+  it('stops database deletion when another worker restores the original media during touch', async () => {
+    seedPhoto();
+    const directory = await createMedia();
+    const service = createDeletePhotoService({
+      db,
+      mediaRoot,
+      createUuid: () => deleteId,
+      touch: async (target) => {
+        await rename(target, directory);
+      },
+    });
+
+    await expect(service.delete({ id: photoId, version: 1 })).rejects.toMatchObject({
+      code: 'UNSAFE_MEDIA_PATH',
+    });
+
+    expect(photoExists()).toBe(true);
+    await expect(readFile(join(directory, 'master.jpg'), 'utf8')).resolves.toBe('private-photo-media');
+    expect(await readdir(join(mediaRoot, '.deleting'))).toEqual([]);
+  });
+
+  it('retains private media and a competing source when the post-touch source check fails', async () => {
+    seedPhoto();
+    const directory = await createMedia();
+    const target = join(mediaRoot, '.deleting', `${photoId}-${deleteId}`);
+    const service = createDeletePhotoService({
+      db,
+      mediaRoot,
+      createUuid: () => deleteId,
+      touch: async () => {
+        await mkdir(directory);
+        await writeFile(join(directory, 'competitor.jpg'), 'competitor');
+      },
+    });
+
+    await expect(service.delete({ id: photoId, version: 1 })).rejects.toBeInstanceOf(AggregateError);
+
+    expect(photoExists()).toBe(true);
+    await expect(readFile(join(directory, 'competitor.jpg'), 'utf8')).resolves.toBe('competitor');
+    await expect(readFile(join(target, 'master.jpg'), 'utf8')).resolves.toBe('private-photo-media');
   });
 
   it('restores the original media atomically when the database transaction fails', async () => {

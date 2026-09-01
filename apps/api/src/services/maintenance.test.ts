@@ -1,7 +1,18 @@
 // @vitest-environment node
 
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdir, readFile, readdir, stat, symlink, utimes, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +20,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runMigrations } from '../migrations.js';
+import { createDeletePhotoService } from './delete-photo.js';
 import {
   MAINTENANCE_BUDGET,
   createMaintenanceService,
@@ -126,6 +138,205 @@ describe('MaintenanceService', () => {
         ({ token_hash }) => token_hash,
       ),
     ).toEqual(['token-0004']);
+  });
+
+  it('never removes an old in-flight delete while its photo row still exists', async () => {
+    const id = uuid(50);
+    const deleteId = uuid(51);
+    const source = join(mediaRoot, id);
+    const target = join(deletingRoot, `${id}-${deleteId}`);
+    seedPhoto(id);
+    await directory(source, stale, 'in-flight media');
+    let signalRenamed = (): void => undefined;
+    let resumeRename = (): void => undefined;
+    const renamed = new Promise<void>((resolve) => { signalRenamed = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeRename = resolve; });
+    const deletionService = createDeletePhotoService({
+      db,
+      mediaRoot,
+      createUuid: () => deleteId,
+      rename: async (from, to) => {
+        await rename(from, to);
+        await utimes(to, stale, stale);
+        signalRenamed();
+        await resume;
+      },
+    });
+    const deletion = deletionService.delete({ id, version: 1 });
+    const settledDeletion = deletion.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    await renamed;
+    const maintenance = createMaintenanceService({ db, mediaRoot, stagingRoot, now: () => now });
+
+    const summary = await maintenance.run();
+    resumeRename();
+    const deletionResult = await settledDeletion;
+
+    expect(summary).toMatchObject({ removedDeleting: 0 });
+    expect(deletionResult).toHaveProperty('error');
+    expect(db.prepare('SELECT 1 FROM photos WHERE id = ?').get(id)).toBeDefined();
+    await expect(readFile(join(source, 'entry.bin'), 'utf8')).resolves.toBe('in-flight media');
+    await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('restores a stale crash residue when the photo row exists and its source is absent', async () => {
+    const id = uuid(52);
+    const target = join(deletingRoot, `${id}-${uuid(53)}`);
+    seedPhoto(id);
+    await directory(target, stale, 'crash residue');
+    const service = createMaintenanceService({ db, mediaRoot, stagingRoot, now: () => now });
+
+    const summary = await service.run();
+
+    expect(summary).toMatchObject({ removedDeleting: 0, failures: 0 });
+    await expect(readFile(join(mediaRoot, id, 'entry.bin'), 'utf8')).resolves.toBe('crash residue');
+    await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('retains a stale crash residue without overwriting an existing public source', async () => {
+    const id = uuid(54);
+    const source = join(mediaRoot, id);
+    const target = join(deletingRoot, `${id}-${uuid(55)}`);
+    seedPhoto(id);
+    await directory(source, fresh, 'concurrent source');
+    await directory(target, stale, 'private residue');
+    const service = createMaintenanceService({ db, mediaRoot, stagingRoot, now: () => now });
+
+    const summary = await service.run();
+
+    expect(summary).toMatchObject({ removedDeleting: 0, failures: 1 });
+    await expect(readFile(join(source, 'entry.bin'), 'utf8')).resolves.toBe('concurrent source');
+    await expect(readFile(join(target, 'entry.bin'), 'utf8')).resolves.toBe('private residue');
+  });
+
+  it('retries a transient crash-recovery rename failure on a later run', async () => {
+    const id = uuid(56);
+    const target = join(deletingRoot, `${id}-${uuid(57)}`);
+    seedPhoto(id);
+    await directory(target, stale, 'retry residue');
+    let attempts = 0;
+    const service = createMaintenanceService({
+      db,
+      mediaRoot,
+      stagingRoot,
+      now: () => now,
+      rename: async (from, to) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('simulated recovery failure');
+        await rename(from, to);
+      },
+    });
+
+    const first = await service.run();
+    const second = await service.run();
+
+    expect(first).toMatchObject({ removedDeleting: 0, failures: 1 });
+    expect(second).toMatchObject({ removedDeleting: 0, failures: 0 });
+    await expect(readFile(join(mediaRoot, id, 'entry.bin'), 'utf8')).resolves.toBe('retry residue');
+    await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not publish a crash residue when its database row disappears during recovery', async () => {
+    const id = uuid(58);
+    const target = join(deletingRoot, `${id}-${uuid(59)}`);
+    seedPhoto(id);
+    await directory(target, stale, 'racing residue');
+    let renames = 0;
+    const service = createMaintenanceService({
+      db,
+      mediaRoot,
+      stagingRoot,
+      now: () => now,
+      rename: async (from, to) => {
+        renames += 1;
+        if (renames === 1) {
+          db.prepare('DELETE FROM photos WHERE id = ?').run(id);
+        }
+        await rename(from, to);
+      },
+    });
+
+    const first = await service.run();
+
+    expect(first).toMatchObject({ removedDeleting: 0, failures: 0 });
+    expect(db.prepare('SELECT 1 FROM photos WHERE id = ?').get(id)).toBeUndefined();
+    await expect(stat(join(mediaRoot, id))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(target, 'entry.bin'), 'utf8')).resolves.toBe('racing residue');
+
+    const second = await service.run();
+    expect(second).toMatchObject({ removedDeleting: 1, failures: 0 });
+    await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not overwrite a source populated concurrently after recovery reservation', async () => {
+    const id = uuid(60);
+    const source = join(mediaRoot, id);
+    const target = join(deletingRoot, `${id}-${uuid(61)}`);
+    seedPhoto(id);
+    await directory(target, stale, 'reserved residue');
+    const service = createMaintenanceService({
+      db,
+      mediaRoot,
+      stagingRoot,
+      now: () => now,
+      rename: async (from, to) => {
+        await writeFile(join(to, 'competitor.bin'), 'concurrent media');
+        await rename(from, to);
+      },
+    });
+
+    const summary = await service.run();
+
+    expect(summary).toMatchObject({ removedDeleting: 0, failures: 1 });
+    await expect(readFile(join(source, 'competitor.bin'), 'utf8')).resolves.toBe('concurrent media');
+    await expect(readFile(join(target, 'entry.bin'), 'utf8')).resolves.toBe('reserved residue');
+  });
+
+  it('re-quarantines a deleting target replaced immediately before recovery rename', async () => {
+    const id = uuid(62);
+    const source = join(mediaRoot, id);
+    const target = join(deletingRoot, `${id}-${uuid(63)}`);
+    seedPhoto(id);
+    await directory(target, stale, 'original residue');
+    let renames = 0;
+    const service = createMaintenanceService({
+      db,
+      mediaRoot,
+      stagingRoot,
+      now: () => now,
+      rename: async (from, to) => {
+        renames += 1;
+        if (renames === 1) {
+          await rm(from, { recursive: true, force: false });
+          await directory(from, fresh, 'replacement residue');
+        }
+        await rename(from, to);
+      },
+    });
+
+    const summary = await service.run();
+
+    expect(summary).toMatchObject({ removedDeleting: 0, failures: 1 });
+    await expect(stat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(target, 'entry.bin'), 'utf8')).resolves.toBe('replacement residue');
+  });
+
+  it('retains a deleting tree containing a special file without following or removing it', async () => {
+    const id = uuid(64);
+    const target = join(deletingRoot, `${id}-${uuid(65)}`);
+    const fifoPath = join(target, 'media.fifo');
+    seedPhoto(id);
+    await mkdir(target);
+    execFileSync('/usr/bin/mkfifo', [fifoPath]);
+    await utimes(target, stale, stale);
+    const service = createMaintenanceService({ db, mediaRoot, stagingRoot, now: () => now });
+
+    const summary = await service.run();
+
+    expect(summary).toMatchObject({ removedDeleting: 0, failures: 1 });
+    await expect(stat(target)).resolves.toBeDefined();
   });
 
   it('uses one explicit budget of at most 100 across all filesystem scans and SQL items', async () => {

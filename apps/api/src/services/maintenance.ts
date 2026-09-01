@@ -4,6 +4,8 @@ import {
   mkdir,
   readdir,
   realpath,
+  rename as fileSystemRename,
+  rmdir,
   rm as fileSystemRemove,
 } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
@@ -18,12 +20,13 @@ const IDLE_MILLISECONDS = 12 * 60 * 60 * 1_000;
 const MAX_TREE_ENTRIES = 10_000;
 const UUID_BODY = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const CANONICAL_UUID = new RegExp(`^${UUID_BODY}$`, 'u');
-const DELETING_ENTRY = new RegExp(`^${UUID_BODY}-${UUID_BODY}$`, 'u');
+const DELETING_ENTRY = new RegExp(`^(${UUID_BODY})-${UUID_BODY}$`, 'u');
 
 export type RemoveMaintenanceTree = (
   path: string,
   options: { readonly recursive: true; readonly force: false },
 ) => Promise<void>;
+export type RenameMaintenanceTree = (source: string, target: string) => Promise<void>;
 
 export interface MaintenanceSummary {
   readonly inspected: number;
@@ -44,6 +47,7 @@ export interface CreateMaintenanceServiceOptions {
   readonly stagingRoot: string;
   readonly now?: () => Date;
   readonly remove?: RemoveMaintenanceTree;
+  readonly rename?: RenameMaintenanceTree;
 }
 
 export class MaintenanceSafetyError extends Error {
@@ -209,11 +213,24 @@ async function identityStillMatches(path: string, identity: FileIdentity): Promi
   }
 }
 
+async function pathMissing(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    if (nodeError(error) && error.code === 'ENOENT') {
+      return true;
+    }
+    throw new MaintenanceSafetyError();
+  }
+}
+
 class BoundedMaintenanceService implements MaintenanceService {
   private readonly mediaRoot: string;
   private readonly stagingRoot: string;
   private readonly now: () => Date;
   private readonly remove: RemoveMaintenanceTree;
+  private readonly rename: RenameMaintenanceTree;
   private readonly scanCursors = new Map<
     'removedMedia' | 'removedStaging' | 'removedDeleting',
     string
@@ -231,6 +248,7 @@ class BoundedMaintenanceService implements MaintenanceService {
     }
     this.now = options.now ?? (() => new Date());
     this.remove = options.remove ?? fileSystemRemove;
+    this.rename = options.rename ?? fileSystemRename;
   }
 
   async run(): Promise<MaintenanceSummary> {
@@ -256,7 +274,16 @@ class BoundedMaintenanceService implements MaintenanceService {
 
     await this.scanRoot(media, CANONICAL_UUID, 'removedMedia', cutoff, summary, true, '.deleting');
     await this.scanRoot(staging, CANONICAL_UUID, 'removedStaging', cutoff, summary, false);
-    await this.scanRoot(deleting, DELETING_ENTRY, 'removedDeleting', cutoff, summary, false);
+    await this.scanRoot(
+      deleting,
+      DELETING_ENTRY,
+      'removedDeleting',
+      cutoff,
+      summary,
+      false,
+      undefined,
+      media,
+    );
     this.cleanupSessions(now, summary);
     return summary;
   }
@@ -269,6 +296,7 @@ class BoundedMaintenanceService implements MaintenanceService {
     summary: MutableSummary,
     requireOrphan: boolean,
     ignoredName?: string,
+    recoveryMedia?: SafeRoot,
   ): Promise<void> {
     let entries;
     try {
@@ -291,7 +319,14 @@ class BoundedMaintenanceService implements MaintenanceService {
     for (const entry of bounded) {
       summary.inspected += 1;
       try {
-        if (!acceptedName.test(entry.name)) {
+        const deletingMatch = recoveryMedia === undefined
+          ? undefined
+          : DELETING_ENTRY.exec(entry.name);
+        if (
+          recoveryMedia === undefined
+            ? !acceptedName.test(entry.name)
+            : deletingMatch === null
+        ) {
           continue;
         }
         if (entry.isSymbolicLink() || !entry.isDirectory()) {
@@ -320,6 +355,20 @@ class BoundedMaintenanceService implements MaintenanceService {
         if (!(await identityStillMatches(path, identity))) {
           throw new MaintenanceSafetyError();
         }
+        if (
+          recoveryMedia !== undefined
+          && deletingMatch !== undefined
+          && deletingMatch !== null
+        ) {
+          const photoId = deletingMatch[1];
+          if (photoId === undefined) {
+            throw new MaintenanceSafetyError();
+          }
+          if (this.photoExists(photoId)) {
+            await this.restoreDeletingTree(recoveryMedia, path, photoId, identity);
+            continue;
+          }
+        }
         await this.remove(path, { recursive: true, force: false });
         summary[counter] += 1;
       } catch {
@@ -330,6 +379,85 @@ class BoundedMaintenanceService implements MaintenanceService {
     if (lastInspected !== undefined) {
       // Retained and failing prefixes must still advance so later entries get a turn.
       this.scanCursors.set(counter, lastInspected.name);
+    }
+  }
+
+  private photoExists(photoId: string): boolean {
+    return this.options.db.prepare('SELECT 1 FROM photos WHERE id = ?').get(photoId) !== undefined;
+  }
+
+  private async restoreDeletingTree(
+    media: SafeRoot,
+    target: string,
+    photoId: string,
+    targetIdentity: FileIdentity,
+  ): Promise<void> {
+    const source = child(media.configured, photoId);
+    let reservationIdentity: FileIdentity;
+    try {
+      await mkdir(source, { mode: 0o700 });
+      reservationIdentity = await assertSafeTree(source, media.canonical);
+    } catch {
+      throw new MaintenanceSafetyError();
+    }
+
+    try {
+      if (!this.photoExists(photoId)) {
+        await this.removeEmptyReservation(source, reservationIdentity);
+        return;
+      }
+      if (!(await identityStillMatches(target, targetIdentity))) {
+        throw new MaintenanceSafetyError();
+      }
+      await this.rename(target, source);
+      const restoredTarget = await identityStillMatches(source, targetIdentity);
+      const targetIsMissing = await pathMissing(target);
+      if (!restoredTarget || !targetIsMissing) {
+        if (!restoredTarget && targetIsMissing && !(await pathMissing(source))) {
+          try {
+            await this.rename(source, target);
+          } catch {
+            // Leave whichever private/public paths exist for a later safe retry.
+          }
+        }
+        throw new MaintenanceSafetyError();
+      }
+
+      if (!this.photoExists(photoId)) {
+        if (!(await pathMissing(target))) {
+          throw new MaintenanceSafetyError();
+        }
+        await this.rename(source, target);
+        if (
+          !(await identityStillMatches(target, targetIdentity))
+          || !(await pathMissing(source))
+        ) {
+          throw new MaintenanceSafetyError();
+        }
+      }
+    } catch (error) {
+      if (await identityStillMatches(source, reservationIdentity)) {
+        try {
+          await rmdir(source);
+        } catch {
+          // A populated or replaced reservation belongs to a concurrent writer.
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async removeEmptyReservation(
+    source: string,
+    reservationIdentity: FileIdentity,
+  ): Promise<void> {
+    if (!(await identityStillMatches(source, reservationIdentity))) {
+      throw new MaintenanceSafetyError();
+    }
+    try {
+      await rmdir(source);
+    } catch {
+      throw new MaintenanceSafetyError();
     }
   }
 
