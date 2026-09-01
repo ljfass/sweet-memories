@@ -12,6 +12,13 @@ import {
   type AdminCommandOutput,
   type HiddenInput,
 } from './cli/admin.js';
+import {
+  isDatabaseManagementCommand,
+  isManagementCommandNamespace,
+  migrationHelp,
+  runMigrationCommand,
+  type MigrationCommandOptions,
+} from './cli/migration.js';
 import { loadConfig, type ApiConfig } from './config.js';
 import { openDatabase } from './database.js';
 import { runMigrations } from './migrations.js';
@@ -221,8 +228,14 @@ export interface CliRuntime {
   readonly openDatabase: (config: ApiConfig) => Database.Database;
   readonly runMigrations: (db: Database.Database, migrationsRoot: string) => void;
   readonly runAdminCommand: (options: AdminCommandOptions) => Promise<number>;
+  readonly runMigrationCommand?: (options: MigrationCommandOptions) => Promise<number>;
+  readonly seedRoot?: string;
   readonly now: () => string;
   readonly randomId: () => string;
+}
+
+function defaultSeedRoot(): string {
+  return fileURLToPath(new URL('../seed', import.meta.url));
 }
 
 function defaultRuntime(): CliRuntime {
@@ -235,6 +248,8 @@ function defaultRuntime(): CliRuntime {
     openDatabase,
     runMigrations,
     runAdminCommand,
+    runMigrationCommand,
+    seedRoot: defaultSeedRoot(),
     now: () => new Date().toISOString(),
     randomId: randomUUID,
   };
@@ -242,9 +257,11 @@ function defaultRuntime(): CliRuntime {
 
 function needsDatabase(argv: readonly string[]): boolean {
   return (
-    argv.length === 2 &&
-    argv[0] === 'admin' &&
-    (argv[1] === 'create' || argv[1] === 'reset-password')
+    (
+      argv.length === 2 &&
+      argv[0] === 'admin' &&
+      (argv[1] === 'create' || argv[1] === 'reset-password')
+    ) || isDatabaseManagementCommand(argv)
   );
 }
 
@@ -260,6 +277,15 @@ export async function runCli(
       // A failed output stream must not turn cleanup into an unhandled rejection.
     }
   };
+  if (isManagementCommandNamespace(argv) && !isDatabaseManagementCommand(argv)) {
+    try {
+      runtime.output.write(migrationHelp);
+      return 1;
+    } catch {
+      reportFailure();
+      return 1;
+    }
+  }
   if (!needsDatabase(argv)) {
     try {
       return await runtime.runAdminCommand({
@@ -281,14 +307,25 @@ export async function runCli(
     const config = runtime.loadConfig();
     db = runtime.openDatabase(config);
     runtime.runMigrations(db, config.migrationsRoot);
-    result = await runtime.runAdminCommand({
-      input,
-      output: runtime.output,
-      hiddenInput: runtime.hiddenInput,
-      db,
-      now: runtime.now,
-      randomId: runtime.randomId,
-    });
+    if (isDatabaseManagementCommand(argv)) {
+      result = await (runtime.runMigrationCommand ?? runMigrationCommand)({
+        argv,
+        output: runtime.output,
+        db,
+        seedRoot: runtime.seedRoot ?? defaultSeedRoot(),
+        mediaRoot: config.mediaRoot,
+        now: runtime.now,
+      });
+    } else {
+      result = await runtime.runAdminCommand({
+        input,
+        output: runtime.output,
+        hiddenInput: runtime.hiddenInput,
+        db,
+        now: runtime.now,
+        randomId: runtime.randomId,
+      });
+    }
   } catch {
     reportFailure();
     result = 1;

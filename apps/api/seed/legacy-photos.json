@@ -1,0 +1,52 @@
+[
+  {
+    "legacyId": "1",
+    "photoId": "9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1",
+    "title": "刚出生的时候 🍼",
+    "description": "刚出生的宝宝裹在粉色襁褓中安静熟睡",
+    "capturedDate": null,
+    "rotation": -5,
+    "x": 0,
+    "y": 10
+  },
+  {
+    "legacyId": "2",
+    "photoId": "58efb95e-2a98-45be-bbe4-acde6c34f7cd",
+    "title": "第一次笑得这么开心 😄",
+    "description": "宝宝睁着眼睛躺在印花被褥中",
+    "capturedDate": null,
+    "rotation": 3,
+    "x": 10,
+    "y": -5
+  },
+  {
+    "legacyId": "3",
+    "photoId": "f83da4e8-d94e-4b8a-a725-36e2d1f931bf",
+    "title": "满月啦 🎈",
+    "description": "爸爸妈妈抱着宝宝在蛋糕前庆祝满月",
+    "capturedDate": null,
+    "rotation": -2,
+    "x": -10,
+    "y": 0
+  },
+  {
+    "legacyId": "4",
+    "photoId": "a15b8021-9842-4ed7-bd0f-9f98518a2d72",
+    "title": "睡觉的样子最乖 💤",
+    "description": "宝宝躺在圆点枕头上安静熟睡",
+    "capturedDate": null,
+    "rotation": 4,
+    "x": 5,
+    "y": 15
+  },
+  {
+    "legacyId": "5",
+    "photoId": "c9608cd6-3480-43fb-84ab-623899262ff9",
+    "title": "带去公园玩 🌳",
+    "description": "宝宝坐在婴儿车里游览开满玫瑰的公园",
+    "capturedDate": null,
+    "rotation": -4,
+    "x": 0,
+    "y": -10
+  }
+]
