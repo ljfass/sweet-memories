@@ -339,4 +339,46 @@ describe('usePhotoLibrary', () => {
     expect(library.draftFor('photo-1').title).toBe('已加载最新版本')
     expect(library.hasConflict('photo-1')).toBe(false)
   })
+
+  it('keeps the saved uploaded version and its dirty draft when an older missing refresh resolves', async () => {
+    const refresh = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi([])
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => refresh.promise)
+    const refreshing = library.refresh()
+    const uploaded = photo({
+      id: 'uploaded-photo',
+      title: '刚上传的照片',
+      version: 1,
+      sources: {
+        avif: [{ url: '/media/uploaded-photo/320.avif', width: 320 }],
+        webp: [{ url: '/media/uploaded-photo/320.webp', width: 320 }],
+        jpeg: [{ url: '/media/uploaded-photo/320.jpg', width: 320 }],
+        fallback: { url: '/media/uploaded-photo/320.jpg', width: 320, height: 240 },
+      },
+    })
+    library.addUploadedPhoto(uploaded)
+    library.updateDraft(uploaded.id, { title: '已保存的新标题' })
+    vi.mocked(api.updatePhoto).mockResolvedValueOnce({
+      ...uploaded,
+      title: '已保存的新标题',
+      version: 2,
+    })
+    await library.save(uploaded.id)
+    library.updateDraft(uploaded.id, { description: '仍需保留的未保存描述' })
+
+    refresh.resolve([])
+    await refreshing
+
+    expect(library.photos.value).toHaveLength(1)
+    expect(library.photos.value[0]).toMatchObject({
+      id: uploaded.id,
+      title: '已保存的新标题',
+      version: 2,
+    })
+    expect(library.draftFor(uploaded.id).description).toBe('仍需保留的未保存描述')
+    expect(library.isDirty(uploaded.id)).toBe(true)
+    expect(library.hasConflict(uploaded.id)).toBe(false)
+  })
 })

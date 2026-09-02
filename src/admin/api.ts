@@ -576,6 +576,7 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
     readonly headers?: HeadersInit
     readonly body?: BodyInit
   }): Promise<Response> {
+    const authenticationEpoch = this.#authenticationEpoch
     let response: Response
     try {
       response = await this.#fetch(endpoint, {
@@ -587,7 +588,7 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
     } catch {
       throw new AdminApiError('unavailable', '服务暂时不可用，请稍后重试')
     }
-    if (response.status === 401) {
+    if (response.status === 401 && authenticationEpoch === this.#authenticationEpoch) {
       this.#publishUnauthorized()
     }
     if (!response.ok) {

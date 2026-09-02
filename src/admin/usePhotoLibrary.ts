@@ -90,7 +90,10 @@ export function usePhotoLibrary(
     const acceptedIds = new Set(acceptedPhotos.map((photo) => photo.id))
     const uploadedAfterRequest = [...localUploads.values()]
       .filter(({ photo, revision }) => revision > uploadsAtRequestStart && !acceptedIds.has(photo.id))
-      .map(({ photo }) => photo)
+      .map(({ photo }) => {
+        const current = currentById.get(photo.id)
+        return current !== undefined && current.version > photo.version ? current : photo
+      })
     const synchronizedPhotos = [...uploadedAfterRequest, ...acceptedPhotos]
     for (const [id, upload] of localUploads) {
       if (upload.revision <= uploadsAtRequestStart || acceptedIds.has(id)) {

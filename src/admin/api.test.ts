@@ -17,6 +17,17 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>
+  readonly resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((next) => {
+    resolve = next
+  })
+  return { promise, resolve }
+}
+
 const adminPhoto: AdminPhoto = {
   id: 'photo-1',
   title: '第一次散步',
@@ -452,6 +463,87 @@ describe('AdminApi', () => {
 
     expect(listener).toHaveBeenCalledTimes(1)
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not publish delayed GET, PATCH, or DELETE 401 responses from before a successful login', async () => {
+    const loginResponse = {
+      authenticated: true,
+      csrfToken: sessionResponse.csrfToken,
+      idleExpiresAt: sessionResponse.idleExpiresAt,
+      absoluteExpiresAt: sessionResponse.absoluteExpiresAt,
+    }
+    const oldRequests = Array.from({ length: 3 }, () => deferred<Response>())
+    const currentRequests = Array.from({ length: 3 }, () => deferred<Response>())
+    let photoRequestIndex = 0
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      if (input === '/api/admin/session' && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse(loginResponse))
+      }
+      const request = [...oldRequests, ...currentRequests][photoRequestIndex++]
+      if (request === undefined) throw new Error('unexpected request')
+      return request.promise
+    })
+    const listener = vi.fn()
+    const api = new AdminApi({ fetch: fetchMock })
+    api.onUnauthorized(listener)
+
+    const oldGet = api.listPhotos()
+    const oldPatch = api.updatePhoto('photo-1', {
+      title: '旧草稿', description: null, capturedDate: '2026-05-01', version: 1,
+    }, 'old-csrf')
+    const oldDelete = api.deletePhoto('photo-1', 1, 'old-csrf')
+    await api.login('alice', 'correct-password')
+    for (const request of oldRequests) request.resolve(jsonResponse({ error: {} }, 401))
+    await Promise.all([
+      expect(oldGet).rejects.toMatchObject({ kind: 'unauthorized' }),
+      expect(oldPatch).rejects.toMatchObject({ kind: 'unauthorized' }),
+      expect(oldDelete).rejects.toMatchObject({ kind: 'unauthorized' }),
+    ])
+    expect(listener).not.toHaveBeenCalled()
+
+    const currentGet = api.listPhotos()
+    const currentPatch = api.updatePhoto('photo-1', {
+      title: '当前草稿', description: null, capturedDate: '2026-05-01', version: 1,
+    }, 'fresh-csrf')
+    const currentDelete = api.deletePhoto('photo-1', 1, 'fresh-csrf')
+    for (const request of currentRequests) request.resolve(jsonResponse({ error: {} }, 401))
+    await Promise.all([
+      expect(currentGet).rejects.toMatchObject({ kind: 'unauthorized' }),
+      expect(currentPatch).rejects.toMatchObject({ kind: 'unauthorized' }),
+      expect(currentDelete).rejects.toMatchObject({ kind: 'unauthorized' }),
+    ])
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores an older login 401 after a newer login succeeds and resets current-epoch publishing', async () => {
+    const oldLoginResponse = deferred<Response>()
+    const currentSessionResponse = deferred<Response>()
+    const loginResponse = {
+      authenticated: true,
+      csrfToken: sessionResponse.csrfToken,
+      idleExpiresAt: sessionResponse.idleExpiresAt,
+      absoluteExpiresAt: sessionResponse.absoluteExpiresAt,
+    }
+    const fetchMock = vi.fn<typeof fetch>((_input, init) => {
+      const body = String(init?.body ?? '')
+      if (body.includes('older-admin')) return oldLoginResponse.promise
+      if (body.includes('alice')) return Promise.resolve(jsonResponse(loginResponse))
+      return currentSessionResponse.promise
+    })
+    const listener = vi.fn()
+    const api = new AdminApi({ fetch: fetchMock })
+    api.onUnauthorized(listener)
+
+    const olderLogin = api.login('older-admin', 'correct-password')
+    await api.login('alice', 'correct-password')
+    oldLoginResponse.resolve(jsonResponse({ error: {} }, 401))
+    await expect(olderLogin).rejects.toMatchObject({ kind: 'credentials' })
+    expect(listener).not.toHaveBeenCalled()
+
+    const currentCheck = api.checkSession()
+    currentSessionResponse.resolve(jsonResponse({ error: {} }, 401))
+    await expect(currentCheck).rejects.toMatchObject({ kind: 'unauthorized' })
+    expect(listener).toHaveBeenCalledTimes(1)
   })
 
   it('maps a real buildApp missing photo response without exposing its server code', async () => {
