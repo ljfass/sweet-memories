@@ -1,16 +1,21 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import AdminLogin from './AdminLogin.vue'
+import PhotoLibrary from './PhotoLibrary.vue'
 import ReauthDialog from './ReauthDialog.vue'
-import { safeLogoutErrorMessage } from './api'
-import type { AdminSessionState } from './types'
+import { AdminApi, safeLogoutErrorMessage } from './api'
+import type { AdminPhotoApiClient, AdminSessionState } from './types'
+import { usePhotoLibrary } from './usePhotoLibrary'
 import { useAdminSession } from './useAdminSession'
 
 const props = defineProps<{
   session?: AdminSessionState
+  photoApi?: AdminPhotoApiClient
 }>()
 
-const session = props.session ?? useAdminSession()
+const defaultApi = new AdminApi()
+const session = props.session ?? useAdminSession(defaultApi)
+const photoLibrary = usePhotoLibrary(props.photoApi ?? defaultApi, session.csrfToken)
 const logoutMessage = ref('')
 const isLoggingOut = ref(false)
 
@@ -30,6 +35,16 @@ async function logout(): Promise<void> {
 }
 
 onMounted(() => session.initialize())
+
+watch(
+  () => session.status.value,
+  (status) => {
+    if (status === 'authenticated' && photoLibrary.status.value === 'idle') {
+      void photoLibrary.load()
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -87,9 +102,7 @@ onMounted(() => session.initialize())
           照片库
         </h2>
         <slot name="workspace">
-          <p class="admin-empty-copy">
-            照片库正在准备
-          </p>
+          <PhotoLibrary :library="photoLibrary" />
         </slot>
       </section>
 

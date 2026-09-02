@@ -1,13 +1,33 @@
-import type { AdminApiClient, AdminSession } from './types'
+import type {
+  AdminApiClient,
+  AdminPhoto,
+  AdminPhotoApiClient,
+  AdminPhotoSource,
+  AdminSession,
+  PhotoUpdateInput,
+} from './types'
 
 const SESSION_ENDPOINT = '/api/admin/session'
+const PHOTO_ENDPOINT = '/api/admin/photos'
 const INVALID_RESPONSE_MESSAGE = '服务器返回了无效数据'
+const PHOTO_KEYS = [
+  'alt', 'capturedDate', 'description', 'id', 'sources', 'status', 'title', 'transform', 'version',
+]
+const SOURCE_KEYS = ['avif', 'fallback', 'jpeg', 'webp']
+const RESPONSIVE_SOURCE_KEYS = ['url', 'width']
+const FALLBACK_KEYS = ['height', 'url', 'width']
+const TRANSFORM_KEYS = ['rotation', 'x', 'y']
+const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
+const MAX_ADMIN_PHOTOS = 1_000
 
 export type AdminApiErrorKind =
   | 'credentials'
   | 'rate-limited'
   | 'unauthorized'
   | 'forbidden'
+  | 'conflict'
+  | 'not-found'
   | 'invalid-response'
   | 'unavailable'
 
@@ -56,6 +76,169 @@ function isIsoTimestamp(value: unknown): value is string {
   const parsed = new Date(value)
   const canonical = value.length === 20 ? value.replace('Z', '.000Z') : value
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === canonical
+}
+
+function invalidResponse(): AdminApiError {
+  return new AdminApiError('invalid-response', INVALID_RESPONSE_MESSAGE)
+}
+
+function readText(value: unknown, maximumLength: number, allowEmpty = false): string {
+  if (
+    typeof value !== 'string'
+    || value !== value.trim()
+    || (!allowEmpty && value.length === 0)
+    || value.includes('\u0000')
+    || Array.from(value).length > maximumLength
+  ) {
+    throw invalidResponse()
+  }
+  return value
+}
+
+function isCanonicalDate(value: string): boolean {
+  const match = DATE_PATTERN.exec(value)
+  if (match === null || match[1] === '0000') {
+    return false
+  }
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`)
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value
+}
+
+function readDimension(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || value > 60_000) {
+    throw invalidResponse()
+  }
+  return value
+}
+
+function mediaUrl(value: unknown, id: string, format: 'avif' | 'webp' | 'jpeg', width: number): string {
+  if (
+    typeof value !== 'string'
+    || !value.startsWith(`/media/${id}/`)
+    || value.includes('%')
+    || value.includes('\\')
+    || value.includes('?')
+    || value.includes('#')
+    || value.includes('//')
+  ) {
+    throw invalidResponse()
+  }
+  const filename = value.split('/')[3]
+  const extensions = format === 'jpeg' ? ['jpg', 'jpeg'] : [format]
+  if (value.split('/').length !== 4 || !extensions.some((extension) => filename === `${width}.${extension}`)) {
+    throw invalidResponse()
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(value, window.location.origin)
+  } catch {
+    throw invalidResponse()
+  }
+  if (parsed.origin !== window.location.origin || parsed.pathname !== value) {
+    throw invalidResponse()
+  }
+  return value
+}
+
+function parseSourceList(
+  value: unknown,
+  id: string,
+  format: 'avif' | 'webp' | 'jpeg',
+): readonly AdminPhotoSource[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+    throw invalidResponse()
+  }
+  let previousWidth = 0
+  return value.map((entry) => {
+    if (!isRecord(entry) || !hasExactKeys(entry, RESPONSIVE_SOURCE_KEYS)) {
+      throw invalidResponse()
+    }
+    const width = readDimension(Reflect.get(entry, 'width'))
+    if (width <= previousWidth) {
+      throw invalidResponse()
+    }
+    previousWidth = width
+    return { url: mediaUrl(Reflect.get(entry, 'url'), id, format, width), width }
+  })
+}
+
+function parseAdminPhoto(value: unknown): AdminPhoto {
+  if (!isRecord(value) || !hasExactKeys(value, PHOTO_KEYS)) {
+    throw invalidResponse()
+  }
+  const id = readText(Reflect.get(value, 'id'), 128)
+  if (!SAFE_ID_PATTERN.test(id) || id === '.' || id === '..') {
+    throw invalidResponse()
+  }
+  const title = readText(Reflect.get(value, 'title'), 120)
+  const alt = readText(Reflect.get(value, 'alt'), 500)
+  const rawDescription = Reflect.get(value, 'description')
+  const description = rawDescription === null ? null : readText(rawDescription, 500)
+  const rawDate = Reflect.get(value, 'capturedDate')
+  const capturedDate = rawDate === null ? null : readText(rawDate, 10)
+  if (capturedDate !== null && !isCanonicalDate(capturedDate)) {
+    throw invalidResponse()
+  }
+  const status = Reflect.get(value, 'status')
+  const version = Reflect.get(value, 'version')
+  if (
+    (status !== 'migration_pending' && status !== 'published')
+    || typeof version !== 'number'
+    || !Number.isSafeInteger(version)
+    || version < 1
+  ) {
+    throw invalidResponse()
+  }
+  const transform = Reflect.get(value, 'transform')
+  if (!isRecord(transform) || !hasExactKeys(transform, TRANSFORM_KEYS)) {
+    throw invalidResponse()
+  }
+  const rotation = Reflect.get(transform, 'rotation')
+  const x = Reflect.get(transform, 'x')
+  const y = Reflect.get(transform, 'y')
+  if (
+    typeof rotation !== 'number' || typeof x !== 'number' || typeof y !== 'number'
+    || !Number.isInteger(rotation) || !Number.isInteger(x) || !Number.isInteger(y)
+    || rotation < -6 || rotation > 6 || x < -16 || x > 16 || y < -16 || y > 16
+  ) {
+    throw invalidResponse()
+  }
+  const rawSources = Reflect.get(value, 'sources')
+  if (!isRecord(rawSources) || !hasExactKeys(rawSources, SOURCE_KEYS)) {
+    throw invalidResponse()
+  }
+  const avif = parseSourceList(Reflect.get(rawSources, 'avif'), id, 'avif')
+  const webp = parseSourceList(Reflect.get(rawSources, 'webp'), id, 'webp')
+  const jpeg = parseSourceList(Reflect.get(rawSources, 'jpeg'), id, 'jpeg')
+  const rawFallback = Reflect.get(rawSources, 'fallback')
+  if (!isRecord(rawFallback) || !hasExactKeys(rawFallback, FALLBACK_KEYS)) {
+    throw invalidResponse()
+  }
+  const width = readDimension(Reflect.get(rawFallback, 'width'))
+  const height = readDimension(Reflect.get(rawFallback, 'height'))
+  if (width * height > 60_000_000) {
+    throw invalidResponse()
+  }
+  const fallbackUrl = mediaUrl(Reflect.get(rawFallback, 'url'), id, 'jpeg', width)
+  if (!jpeg.some((source) => source.url === fallbackUrl && source.width === width)) {
+    throw invalidResponse()
+  }
+  return {
+    id, title, alt, description, capturedDate, status, version,
+    transform: { rotation, x, y },
+    sources: { avif, webp, jpeg, fallback: { url: fallbackUrl, width, height } },
+  }
+}
+
+function parseAdminPhotos(value: unknown): readonly AdminPhoto[] {
+  if (!Array.isArray(value) || value.length > MAX_ADMIN_PHOTOS) {
+    throw invalidResponse()
+  }
+  const photos = value.map(parseAdminPhoto)
+  if (new Set(photos.map((photo) => photo.id)).size !== photos.length) {
+    throw invalidResponse()
+  }
+  return photos
 }
 
 function parseSessionResponse(value: unknown): SessionResponse {
@@ -116,7 +299,7 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-function responseError(status: number, operation: 'login' | 'session'): AdminApiError {
+function responseError(status: number, operation: 'login' | 'session' | 'photo'): AdminApiError {
   if (status === 401) {
     return operation === 'login'
       ? new AdminApiError('credentials', '用户名或密码错误')
@@ -130,6 +313,12 @@ function responseError(status: number, operation: 'login' | 'session'): AdminApi
   }
   if (status === 403) {
     return new AdminApiError('forbidden', '请求被拒绝，请刷新页面后重试')
+  }
+  if (status === 409 && operation === 'photo') {
+    return new AdminApiError('conflict', '照片已在其他页面修改')
+  }
+  if (status === 404 && operation === 'photo') {
+    return new AdminApiError('not-found', '照片不存在或已被删除')
   }
   return new AdminApiError('unavailable', '服务暂时不可用，请稍后重试')
 }
@@ -156,7 +345,7 @@ export function safeLogoutErrorMessage(): string {
   return '暂时无法退出登录，请稍后重试'
 }
 
-export class AdminApi implements AdminApiClient {
+export class AdminApi implements AdminApiClient, AdminPhotoApiClient {
   readonly #fetch: typeof globalThis.fetch
   readonly #unauthorizedListeners = new Set<() => void>()
   #unauthorizedPublished = false
@@ -203,15 +392,54 @@ export class AdminApi implements AdminApiClient {
     this.#unauthorizedPublished = false
   }
 
+  async listPhotos(): Promise<readonly AdminPhoto[]> {
+    const response = await this.#requestEndpoint(PHOTO_ENDPOINT, {
+      method: 'GET',
+      operation: 'photo',
+    })
+    return parseAdminPhotos(await readJson(response))
+  }
+
+  async updatePhoto(
+    id: string,
+    input: PhotoUpdateInput,
+    csrfToken: string,
+  ): Promise<AdminPhoto> {
+    const response = await this.#requestEndpoint(`${PHOTO_ENDPOINT}/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      operation: 'photo',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+      body: JSON.stringify(input),
+    })
+    return parseAdminPhoto(await readJson(response))
+  }
+
+  async deletePhoto(id: string, version: number, csrfToken: string): Promise<void> {
+    await this.#requestEndpoint(`${PHOTO_ENDPOINT}/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      operation: 'photo',
+      headers: { 'if-match': `"${version}"`, 'x-csrf-token': csrfToken },
+    })
+  }
+
   async #request(options: {
     readonly method: 'GET' | 'POST' | 'DELETE'
     readonly operation?: 'login' | 'session'
     readonly headers?: HeadersInit
     readonly body?: BodyInit
   }): Promise<Response> {
+    return this.#requestEndpoint(SESSION_ENDPOINT, options)
+  }
+
+  async #requestEndpoint(endpoint: string, options: {
+    readonly method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+    readonly operation?: 'login' | 'session' | 'photo'
+    readonly headers?: HeadersInit
+    readonly body?: BodyInit
+  }): Promise<Response> {
     let response: Response
     try {
-      response = await this.#fetch(SESSION_ENDPOINT, {
+      response = await this.#fetch(endpoint, {
         method: options.method,
         credentials: 'same-origin',
         headers: options.headers,

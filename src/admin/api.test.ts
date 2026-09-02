@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AdminApi, AdminApiError } from './api'
+import type { AdminPhoto, PhotoUpdateInput } from './types'
 
 const sessionResponse = {
   authenticated: true,
@@ -16,7 +17,212 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+const adminPhoto: AdminPhoto = {
+  id: 'photo-1',
+  title: '第一次散步',
+  alt: '宝宝在公园散步',
+  description: '宝宝在公园散步',
+  capturedDate: '2026-05-01',
+  status: 'published',
+  version: 1,
+  transform: { rotation: 0, x: 0, y: 0 },
+  sources: {
+    avif: [{ url: '/media/photo-1/320.avif', width: 320 }],
+    webp: [{ url: '/media/photo-1/320.webp', width: 320 }],
+    jpeg: [{ url: '/media/photo-1/320.jpg', width: 320 }],
+    fallback: { url: '/media/photo-1/320.jpg', width: 320, height: 240 },
+  },
+}
+
+interface TestInjectResponse {
+  readonly body: string
+  readonly statusCode: number
+  readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>
+}
+
+interface TestApp {
+  inject(input: {
+    readonly method: string
+    readonly url: string
+    readonly headers?: Readonly<Record<string, string>>
+    readonly payload?: string
+  }): Promise<TestInjectResponse>
+  close(): Promise<void>
+}
+
+interface BackendPhotoUpdate extends PhotoUpdateInput {
+  readonly id: string
+}
+
+type BackendUpdatePhoto = (input: BackendPhotoUpdate) => AdminPhoto
+type BackendDeletePhoto = (input: { readonly id: string; readonly version: number }) =>
+  Promise<{ readonly deleted: boolean }>
+type BuildApp = (dependencies: Record<string, unknown>) => TestApp
+type ApiHttpErrorConstructor = new (statusCode: number, code: string, message: string) => Error
+
+const backendModules = import.meta.glob('../../apps/api/src/{app,http/security}.ts', { eager: true })
+
+function backendExport<T>(path: string, name: string): T {
+  const module = backendModules[path]
+  const value = typeof module === 'object' && module !== null ? Reflect.get(module, name) : undefined
+  if (value === undefined) throw new Error(`Missing backend test export: ${name}`)
+  return value as T
+}
+
+const buildApp = backendExport<BuildApp>('../../apps/api/src/app.ts', 'buildApp')
+const ApiHttpError = backendExport<ApiHttpErrorConstructor>(
+  '../../apps/api/src/http/security.ts',
+  'ApiHttpError',
+)
+
+const applications: TestApp[] = []
+
+function browserFetchFor(app: TestApp, calls: Array<[RequestInfo | URL, RequestInit | undefined]>) {
+  return vi.fn<typeof fetch>(async (input, init) => {
+    calls.push([input, init])
+    const headers = new Headers(init?.headers)
+    headers.set('cookie', '__Host-sweet_memories_session=browser-session')
+    const method = init?.method ?? 'GET'
+    if (method !== 'GET' && method !== 'HEAD') {
+      headers.set('origin', 'https://huangjianfen.cn')
+    }
+    const response = await app.inject({
+      method,
+      url: String(input),
+      headers: Object.fromEntries(headers.entries()),
+      payload: init?.body === undefined ? undefined : String(init.body),
+    })
+    const responseHeaders = new Headers()
+    for (const [name, value] of Object.entries(response.headers)) {
+      if (typeof value === 'string') responseHeaders.set(name, value)
+      else if (Array.isArray(value)) responseHeaders.set(name, value.join(', '))
+    }
+    return new Response(response.body === '' ? null : response.body, {
+      status: response.statusCode,
+      headers: responseHeaders,
+    })
+  })
+}
+
+function realPhotoApp(overrides: {
+  readonly updatePhoto?: BackendUpdatePhoto
+  readonly deletePhoto?: BackendDeletePhoto
+} = {}) {
+  const authenticated = {
+    adminId: 'admin-1', username: 'alice', tokenHash: 'token-hash', csrfHash: 'csrf-hash',
+    createdAt: '2026-09-01T00:00:00.000Z', lastActivityAt: '2026-09-01T00:00:00.000Z',
+    idleExpiresAt: '2026-09-01T12:00:00.000Z', absoluteExpiresAt: '2026-09-08T00:00:00.000Z',
+  }
+  const sessionService = {
+    login: vi.fn(), authenticate: vi.fn(() => authenticated), rotateCsrf: vi.fn(),
+    verifyCsrf: vi.fn((_session: unknown, csrf: string) => csrf === 'csrf-token'), logout: vi.fn(),
+    cleanupExpired: vi.fn(),
+  }
+  const updatePhoto = vi.fn<BackendUpdatePhoto>(overrides.updatePhoto ?? ((input) => ({
+    ...adminPhoto,
+    title: input.title,
+    description: input.description,
+    capturedDate: input.capturedDate,
+    version: input.version + 1,
+  })))
+  const photoService = {
+    listPublicPhotos: vi.fn(() => []), listAdminPhotos: vi.fn(() => [adminPhoto]), updatePhoto,
+  }
+  const deletePhoto = vi.fn<BackendDeletePhoto>(overrides.deletePhoto ?? (async () => ({ deleted: true })))
+  const deletePhotoService = { delete: deletePhoto }
+  const uploadPhotoService = { upload: vi.fn() }
+  const app = buildApp({
+    publicOrigin: 'https://huangjianfen.cn', sessionService, photoService,
+    uploadPhotoService, deletePhotoService, logger: false,
+  })
+  applications.push(app)
+  const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = []
+  return { app, calls, fetch: browserFetchFor(app, calls), updatePhoto, deletePhoto }
+}
+
+afterEach(async () => {
+  await Promise.all(applications.splice(0).map(async (app) => app.close()))
+})
+
 describe('AdminApi', () => {
+  it('uses the real buildApp GET/PATCH/DELETE contracts without forging browser Origin', async () => {
+    const context = realPhotoApp()
+    const api = new AdminApi({ fetch: context.fetch })
+
+    await expect(api.listPhotos()).resolves.toEqual([adminPhoto])
+    await expect(api.updatePhoto('photo-1', {
+      title: '新的标题', description: null, capturedDate: '2026-05-02', version: 1,
+    }, 'csrf-token')).resolves.toMatchObject({ title: '新的标题', version: 2 })
+    await expect(api.deletePhoto('photo-1', 2, 'csrf-token')).resolves.toBeUndefined()
+
+    expect(context.updatePhoto).toHaveBeenCalledWith({
+      id: 'photo-1', title: '新的标题', description: null, capturedDate: '2026-05-02', version: 1,
+    })
+    expect(context.deletePhoto).toHaveBeenCalledWith({ id: 'photo-1', version: 2 })
+    expect(context.calls.map(([, init]) => init?.method)).toEqual(['GET', 'PATCH', 'DELETE'])
+    for (const [, init] of context.calls) {
+      expect(init?.credentials).toBe('same-origin')
+      expect(new Headers(init?.headers).has('origin')).toBe(false)
+    }
+    expect(new Headers(context.calls[1]?.[1]?.headers).get('x-csrf-token')).toBe('csrf-token')
+    expect(new Headers(context.calls[2]?.[1]?.headers).get('if-match')).toBe('"2"')
+  })
+
+  it('maps a real buildApp version conflict to one stable sanitized client error', async () => {
+    const context = realPhotoApp({
+      updatePhoto: () => {
+        throw new ApiHttpError(409, 'PHOTO_VERSION_CONFLICT', '照片已被更新，请刷新后重试')
+      },
+    })
+    const api = new AdminApi({ fetch: context.fetch })
+
+    const error = await api.updatePhoto('photo-1', {
+      title: '草稿', description: null, capturedDate: '2026-05-02', version: 1,
+    }, 'csrf-token').catch((reason: unknown) => reason)
+
+    expect(error).toMatchObject({ kind: 'conflict', message: '照片已在其他页面修改' })
+    expect(JSON.stringify(error)).not.toMatch(/PHOTO_VERSION_CONFLICT|刷新后重试/i)
+  })
+
+  it('fails closed when an administrator photo response contains extra private fields', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse([{
+      ...adminPhoto,
+      originalFilename: 'private-family-photo.jpg',
+    }]))
+
+    await expect(new AdminApi({ fetch: fetchMock }).listPhotos())
+      .rejects.toMatchObject({ kind: 'invalid-response', message: '服务器返回了无效数据' })
+  })
+
+  it('publishes one unauthorized event for repeated photo failures and never retries writes', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ error: {} }, 401))
+    const listener = vi.fn()
+    const api = new AdminApi({ fetch: fetchMock })
+    api.onUnauthorized(listener)
+
+    await expect(api.listPhotos()).rejects.toMatchObject({ kind: 'unauthorized' })
+    await expect(api.updatePhoto('photo-1', {
+      title: '草稿', description: null, capturedDate: '2026-05-01', version: 1,
+    }, 'csrf-token')).rejects.toMatchObject({ kind: 'unauthorized' })
+
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps a real buildApp missing photo response without exposing its server code', async () => {
+    const context = realPhotoApp({
+      updatePhoto: () => {
+        throw new ApiHttpError(404, 'PHOTO_NOT_FOUND', '照片不存在')
+      },
+    })
+    const error = await new AdminApi({ fetch: context.fetch }).updatePhoto('photo-1', {
+      title: '草稿', description: null, capturedDate: '2026-05-01', version: 1,
+    }, 'csrf-token').catch((reason: unknown) => reason)
+
+    expect(error).toMatchObject({ kind: 'not-found', message: '照片不存在或已被删除' })
+    expect(JSON.stringify(error)).not.toMatch(/PHOTO_NOT_FOUND/i)
+  })
+
   it('checks the real session endpoint with same-origin credentials and validates the DTO', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(sessionResponse))
     const api = new AdminApi({ fetch: fetchMock })

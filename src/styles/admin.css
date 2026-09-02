@@ -76,9 +76,32 @@
   font: inherit;
 }
 
+.admin-field textarea {
+  width: 100%;
+  min-height: 108px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid #adb5b1;
+  border-radius: 6px;
+  color: #25282c;
+  background: #ffffff;
+  font: inherit;
+  line-height: 1.5;
+}
+
 .admin-field input:focus-visible,
 .admin-primary-button:focus-visible,
 .admin-secondary-button:focus-visible {
+  outline: 3px solid #0f766e;
+  outline-offset: 2px;
+}
+
+.admin-field textarea:focus-visible,
+.admin-icon-button:focus-visible,
+.admin-editor-back:focus-visible,
+.admin-link-button:focus-visible,
+.admin-danger-button:focus-visible,
+.admin-photo-card button:focus-visible {
   outline: 3px solid #0f766e;
   outline-offset: 2px;
 }
@@ -104,6 +127,32 @@
   font: inherit;
   font-weight: 800;
   cursor: pointer;
+}
+
+.admin-library-actions .admin-primary-button,
+.admin-library-actions .admin-secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  gap: 8px;
+}
+
+.admin-danger-button {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid #9e2f43;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #9e2f43;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.admin-danger-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .admin-primary-button {
@@ -169,6 +218,219 @@
 
 .admin-library h2 {
   font-size: 1.2rem;
+}
+
+.admin-library-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 0 18px;
+  gap: 10px;
+}
+
+.admin-migration-banner {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border-left: 4px solid #b7772f;
+  color: #593d20;
+  background: #fff7e8;
+  gap: 16px;
+}
+
+.admin-migration-banner span {
+  color: #735b40;
+  font-size: 0.88rem;
+}
+
+.admin-library-layout {
+  display: grid;
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 24px;
+}
+
+.admin-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+.admin-photo-card {
+  min-width: 0;
+}
+
+.admin-photo-card button {
+  display: grid;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #d4d9d4;
+  border-radius: 6px;
+  color: #34393d;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-photo-card.is-selected button {
+  border-color: #9c4056;
+  box-shadow: 0 0 0 2px rgb(156 64 86 / 14%);
+}
+
+.admin-photo-card picture {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: #e8ebe7;
+}
+
+.admin-photo-card img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.admin-photo-card span {
+  min-height: 46px;
+  padding: 12px;
+  overflow: hidden;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-photo-editor,
+.admin-editor-placeholder {
+  position: sticky;
+  top: 20px;
+  width: 320px;
+  border: 1px solid #d5dad5;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgb(37 40 44 / 7%);
+}
+
+.admin-photo-editor {
+  padding: 18px;
+}
+
+.admin-editor-placeholder {
+  display: grid;
+  min-height: 320px;
+  padding: 24px;
+  color: #72797c;
+  text-align: center;
+  place-items: center;
+}
+
+.admin-photo-editor-header {
+  display: grid;
+  align-items: center;
+  grid-template-columns: 36px 1fr 36px;
+  margin-bottom: 16px;
+  gap: 8px;
+}
+
+.admin-photo-editor-header h2 {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.admin-icon-button,
+.admin-editor-back {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #c8ceca;
+  border-radius: 6px;
+  color: #3f454a;
+  background: #ffffff;
+  cursor: pointer;
+  place-items: center;
+}
+
+.admin-editor-back {
+  visibility: hidden;
+}
+
+.admin-delete-button {
+  color: #9e2f43;
+}
+
+.admin-editor-preview {
+  display: block;
+  width: 100%;
+  height: 176px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #e8ebe7;
+}
+
+.admin-field-hint {
+  margin: 0;
+  color: #6f767a;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.admin-conflict-notice {
+  margin-top: 16px;
+  padding: 12px;
+  border-left: 3px solid #b7772f;
+  color: #593d20;
+  background: #fff7e8;
+}
+
+.admin-conflict-notice p {
+  margin: 0 0 6px;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.admin-link-button {
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  color: #7f3045;
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 800;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.admin-library-error {
+  display: grid;
+  min-height: 160px;
+  place-items: center;
+}
+
+.admin-library-error p {
+  margin: 0;
+  color: #a32943;
+}
+
+.admin-delete-summary {
+  display: grid;
+  align-items: center;
+  grid-template-columns: 88px minmax(0, 1fr);
+  margin-bottom: 6px;
+  gap: 14px;
+}
+
+.admin-delete-summary img {
+  width: 88px;
+  height: 88px;
+  object-fit: cover;
+  border-radius: 4px;
 }
 
 .admin-empty-copy {
@@ -237,5 +499,77 @@
 
   .admin-dialog-actions {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .admin-workspace {
+    width: min(100% - 24px, 1180px);
+    padding-top: 16px;
+  }
+
+  .admin-library {
+    padding-top: 24px;
+  }
+
+  .admin-library-actions {
+    position: sticky;
+    z-index: 3;
+    bottom: 10px;
+    justify-content: stretch;
+    padding: 8px;
+    border: 1px solid #d5dad5;
+    border-radius: 6px;
+    background: rgb(255 255 255 / 96%);
+    box-shadow: 0 10px 30px rgb(37 40 44 / 12%);
+  }
+
+  .admin-library-actions .admin-primary-button,
+  .admin-library-actions .admin-secondary-button {
+    flex: 1;
+  }
+
+  .admin-migration-banner {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .admin-library-layout {
+    display: block;
+  }
+
+  .admin-photo-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .admin-photo-card span {
+    padding: 10px;
+    font-size: 0.84rem;
+  }
+
+  .admin-editor-placeholder {
+    display: none;
+  }
+
+  .admin-photo-editor {
+    position: fixed;
+    z-index: 40;
+    inset: 0;
+    width: auto;
+    height: 100dvh;
+    overflow-y: auto;
+    padding: 18px 16px calc(28px + env(safe-area-inset-bottom));
+    border: 0;
+    border-radius: 0;
+  }
+
+  .admin-editor-back {
+    visibility: visible;
+  }
+
+  .admin-editor-preview {
+    height: min(38vh, 300px);
   }
 }

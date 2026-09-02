@@ -1,9 +1,17 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick, ref } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
-import type { AdminSessionState } from './types'
+import type { AdminPhotoApiClient, AdminSessionState } from './types'
 import AdminApp from './AdminApp.vue'
 import ReauthDialog from './ReauthDialog.vue'
+
+function createEmptyPhotoApi(): AdminPhotoApiClient {
+  return {
+    listPhotos: vi.fn().mockResolvedValue([]),
+    updatePhoto: vi.fn(),
+    deletePhoto: vi.fn(),
+  }
+}
 
 describe('ReauthDialog', () => {
   it('opens as a modal and moves focus to the username field', async () => {
@@ -82,7 +90,7 @@ describe('ReauthDialog', () => {
       logout: vi.fn(async () => undefined),
     }
     const wrapper = mount(AdminApp, {
-      props: { session },
+      props: { session, photoApi: createEmptyPhotoApi() },
       slots: {
         workspace: '<input data-testid="preserved-draft" aria-label="照片标题草稿">',
       },
@@ -112,7 +120,9 @@ describe('ReauthDialog', () => {
         throw new Error('SQLITE at /srv/private.sqlite password=secret')
       }),
     }
-    const wrapper = mount(AdminApp, { props: { session } })
+    const wrapper = mount(AdminApp, {
+      props: { session, photoApi: createEmptyPhotoApi() },
+    })
 
     await wrapper.get('.admin-toolbar button').trigger('click')
     await flushPromises()
@@ -134,7 +144,10 @@ describe('ReauthDialog', () => {
         status.value = 'anonymous'
       }),
     }
-    const wrapper = mount(AdminApp, { attachTo: document.body, props: { session } })
+    const wrapper = mount(AdminApp, {
+      attachTo: document.body,
+      props: { session, photoApi: createEmptyPhotoApi() },
+    })
     const removedControl = wrapper.get('.admin-toolbar button').element as HTMLButtonElement
     removedControl.focus()
     status.value = 'reauth-required'
