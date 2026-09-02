@@ -329,13 +329,13 @@ function waitForQueueDrain(
 
 async function waitForShutdownGrace(
   queue: ProcessingQueue,
-  maintenanceTask: Promise<void> | undefined,
+  tasks: readonly Promise<void>[],
   timers: ApiTimers,
 ): Promise<boolean> {
   if (
     queue.activeCount === 0
     && queue.pendingCount === 0
-    && maintenanceTask === undefined
+    && tasks.length === 0
   ) {
     return true;
   }
@@ -351,7 +351,7 @@ async function waitForShutdownGrace(
     return await Promise.race([
       Promise.all([
         queueDrain.promise,
-        maintenanceTask ?? Promise.resolve(),
+        ...tasks,
       ]).then(() => true),
       expired,
     ]);
@@ -415,50 +415,55 @@ export async function startApi(options: StartApiOptions): Promise<ApiRuntime> {
     signals.off('SIGTERM', onSignal);
   };
   const performShutdown = async (): Promise<void> => {
-    removeSignalListeners();
-    if (maintenanceTimer !== undefined) {
-      timers.clearInterval(maintenanceTimer);
-      maintenanceTimer = undefined;
-    }
-
     let failure: unknown;
-    let acceptanceClosed: Promise<void> | undefined;
-    if (app !== undefined) {
+    const observe = async (operation: () => Promise<void>): Promise<void> => {
       try {
-        acceptanceClosed = stopAccepting(app);
-      } catch (error) {
-        failure = error;
-      }
-    }
-    const drained = await waitForShutdownGrace(queue, maintenanceTask, timers);
-    if (!drained && app !== undefined && 'closeAllConnections' in app.server) {
-      app.server.closeAllConnections();
-    }
-    if (acceptanceClosed !== undefined) {
-      try {
-        await acceptanceClosed;
+        await operation();
       } catch (error) {
         failure ??= error;
       }
-    }
-    if (app !== undefined) {
-      try {
-        await app.close();
-      } catch (error) {
-        failure ??= error;
+    };
+    try {
+      queue.seal();
+      if (maintenanceTimer !== undefined) {
+        timers.clearInterval(maintenanceTimer);
+        maintenanceTimer = undefined;
       }
-    }
-    if (db !== undefined) {
-      try {
-        closeDatabase(db);
-      } catch (error) {
-        failure ??= error;
+
+      const tasks: Promise<void>[] = [];
+      const application = app;
+      if (application !== undefined) {
+        tasks.push(observe(() => stopAccepting(application)));
+        tasks.push(observe(() => application.close()));
       }
+      if (maintenanceTask !== undefined) tasks.push(maintenanceTask);
+      const drained = await waitForShutdownGrace(queue, tasks, timers);
+      if (
+        !drained
+        && app !== undefined
+        && typeof app.server.closeAllConnections === 'function'
+      ) {
+        try {
+          app.server.closeAllConnections();
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      if (db !== undefined) {
+        try {
+          closeDatabase(db);
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      if (failure !== undefined) throw failure;
+    } finally {
+      removeSignalListeners();
     }
-    if (failure !== undefined) throw failure;
   };
   const shutdown = (): Promise<void> => {
-    shutdownPromise ??= performShutdown().then(
+    if (shutdownPromise !== undefined) return shutdownPromise;
+    shutdownPromise = Promise.resolve().then(performShutdown).then(
       () => { resolveClosed(); },
       (error) => {
         rejectClosed(error);
@@ -555,13 +560,31 @@ function isDirectExecution(): boolean {
   }
 }
 
-if (isDirectExecution()) {
-  void startApi({ config: loadConfig() }).catch(() => {
+export interface MainDependencies {
+  readonly loadConfig: typeof loadConfig;
+  readonly setExitCode: (code: number) => void;
+  readonly startApi: typeof startApi;
+  readonly writeError: (message: string) => unknown;
+}
+
+export async function main(dependencies: MainDependencies): Promise<void> {
+  try {
+    await dependencies.startApi({ config: dependencies.loadConfig() });
+  } catch {
     try {
-      process.stderr.write('图片 API 启动失败\n');
+      dependencies.writeError('图片 API 启动失败\n');
     } catch {
-      // No diagnostic detail is emitted if stderr itself is unavailable.
+      // The exit status is still set if the diagnostic stream is unavailable.
     }
-    process.exitCode = 1;
+    dependencies.setExitCode(1);
+  }
+}
+
+if (isDirectExecution()) {
+  void main({
+    loadConfig,
+    startApi,
+    writeError: (message) => process.stderr.write(message),
+    setExitCode: (code) => { process.exitCode = code; },
   });
 }

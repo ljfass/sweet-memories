@@ -2,7 +2,10 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { ProcessingQueue } from './processing-queue.js';
+import {
+  ProcessingQueue,
+  ProcessingQueueClosedError,
+} from './processing-queue.js';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -107,6 +110,43 @@ describe('ProcessingQueue', () => {
 
     await expect(first).rejects.toThrow('synchronous failure');
     await expect(second).resolves.toBe('next');
+    expect(queue.activeCount).toBe(0);
+    expect(queue.pendingCount).toBe(0);
+  });
+
+  it('seals admission, rejects every pending job and lets only the active job settle', async () => {
+    const queue = new ProcessingQueue();
+    const active = deferred<string>();
+    const pendingJob = vi.fn(async () => 'must not run');
+    const otherPendingJob = vi.fn(async () => 'must not run either');
+    const activeResult = queue.run(() => active.promise);
+    const pendingResult = queue.run(pendingJob);
+    const otherPendingResult = queue.run(otherPendingJob);
+
+    queue.seal();
+    queue.seal();
+
+    expect(queue.isAccepting).toBe(false);
+    expect(queue.activeCount).toBe(1);
+    expect(queue.pendingCount).toBe(0);
+    await Promise.all([
+      expect(pendingResult).rejects.toBeInstanceOf(ProcessingQueueClosedError),
+      expect(otherPendingResult).rejects.toMatchObject({
+        code: 'UPLOAD_QUEUE_CLOSED',
+        name: 'ProcessingQueueClosedError',
+      }),
+    ]);
+    const rejectedJob = vi.fn(async () => 'also must not run');
+    await expect(queue.run(rejectedJob)).rejects.toBeInstanceOf(
+      ProcessingQueueClosedError,
+    );
+    expect(rejectedJob).not.toHaveBeenCalled();
+
+    active.reject(new Error('late active failure'));
+    await expect(activeResult).rejects.toThrow('late active failure');
+    await nextTurn();
+    expect(pendingJob).not.toHaveBeenCalled();
+    expect(otherPendingJob).not.toHaveBeenCalled();
     expect(queue.activeCount).toBe(0);
     expect(queue.pendingCount).toBe(0);
   });

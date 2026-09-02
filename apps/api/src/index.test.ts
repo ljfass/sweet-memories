@@ -201,6 +201,62 @@ describe('startApi', () => {
     expect(signals.listenerCount('SIGINT')).toBe(0);
   });
 
+  it('keeps signal guards and bounds stuck HTTP shutdown with the single grace timeout', async () => {
+    const order: string[] = [];
+    const config = testConfig();
+    const db = fakeDatabase(order);
+    const application = fakeApplication(order);
+    application.stopAccepting.mockImplementation(() => {
+      order.push('server.close');
+    });
+    application.close.mockImplementation(() => {
+      order.push('app.close');
+      return new Promise<void>(() => undefined);
+    });
+    const signals = signalSource();
+    const intervals: Array<() => void> = [];
+    const timeouts: Array<() => void> = [];
+    const timers: ApiTimers = {
+      setInterval(callback) { intervals.push(callback); return callback; },
+      clearInterval: vi.fn(),
+      setTimeout(callback) { timeouts.push(callback); return callback; },
+      clearTimeout: vi.fn(),
+    };
+    const runtime = await startApi({
+      config,
+      signalSource: signals,
+      timers,
+      openDatabase: () => db,
+      runMigrations: () => undefined,
+      verifyHeifTool: async () => undefined,
+      createSessionService: async () => sessionService(),
+      createApp: () => application.app,
+    });
+
+    signals.emit('SIGTERM');
+    signals.emit('SIGINT');
+    await Promise.resolve();
+
+    expect(signals.listenerCount('SIGTERM')).toBe(1);
+    expect(signals.listenerCount('SIGINT')).toBe(1);
+    expect(application.stopAccepting).toHaveBeenCalledOnce();
+    expect(application.close).toHaveBeenCalledOnce();
+    expect(timeouts).toHaveLength(1);
+    expect(db.close).not.toHaveBeenCalled();
+
+    timeouts[0]?.();
+    for (let turn = 0; turn < 10; turn += 1) {
+      await Promise.resolve();
+    }
+    await runtime.closed;
+
+    expect(application.app.server.closeAllConnections).toHaveBeenCalledOnce();
+    expect(db.close).toHaveBeenCalledOnce();
+    expect(intervals).toHaveLength(1);
+    expect(signals.listenerCount('SIGTERM')).toBe(0);
+    expect(signals.listenerCount('SIGINT')).toBe(0);
+  });
+
   it('does not overlap hourly maintenance and continues after a failed run', async () => {
     const config = testConfig();
     const order: string[] = [];
@@ -267,6 +323,12 @@ describe('startApi', () => {
       rejectJob = reject;
     }));
     void job.catch(() => undefined);
+    const pendingJob = vi.fn(async () => undefined);
+    const pending = queue.run(pendingJob);
+    const pendingRejection = expect(pending).rejects.toMatchObject({
+      code: 'UPLOAD_QUEUE_CLOSED',
+      name: 'ProcessingQueueClosedError',
+    });
     let rejectMaintenance: (error: Error) => void = () => undefined;
     const run = vi.fn<MaintenanceService['run']>(() => new Promise((_resolveRun, reject) => {
       rejectMaintenance = reject;
@@ -291,6 +353,9 @@ describe('startApi', () => {
       shutdownFinished = true;
     });
     await Promise.resolve();
+    await pendingRejection;
+    expect(pendingJob).not.toHaveBeenCalled();
+    expect(queue.pendingCount).toBe(0);
     expect(timeouts).toHaveLength(1);
     timeouts[0]?.();
     for (let turn = 0; turn < 10; turn += 1) {
@@ -310,6 +375,7 @@ describe('startApi', () => {
     rejectMaintenance(new Error('late maintenance failure'));
     await Promise.allSettled([job]);
     await Promise.resolve();
+    expect(pendingJob).not.toHaveBeenCalled();
   });
 
   it('waits for in-flight maintenance before closing the shared database', async () => {
@@ -347,7 +413,7 @@ describe('startApi', () => {
     for (let turn = 0; turn < 10; turn += 1) {
       await Promise.resolve();
     }
-    expect(application.close).not.toHaveBeenCalled();
+    expect(application.close).toHaveBeenCalledOnce();
     expect(db.close).not.toHaveBeenCalled();
 
     finishMaintenance();
@@ -404,5 +470,25 @@ describe('startApi', () => {
     expect(open).not.toHaveBeenCalled();
     expect(existsSync(join(outside, 'nested-media'))).toBe(false);
     expect(statSync(outside).mode & 0o7777).toBe(originalMode);
+  });
+
+  it('sanitizes configuration failures through the direct-entry main boundary', async () => {
+    const entryModule = await import('./index.js');
+    const main = Reflect.get(entryModule, 'main');
+    expect(main).toBeTypeOf('function');
+    const writeError = vi.fn();
+    const setExitCode = vi.fn();
+    const start = vi.fn();
+
+    await main({
+      loadConfig: () => { throw new Error('/private/config/path'); },
+      startApi: start,
+      writeError,
+      setExitCode,
+    });
+
+    expect(start).not.toHaveBeenCalled();
+    expect(writeError).toHaveBeenCalledExactlyOnceWith('图片 API 启动失败\n');
+    expect(setExitCode).toHaveBeenCalledExactlyOnceWith(1);
   });
 });
