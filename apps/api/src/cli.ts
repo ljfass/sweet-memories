@@ -13,6 +13,13 @@ import {
   type HiddenInput,
 } from './cli/admin.js';
 import {
+  databaseHelp,
+  isDatabaseCommand,
+  isDatabaseCommandNamespace,
+  runDatabaseCommand,
+  type DatabaseCommandOptions,
+} from './cli/database.js';
+import {
   isDatabaseManagementCommand,
   isManagementCommandNamespace,
   migrationHelp,
@@ -228,6 +235,7 @@ export interface CliRuntime {
   readonly openDatabase: (config: ApiConfig) => Database.Database;
   readonly runMigrations: (db: Database.Database, migrationsRoot: string) => void;
   readonly runAdminCommand: (options: AdminCommandOptions) => Promise<number>;
+  readonly runDatabaseCommand?: (options: DatabaseCommandOptions) => Promise<number>;
   readonly runMigrationCommand?: (options: MigrationCommandOptions) => Promise<number>;
   readonly seedRoot?: string;
   readonly now: () => string;
@@ -248,6 +256,7 @@ function defaultRuntime(): CliRuntime {
     openDatabase,
     runMigrations,
     runAdminCommand,
+    runDatabaseCommand,
     runMigrationCommand,
     seedRoot: defaultSeedRoot(),
     now: () => new Date().toISOString(),
@@ -261,7 +270,7 @@ function needsDatabase(argv: readonly string[]): boolean {
       argv.length === 2 &&
       argv[0] === 'admin' &&
       (argv[1] === 'create' || argv[1] === 'reset-password')
-    ) || isDatabaseManagementCommand(argv)
+    ) || isDatabaseManagementCommand(argv) || isDatabaseCommand(argv)
   );
 }
 
@@ -280,6 +289,15 @@ export async function runCli(
   if (isManagementCommandNamespace(argv) && !isDatabaseManagementCommand(argv)) {
     try {
       runtime.output.write(migrationHelp);
+      return 1;
+    } catch {
+      reportFailure();
+      return 1;
+    }
+  }
+  if (isDatabaseCommandNamespace(argv) && !isDatabaseCommand(argv)) {
+    try {
+      runtime.output.write(databaseHelp);
       return 1;
     } catch {
       reportFailure();
@@ -306,25 +324,36 @@ export async function runCli(
   try {
     const config = runtime.loadConfig();
     db = runtime.openDatabase(config);
-    runtime.runMigrations(db, config.migrationsRoot);
-    if (isDatabaseManagementCommand(argv)) {
-      result = await (runtime.runMigrationCommand ?? runMigrationCommand)({
+    if (isDatabaseCommand(argv)) {
+      result = await (runtime.runDatabaseCommand ?? runDatabaseCommand)({
         argv,
         output: runtime.output,
         db,
-        seedRoot: runtime.seedRoot ?? defaultSeedRoot(),
-        mediaRoot: config.mediaRoot,
-        now: runtime.now,
+        dataRoot: config.dataRoot,
+        migrationsRoot: config.migrationsRoot,
+        migrate: runtime.runMigrations,
       });
     } else {
-      result = await runtime.runAdminCommand({
-        input,
-        output: runtime.output,
-        hiddenInput: runtime.hiddenInput,
-        db,
-        now: runtime.now,
-        randomId: runtime.randomId,
-      });
+      runtime.runMigrations(db, config.migrationsRoot);
+      if (isDatabaseManagementCommand(argv)) {
+        result = await (runtime.runMigrationCommand ?? runMigrationCommand)({
+          argv,
+          output: runtime.output,
+          db,
+          seedRoot: runtime.seedRoot ?? defaultSeedRoot(),
+          mediaRoot: config.mediaRoot,
+          now: runtime.now,
+        });
+      } else {
+        result = await runtime.runAdminCommand({
+          input,
+          output: runtime.output,
+          hiddenInput: runtime.hiddenInput,
+          db,
+          now: runtime.now,
+          randomId: runtime.randomId,
+        });
+      }
     }
   } catch {
     reportFailure();

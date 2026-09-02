@@ -1,0 +1,28 @@
+[Unit]
+Description=Sweet Memories photo API
+After=network.target
+
+[Service]
+Type=simple
+User=sweet-memories
+Group=sweet-memories-media
+WorkingDirectory=/opt/sweet-memories-api/current
+Environment=NODE_ENV=production
+Environment=SWEET_MEMORIES_ORIGIN=https://huangjianfen.cn
+Environment=SWEET_MEMORIES_DATA_ROOT=/var/lib/sweet-memories
+ExecStart=/usr/local/bin/node /opt/sweet-memories-api/current/dist/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+UMask=0027
+MemoryHigh=768M
+MemoryMax=1G
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sweet-memories
+
+[Install]
+WantedBy=multi-user.target
