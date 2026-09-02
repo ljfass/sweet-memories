@@ -263,4 +263,28 @@ describe('usePhotoLibrary', () => {
     expect(library.photos.value).toEqual([])
     expect(library.status.value).toBe('ready')
   })
+
+  it('monotonically adds an uploaded photo without overwriting an existing dirty draft', async () => {
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    library.updateDraft('photo-1', { title: '保留的本地草稿' })
+
+    const uploaded = photo({
+      id: 'uploaded-photo',
+      title: '刚上传的照片',
+      sources: {
+        avif: [{ url: '/media/uploaded-photo/320.avif', width: 320 }],
+        webp: [{ url: '/media/uploaded-photo/320.webp', width: 320 }],
+        jpeg: [{ url: '/media/uploaded-photo/320.jpg', width: 320 }],
+        fallback: { url: '/media/uploaded-photo/320.jpg', width: 320, height: 240 },
+      },
+    })
+    library.addUploadedPhoto(uploaded)
+    library.addUploadedPhoto(photo({ title: '过期的上传响应', version: 0 }))
+
+    expect(library.photos.value.map((entry) => entry.id)).toEqual(['uploaded-photo', 'photo-1'])
+    expect(library.draftFor('photo-1').title).toBe('保留的本地草稿')
+    expect(library.isDirty('photo-1')).toBe(true)
+  })
 })

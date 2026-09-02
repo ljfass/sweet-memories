@@ -4,18 +4,26 @@ import AdminLogin from './AdminLogin.vue'
 import PhotoLibrary from './PhotoLibrary.vue'
 import ReauthDialog from './ReauthDialog.vue'
 import { AdminApi, safeLogoutErrorMessage } from './api'
-import type { AdminPhotoApiClient, AdminSessionState } from './types'
+import type { AdminPhotoApiClient, AdminSessionState, AdminUploadApiClient } from './types'
 import { usePhotoLibrary } from './usePhotoLibrary'
 import { useAdminSession } from './useAdminSession'
+import { useUploadQueue } from './useUploadQueue'
 
 const props = defineProps<{
   session?: AdminSessionState
   photoApi?: AdminPhotoApiClient
+  uploadApi?: AdminUploadApiClient
 }>()
 
 const defaultApi = new AdminApi()
 const session = props.session ?? useAdminSession(defaultApi)
 const photoLibrary = usePhotoLibrary(props.photoApi ?? defaultApi, session.csrfToken)
+const uploadQueue = useUploadQueue({
+  api: props.uploadApi ?? defaultApi,
+  sessionStatus: session.status,
+  csrfToken: session.csrfToken,
+  onUploaded: photoLibrary.addUploadedPhoto,
+})
 const logoutMessage = ref('')
 const isLoggingOut = ref(false)
 const isPhotoModalOpen = ref(false)
@@ -115,6 +123,7 @@ watch(
         <slot name="workspace">
           <PhotoLibrary
             :library="photoLibrary"
+            :upload-queue="uploadQueue"
             @mobile-modal-change="isPhotoModalOpen = $event"
           />
         </slot>

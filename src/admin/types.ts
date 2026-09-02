@@ -73,6 +73,51 @@ export interface AdminPhotoApiClient {
   deletePhoto(id: string, version: number, csrfToken: string): Promise<void>
 }
 
+export interface AdminUploadApiClient {
+  uploadPhoto(
+    file: File,
+    requestId: string,
+    csrfToken: string,
+    reportProgress: (progress: number) => void,
+  ): Promise<AdminPhoto>
+}
+
+export type UploadErrorCode =
+  | 'file-too-large'
+  | 'invalid-photo'
+  | 'uploads-disabled'
+  | 'storage-full'
+  | 'upload-busy'
+  | 'upload-unavailable'
+
+export type UploadItemStatus =
+  | 'queued'
+  | 'uploading'
+  | 'succeeded'
+  | 'failed'
+  | 'paused'
+
+export interface UploadQueueItem {
+  readonly id: string
+  readonly requestId: string
+  readonly file: File
+  readonly previewUrl: string
+  readonly status: UploadItemStatus
+  readonly progress: number
+  readonly errorCode: UploadErrorCode | null
+  readonly photo: AdminPhoto | null
+  readonly hasUnrecognizedExtension: boolean
+}
+
+export interface UploadQueueState {
+  readonly items: Ref<readonly UploadQueueItem[]>
+  readonly status: Ref<'idle' | 'uploading' | 'paused-auth' | 'ready-to-resume' | 'complete'>
+  add(files: readonly File[]): void
+  retry(id: string): void
+  remove(id: string): void
+  continueAfterLogin(): void
+}
+
 export interface PhotoLibraryState {
   readonly photos: Ref<readonly AdminPhoto[]>
   readonly status: Ref<'idle' | 'loading' | 'ready' | 'error'>
@@ -91,6 +136,7 @@ export interface PhotoLibraryState {
   save(id: string): Promise<void>
   loadLatest(id: string): Promise<void>
   remove(id: string): Promise<boolean>
+  addUploadedPhoto(photo: AdminPhoto): void
 }
 
 export interface AdminSessionState {

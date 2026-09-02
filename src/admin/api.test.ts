@@ -104,6 +104,58 @@ function browserFetchFor(app: TestApp, calls: Array<[RequestInfo | URL, RequestI
   })
 }
 
+class FakeXhr extends EventTarget {
+  readonly upload = new EventTarget()
+  readonly requestHeaders = new Map<string, string>()
+  method = ''
+  url = ''
+  async = false
+  withCredentials = false
+  responseText = ''
+  status = 0
+  body: Document | XMLHttpRequestBodyInit | null = null
+  contentType = 'application/json'
+
+  open(method: string, url: string, async = true): void {
+    this.method = method
+    this.url = url
+    this.async = async
+  }
+
+  setRequestHeader(name: string, value: string): void {
+    this.requestHeaders.set(name.toLowerCase(), value)
+  }
+
+  getResponseHeader(name: string): string | null {
+    return name.toLowerCase() === 'content-type' ? this.contentType : null
+  }
+
+  send(body: Document | XMLHttpRequestBodyInit | null): void {
+    this.body = body
+  }
+
+  report(loaded: number, total: number): void {
+    const event = new Event('progress')
+    Object.defineProperties(event, {
+      lengthComputable: { value: true },
+      loaded: { value: loaded },
+      total: { value: total },
+    })
+    this.upload.dispatchEvent(event)
+  }
+
+  respond(status: number, body: unknown, contentType = 'application/json'): void {
+    this.status = status
+    this.responseText = JSON.stringify(body)
+    this.contentType = contentType
+    this.dispatchEvent(new Event('load'))
+  }
+
+  fail(): void {
+    this.dispatchEvent(new Event('error'))
+  }
+}
+
 function realPhotoApp(overrides: {
   readonly updatePhoto?: BackendUpdatePhoto
   readonly deletePhoto?: BackendDeletePhoto
@@ -145,6 +197,113 @@ afterEach(async () => {
 })
 
 describe('AdminApi', () => {
+  it('uploads one photo through an exact same-origin XHR contract and strictly parses the response', async () => {
+    const requests: FakeXhr[] = []
+    const api = new AdminApi({
+      fetch: vi.fn(),
+      xhr: () => {
+        const request = new FakeXhr()
+        requests.push(request)
+        return request as unknown as XMLHttpRequest
+      },
+    })
+    const selectedFile = new File(['photo bytes'], 'private-family.jpg', { type: 'image/jpeg' })
+    const progress = vi.fn()
+    const requestId = '0195c681-9c63-7db0-8000-000000000101'
+
+    const uploaded = api.uploadPhoto(selectedFile, requestId, 'csrf-token', progress)
+    const request = requests[0]!
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      async: true,
+      withCredentials: true,
+    })
+    expect(request.requestHeaders.get('x-csrf-token')).toBe('csrf-token')
+    expect(request.requestHeaders.get('idempotency-key')).toBe(requestId)
+    expect(request.requestHeaders.has('origin')).toBe(false)
+    expect(request.requestHeaders.has('content-type')).toBe(false)
+    expect(request.body).toBeInstanceOf(FormData)
+    expect((request.body as FormData).get('photo')).toBe(selectedFile)
+
+    request.report(5, 10)
+    expect(progress).toHaveBeenCalledWith(50)
+    request.respond(201, { photo: adminPhoto })
+    await expect(uploaded).resolves.toEqual(adminPhoto)
+  })
+
+  it('fails closed on malformed upload envelopes and publishes unauthorized only once without retrying', async () => {
+    const requests: FakeXhr[] = []
+    const listener = vi.fn()
+    const api = new AdminApi({
+      fetch: vi.fn(),
+      xhr: () => {
+        const request = new FakeXhr()
+        requests.push(request)
+        return request as unknown as XMLHttpRequest
+      },
+    })
+    api.onUnauthorized(listener)
+    const selectedFile = new File(['photo'], 'family.jpg', { type: 'image/jpeg' })
+
+    const invalid = api.uploadPhoto(
+      selectedFile,
+      '0195c681-9c63-7db0-8000-000000000102',
+      'csrf-token',
+      vi.fn(),
+    )
+    requests[0]?.respond(201, { photo: { ...adminPhoto, originalFilename: 'private.jpg' } })
+    await expect(invalid).rejects.toMatchObject({ kind: 'invalid-response' })
+
+    const firstUnauthorized = api.uploadPhoto(
+      selectedFile,
+      '0195c681-9c63-7db0-8000-000000000103',
+      'csrf-token',
+      vi.fn(),
+    )
+    requests[1]?.respond(401, { error: { code: 'PRIVATE', stack: '/srv/private.ts' } })
+    await expect(firstUnauthorized).rejects.toMatchObject({ kind: 'unauthorized' })
+    const secondUnauthorized = api.uploadPhoto(
+      selectedFile,
+      '0195c681-9c63-7db0-8000-000000000104',
+      'csrf-token',
+      vi.fn(),
+    )
+    requests[2]?.respond(401, { error: {} })
+    await expect(secondUnauthorized).rejects.toMatchObject({ kind: 'unauthorized' })
+
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(requests).toHaveLength(3)
+  })
+
+  it.each([
+    [413, 'upload-too-large'],
+    [415, 'upload-invalid'],
+    [423, 'uploads-disabled'],
+    [429, 'upload-busy'],
+    [507, 'storage-full'],
+  ] as const)('maps upload status %i to stable kind %s', async (status, kind) => {
+    let request!: FakeXhr
+    const api = new AdminApi({
+      fetch: vi.fn(),
+      xhr: () => {
+        request = new FakeXhr()
+        return request as unknown as XMLHttpRequest
+      },
+    })
+    const upload = api.uploadPhoto(
+      new File(['photo'], 'family.jpg'),
+      '0195c681-9c63-7db0-8000-000000000105',
+      'csrf-token',
+      vi.fn(),
+    )
+    request.respond(status, { error: { code: 'PRIVATE', message: '/srv/private' } })
+    const error = await upload.catch((reason: unknown) => reason)
+
+    expect(error).toMatchObject({ kind })
+    expect(JSON.stringify(error)).not.toMatch(/PRIVATE|\/srv/i)
+  })
+
   it('uses the real buildApp GET/PATCH/DELETE contracts without forging browser Origin', async () => {
     const context = realPhotoApp()
     const api = new AdminApi({ fetch: context.fetch })

@@ -2,12 +2,15 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { computed, nextTick, ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AdminApp from './AdminApp.vue'
+import { AdminApiError } from './api'
 import type {
   AdminPhoto,
   AdminPhotoApiClient,
   AdminSessionState,
+  AdminUploadApiClient,
   PhotoDraft,
   PhotoLibraryState,
+  UploadQueueState,
 } from './types'
 import PhotoLibrary from './PhotoLibrary.vue'
 
@@ -44,7 +47,7 @@ function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState 
     isDirty: vi.fn(() => false), hasConflict: vi.fn(() => false),
     isSaving: vi.fn(() => false), messageFor: vi.fn(() => ''),
     save: vi.fn(async () => undefined), loadLatest: vi.fn(async () => undefined),
-    remove: vi.fn(async () => true),
+    remove: vi.fn(async () => true), addUploadedPhoto: vi.fn(),
     ...overrides,
   }
 }
@@ -72,6 +75,27 @@ function deletableLibrary(photos: readonly AdminPhoto[]): PhotoLibraryState {
   return state
 }
 
+function uploadQueue(): UploadQueueState {
+  return {
+    items: ref([]), status: ref('idle'), add: vi.fn(), retry: vi.fn(), remove: vi.fn(),
+    continueAfterLogin: vi.fn(),
+  }
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>
+  readonly resolve: (value: T) => void
+  readonly reject: (error: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((next, fail) => {
+    resolve = next
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
 async function deleteSelectedPhoto(
   wrapper: ReturnType<typeof mount>,
   id: string,
@@ -86,9 +110,43 @@ async function deleteSelectedPhoto(
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('PhotoLibrary', () => {
+  it('opens a bounded photo picker and passes selected File objects to the real queue', async () => {
+    const state = uploadQueue()
+    const wrapper = mount(PhotoLibrary, { props: { library: library(), uploadQueue: state } })
+    const input = wrapper.get('input[type="file"]')
+    const selected = [new File(['one'], 'one.jpg'), new File(['two'], 'two.heic')]
+    Object.defineProperty(input.element, 'files', { configurable: true, value: selected })
+
+    await wrapper.get('[data-upload]').trigger('click')
+    await input.trigger('change')
+
+    expect(input.attributes('multiple')).toBeDefined()
+    expect(input.attributes('accept')).toContain('.heic')
+    expect(state.add).toHaveBeenCalledWith(selected)
+  })
+
+  it('announces an over-limit selection without losing the existing library', async () => {
+    const state = uploadQueue()
+    vi.mocked(state.add).mockImplementation(() => {
+      throw new Error('一次最多选择 10 张照片')
+    })
+    const wrapper = mount(PhotoLibrary, { props: { library: library(), uploadQueue: state } })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: Array.from({ length: 11 }, (_, index) => new File(['x'], `${index}.jpg`)),
+    })
+
+    await input.trigger('change')
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('一次最多选择 10 张照片')
+    expect(wrapper.find('[data-photo-id="photo-1"]').exists()).toBe(true)
+  })
+
   it('renders a square photo grid and a semantic editor region with stable source dimensions', async () => {
     const state = library()
     const wrapper = mount(PhotoLibrary, { props: { library: state } })
@@ -144,6 +202,77 @@ describe('PhotoLibrary', () => {
     expect(wrapper.get('[role="dialog"]').text()).toContain('登录已过期')
   })
 
+  it('keeps the draft and upload request ids across an explicit post-login resume', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((file) => `blob:${(file as File).name}`)
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const status = ref<AdminSessionState['status']['value']>('authenticated')
+    const csrfToken = ref<string | null>('old-csrf')
+    const session: AdminSessionState = {
+      status,
+      username: ref('alice'),
+      csrfToken,
+      initialize: vi.fn(async () => undefined),
+      login: vi.fn(async () => undefined),
+      logout: vi.fn(async () => undefined),
+    }
+    const photoApi: AdminPhotoApiClient = {
+      listPhotos: vi.fn(async () => [photo]), updatePhoto: vi.fn(), deletePhoto: vi.fn(),
+    }
+    const uploadResults: Array<ReturnType<typeof deferred<AdminPhoto>>> = []
+    const uploadApi: AdminUploadApiClient = {
+      uploadPhoto: vi.fn((_file, _requestId, _token, reportProgress) => {
+        reportProgress(50)
+        const result = deferred<AdminPhoto>()
+        uploadResults.push(result)
+        return result.promise
+      }),
+    }
+    const wrapper = mount(AdminApp, {
+      props: { session, photoApi, uploadApi },
+    })
+    await flushPromises()
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    const draftTitle = wrapper.get('input[name="title"]')
+    await draftTitle.setValue('上传期间保留的草稿')
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [
+        new File(['one'], 'one.jpg'),
+        new File(['two'], 'two.jpg'),
+        new File(['three'], 'three.jpg'),
+      ],
+    })
+    await input.trigger('change')
+    await flushPromises()
+    const firstRequestId = vi.mocked(uploadApi.uploadPhoto).mock.calls[0]?.[1]
+
+    status.value = 'reauth-required'
+    csrfToken.value = null
+    uploadResults[0]?.reject(new AdminApiError('unauthorized', 'expired'))
+    uploadResults[1]?.resolve(secondPhoto)
+    await flushPromises()
+
+    expect(wrapper.get('input[name="title"]').element).toBe(draftTitle.element)
+    expect((draftTitle.element as HTMLInputElement).value).toBe('上传期间保留的草稿')
+    expect(wrapper.find('[data-photo-id="photo-2"]').exists()).toBe(true)
+    expect(uploadApi.uploadPhoto).toHaveBeenCalledTimes(2)
+
+    csrfToken.value = 'fresh-csrf'
+    status.value = 'authenticated'
+    await nextTick()
+    await flushPromises()
+    expect(uploadApi.uploadPhoto).toHaveBeenCalledTimes(2)
+
+    await wrapper.get('[data-continue-upload]').trigger('click')
+    await flushPromises()
+    expect(uploadApi.uploadPhoto).toHaveBeenCalledTimes(4)
+    expect(vi.mocked(uploadApi.uploadPhoto).mock.calls[2]).toMatchObject([
+      expect.any(File), firstRequestId, 'fresh-csrf', expect.any(Function),
+    ])
+    wrapper.unmount()
+  })
+
   it('isolates the grid, focuses the fullscreen editor on mobile, and restores its card on close', async () => {
     useViewport(true)
     const state = library()
@@ -188,11 +317,18 @@ describe('PhotoLibrary', () => {
     expect(wrapper.get('.admin-photo-grid').attributes()).not.toHaveProperty('inert')
   })
 
-  it('traps mobile Tab navigation and isolates the library controls behind the editor', async () => {
+  it('traps mobile Tab navigation and isolates all library controls behind the editor', async () => {
     useViewport(true)
+    const state = uploadQueue()
+    state.items.value = [{
+      id: 'upload-1', requestId: '0195c681-9c63-7db0-8000-000000000001',
+      file: new File(['one'], 'one.jpg'), previewUrl: 'blob:one',
+      status: 'failed', progress: 0, errorCode: 'upload-unavailable', photo: null,
+      hasUnrecognizedExtension: false,
+    }]
     const wrapper = mount(PhotoLibrary, {
       attachTo: document.body,
-      props: { library: library() },
+      props: { library: library(), uploadQueue: state },
     })
     await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
     await nextTick()
@@ -211,6 +347,10 @@ describe('PhotoLibrary', () => {
     await first.trigger('keydown', { key: 'Tab', shiftKey: true })
     expect(document.activeElement).toBe(last.element)
     expect(wrapper.get('.admin-library-actions').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    expect(wrapper.get('.admin-upload-queue').attributes()).toMatchObject({
       inert: '',
       'aria-hidden': 'true',
     })

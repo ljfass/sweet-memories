@@ -3,10 +3,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RefreshCw, Upload } from '@lucide/vue'
 import DeletePhotoDialog from './DeletePhotoDialog.vue'
 import PhotoEditor from './PhotoEditor.vue'
-import type { AdminPhoto, PhotoDraft, PhotoLibraryState } from './types'
+import type { AdminPhoto, PhotoDraft, PhotoLibraryState, UploadQueueState } from './types'
+import UploadQueue from './UploadQueue.vue'
 
 const props = defineProps<{
   library: PhotoLibraryState
+  uploadQueue?: UploadQueueState
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +19,8 @@ const deleteCandidate = ref<AdminPhoto | null>(null)
 const deleteCandidateIndex = ref<number | null>(null)
 const libraryRoot = ref<HTMLElement | null>(null)
 const editorReturnTarget = ref<HTMLElement | null>(null)
+const uploadInput = ref<HTMLInputElement | null>(null)
+const uploadSelectionMessage = ref('')
 const mobileMedia = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
   ? window.matchMedia('(max-width: 720px)')
   : null
@@ -44,6 +48,23 @@ watch(isMobileEditorOpen, async (open) => {
 
 function sourceSet(sources: AdminPhoto['sources']['avif']): string {
   return sources.map((source) => `${source.url} ${source.width}w`).join(', ')
+}
+
+function openPhotoPicker(): void {
+  uploadInput.value?.click()
+}
+
+function addSelectedFiles(event: Event): void {
+  const input = event.currentTarget
+  if (!(input instanceof HTMLInputElement) || props.uploadQueue === undefined) return
+  uploadSelectionMessage.value = ''
+  try {
+    props.uploadQueue.add(Array.from(input.files ?? []))
+  } catch {
+    uploadSelectionMessage.value = '一次最多选择 10 张照片'
+  } finally {
+    input.value = ''
+  }
 }
 
 function updateDraft(draft: PhotoDraft): void {
@@ -143,6 +164,7 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
         data-upload
         :disabled="library.uploadsDisabled.value"
         :title="library.uploadsDisabled.value ? '旧照片准备完成后开放上传' : '上传照片'"
+        @click="openPhotoPicker"
       >
         <Upload
           :size="18"
@@ -150,6 +172,16 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
         />
         上传照片
       </button>
+      <input
+        v-if="uploadQueue !== undefined"
+        ref="uploadInput"
+        class="admin-visually-hidden"
+        type="file"
+        accept=".heic,.heif,.jpg,.jpeg,.png,.webp,image/heic,image/heif,image/jpeg,image/png,image/webp"
+        multiple
+        :disabled="library.uploadsDisabled.value"
+        @change="addSelectedFiles"
+      >
       <button
         class="admin-secondary-button"
         type="button"
@@ -163,6 +195,21 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
         刷新
       </button>
     </div>
+
+    <p
+      v-if="uploadSelectionMessage !== ''"
+      class="admin-upload-selection-message"
+      role="alert"
+    >
+      {{ uploadSelectionMessage }}
+    </p>
+
+    <UploadQueue
+      v-if="uploadQueue !== undefined"
+      :queue="uploadQueue"
+      :inert="isMobileEditorOpen"
+      :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
+    />
 
     <div
       v-if="library.isMigrationPending.value"

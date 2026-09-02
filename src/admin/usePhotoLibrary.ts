@@ -258,6 +258,27 @@ export function usePhotoLibrary(
     }
   }
 
+  function addUploadedPhoto(uploaded: AdminPhoto): void {
+    loadGeneration += 1
+    const current = photos.value.find((photo) => photo.id === uploaded.id)
+    if (current !== undefined) {
+      if (
+        current.version > uploaded.version
+        || dirty.has(uploaded.id)
+        || conflicts.has(uploaded.id)
+      ) return
+      replacePhoto(uploaded)
+      drafts.set(uploaded.id, draftFrom(uploaded))
+      draftBaseVersions.set(uploaded.id, uploaded.version)
+      status.value = 'ready'
+      return
+    }
+    photos.value = [uploaded, ...photos.value]
+    drafts.set(uploaded.id, draftFrom(uploaded))
+    draftBaseVersions.set(uploaded.id, uploaded.version)
+    status.value = 'ready'
+  }
+
   return {
     photos, status, selectedId, isMigrationPending, uploadsDisabled,
     load, refresh, select, draftFor, updateDraft,
@@ -265,6 +286,6 @@ export function usePhotoLibrary(
     hasConflict: (id) => conflicts.has(id),
     isSaving: (id) => saving.has(id),
     messageFor: (id) => messages.get(id) ?? '',
-    save, loadLatest, remove,
+    save, loadLatest, remove, addUploadedPhoto,
   }
 }

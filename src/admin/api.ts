@@ -4,6 +4,7 @@ import type {
   AdminPhotoApiClient,
   AdminPhotoSource,
   AdminSession,
+  AdminUploadApiClient,
   PhotoUpdateInput,
 } from './types'
 
@@ -20,6 +21,7 @@ const TRANSFORM_KEYS = ['rotation', 'x', 'y']
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 const MAX_ADMIN_PHOTOS = 1_000
+const MAX_UPLOAD_RESPONSE_CHARACTERS = 1024 * 1024
 
 export type AdminApiErrorKind =
   | 'credentials'
@@ -30,6 +32,11 @@ export type AdminApiErrorKind =
   | 'not-found'
   | 'invalid-response'
   | 'unavailable'
+  | 'upload-too-large'
+  | 'upload-invalid'
+  | 'uploads-disabled'
+  | 'storage-full'
+  | 'upload-busy'
 
 export class AdminApiError extends Error {
   constructor(
@@ -43,6 +50,7 @@ export class AdminApiError extends Error {
 
 export interface AdminApiOptions {
   readonly fetch?: typeof globalThis.fetch
+  readonly xhr?: () => XMLHttpRequest
 }
 
 type SessionResponse = AdminSession & { readonly authenticated: true }
@@ -241,6 +249,13 @@ function parseAdminPhotos(value: unknown): readonly AdminPhoto[] {
   return photos
 }
 
+function parseUploadResponse(value: unknown): AdminPhoto {
+  if (!isRecord(value) || !hasExactKeys(value, ['photo'])) {
+    throw invalidResponse()
+  }
+  return parseAdminPhoto(value.photo)
+}
+
 function parseSessionResponse(value: unknown): SessionResponse {
   if (
     !isRecord(value)
@@ -299,11 +314,29 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-function responseError(status: number, operation: 'login' | 'session' | 'photo'): AdminApiError {
+function responseError(
+  status: number,
+  operation: 'login' | 'session' | 'photo' | 'upload',
+): AdminApiError {
   if (status === 401) {
     return operation === 'login'
       ? new AdminApiError('credentials', '用户名或密码错误')
       : new AdminApiError('unauthorized', '登录已过期')
+  }
+  if (status === 413 && operation === 'upload') {
+    return new AdminApiError('upload-too-large', '单张图片不能超过 10MB')
+  }
+  if (status === 415 && operation === 'upload') {
+    return new AdminApiError('upload-invalid', '图片格式或内容无效')
+  }
+  if (status === 423 && operation === 'upload') {
+    return new AdminApiError('uploads-disabled', '图片上传暂未开放')
+  }
+  if (status === 429 && operation === 'upload') {
+    return new AdminApiError('upload-busy', '图片处理队列繁忙，请稍后重试')
+  }
+  if (status === 507 && operation === 'upload') {
+    return new AdminApiError('storage-full', '服务器存储空间不足')
   }
   if (status === 429) {
     return new AdminApiError('rate-limited', '登录尝试过于频繁，请稍后再试')
@@ -335,6 +368,11 @@ export function safeLoginErrorMessage(error: unknown): string {
       case 'unavailable':
       case 'invalid-response':
       case 'unauthorized':
+      case 'upload-too-large':
+      case 'upload-invalid':
+      case 'uploads-disabled':
+      case 'storage-full':
+      case 'upload-busy':
         return '登录暂时失败，请稍后重试'
     }
   }
@@ -345,13 +383,15 @@ export function safeLogoutErrorMessage(): string {
   return '暂时无法退出登录，请稍后重试'
 }
 
-export class AdminApi implements AdminApiClient, AdminPhotoApiClient {
+export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploadApiClient {
   readonly #fetch: typeof globalThis.fetch
+  readonly #xhr: () => XMLHttpRequest
   readonly #unauthorizedListeners = new Set<() => void>()
   #unauthorizedPublished = false
 
   constructor(options: AdminApiOptions = {}) {
     this.#fetch = options.fetch ?? globalThis.fetch
+    this.#xhr = options.xhr ?? (() => new XMLHttpRequest())
   }
 
   onUnauthorized(listener: () => void): () => void {
@@ -419,6 +459,67 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient {
       method: 'DELETE',
       operation: 'photo',
       headers: { 'if-match': `"${version}"`, 'x-csrf-token': csrfToken },
+    })
+  }
+
+  uploadPhoto(
+    file: File,
+    requestId: string,
+    csrfToken: string,
+    reportProgress: (progress: number) => void,
+  ): Promise<AdminPhoto> {
+    return new Promise((resolve, reject) => {
+      let request: XMLHttpRequest
+      try {
+        request = this.#xhr()
+        request.open('POST', PHOTO_ENDPOINT, true)
+        request.withCredentials = true
+        request.setRequestHeader('x-csrf-token', csrfToken)
+        request.setRequestHeader('idempotency-key', requestId)
+      } catch {
+        reject(new AdminApiError('unavailable', '服务暂时不可用，请稍后重试'))
+        return
+      }
+
+      request.upload.addEventListener('progress', (event) => {
+        if (!event.lengthComputable || event.total <= 0) return
+        reportProgress((event.loaded / event.total) * 100)
+      })
+      request.addEventListener('load', () => {
+        if (request.status === 401) this.#publishUnauthorized()
+        if (request.status !== 200 && request.status !== 201) {
+          reject(responseError(request.status, 'upload'))
+          return
+        }
+        const contentType = request.getResponseHeader('content-type')
+          ?.split(';', 1)[0]?.trim().toLowerCase()
+        if (
+          contentType !== 'application/json'
+          || request.responseText.length > MAX_UPLOAD_RESPONSE_CHARACTERS
+        ) {
+          reject(invalidResponse())
+          return
+        }
+        try {
+          resolve(parseUploadResponse(JSON.parse(request.responseText) as unknown))
+        } catch (error) {
+          reject(error instanceof AdminApiError ? error : invalidResponse())
+        }
+      })
+      const rejectUnavailable = () => {
+        reject(new AdminApiError('unavailable', '服务暂时不可用，请稍后重试'))
+      }
+      request.addEventListener('error', rejectUnavailable)
+      request.addEventListener('abort', rejectUnavailable)
+      request.addEventListener('timeout', rejectUnavailable)
+
+      try {
+        const body = new FormData()
+        body.append('photo', file)
+        request.send(body)
+      } catch {
+        rejectUnavailable()
+      }
     })
   }
 

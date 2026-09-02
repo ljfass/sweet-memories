@@ -227,6 +227,133 @@
   gap: 10px;
 }
 
+.admin-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  white-space: nowrap;
+}
+
+.admin-upload-selection-message {
+  margin: -8px 0 18px;
+  color: #a32943;
+  font-size: 0.9rem;
+}
+
+.admin-upload-queue {
+  margin-bottom: 24px;
+  border-block: 1px solid #d5dad5;
+}
+
+.admin-upload-header,
+.admin-upload-resume,
+.admin-upload-item {
+  display: flex;
+  align-items: center;
+}
+
+.admin-upload-header {
+  justify-content: space-between;
+  padding: 14px 0;
+  gap: 16px;
+}
+
+.admin-upload-header h3,
+.admin-upload-header p {
+  margin: 0;
+}
+
+.admin-upload-header h3 {
+  font-size: 1rem;
+}
+
+.admin-upload-header p {
+  color: #626a70;
+  font-size: 0.88rem;
+}
+
+.admin-upload-resume {
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-left: 3px solid #b7772f;
+  color: #593d20;
+  background: #fff7e8;
+  gap: 16px;
+}
+
+.admin-upload-resume .admin-primary-button {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.admin-upload-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.admin-upload-item {
+  min-height: 88px;
+  padding: 12px 0;
+  border-top: 1px solid #e0e4df;
+  gap: 14px;
+}
+
+.admin-upload-item > img {
+  width: 64px;
+  height: 64px;
+  flex: 0 0 64px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #e8ebe7;
+}
+
+.admin-upload-detail {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 14px;
+}
+
+.admin-upload-detail strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-upload-detail span {
+  color: #687078;
+  font-size: 0.84rem;
+}
+
+.admin-upload-detail progress {
+  width: 100%;
+  height: 8px;
+  grid-column: 1;
+  accent-color: #9c4056;
+}
+
+.admin-upload-detail .admin-upload-error {
+  color: #a32943;
+}
+
+.admin-upload-detail .admin-upload-format-hint {
+  grid-column: 1 / -1;
+  color: #735b40;
+}
+
+.admin-upload-actions {
+  display: flex;
+  min-width: 36px;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .admin-migration-banner {
   display: flex;
   align-items: baseline;
@@ -499,6 +626,24 @@
 
   .admin-dialog-actions {
     grid-template-columns: 1fr;
+  }
+
+  .admin-upload-header,
+  .admin-upload-resume {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .admin-upload-resume .admin-primary-button {
+    width: 100%;
+  }
+
+  .admin-upload-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-upload-detail progress {
+    grid-column: auto;
   }
 }
 
