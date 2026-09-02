@@ -69,6 +69,14 @@ const { memories, status: photoStatus, retry: retryPhotos } = usePublicMemories(
               </button>
             </template>
           </div>
+          <p
+            v-else-if="memories.length === 0"
+            class="album-empty-state"
+            role="status"
+            aria-live="polite"
+          >
+            还没有照片
+          </p>
           <PhotoGallery :memories="memories" />
         </section>
       </main>
@@ -89,7 +97,23 @@ const { memories, status: photoStatus, retry: retryPhotos } = usePublicMemories(
 
 .public-album {
   position: relative;
+}
+
+.public-album.is-loading {
   min-height: 780px;
+}
+
+.public-album.is-error {
+  min-height: 180px;
+}
+
+.album-empty-state {
+  display: grid;
+  min-height: 140px;
+  padding: 32px 20px;
+  color: var(--muted-color);
+  font-weight: 700;
+  place-items: center;
 }
 
 .album-load-state {
@@ -124,13 +148,13 @@ const { memories, status: photoStatus, retry: retryPhotos } = usePublicMemories(
 }
 
 @media (max-width: 960px) {
-  .public-album {
+  .public-album.is-loading {
     min-height: 1120px;
   }
 }
 
 @media (max-width: 768px) {
-  .public-album {
+  .public-album.is-loading {
     min-height: 1960px;
   }
 }

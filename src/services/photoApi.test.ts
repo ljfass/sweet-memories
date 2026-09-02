@@ -31,6 +31,33 @@ function publicPhoto(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function chunkedJsonResponse(chunks: readonly Uint8Array[], options: {
+  readonly cancel?: (reason?: unknown) => void | PromiseLike<void>
+  readonly pullCount?: { value: number }
+} = {}) {
+  let index = 0
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (options.pullCount) {
+        options.pullCount.value += 1
+      }
+      const chunk = chunks[index++]
+      if (chunk === undefined) {
+        controller.close()
+        return
+      }
+      controller.enqueue(chunk)
+    },
+    cancel(reason) {
+      return options.cancel?.(reason)
+    },
+  })
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
 describe('public photo API', () => {
   it('maps a validated DTO to responsive album data and real fallback dimensions', () => {
     expect(mapPublicPhoto(publicPhoto())).toEqual({
@@ -84,14 +111,118 @@ describe('public photo API', () => {
     await expect(fetchPublicPhotos({ fetch: nonJson })).rejects.toThrow('照片数据格式无效')
   })
 
-  it('rejects an oversized JSON body even when Content-Length is absent', async () => {
-    const oversizedJson = `${' '.repeat(2 * 1024 * 1024 + 1)}[]`
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(oversizedJson, {
+  it('cancels the body before reading when Content-Length exceeds the byte limit', async () => {
+    const cancel = vi.fn().mockRejectedValue(new Error('cancel failed'))
+    const stream = new ReadableStream<Uint8Array>({ cancel })
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(stream, {
       status: 200,
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(16 * 1024 * 1024 + 1),
+      },
     }))
 
     await expect(fetchPublicPhotos({ fetch: fetchMock })).rejects.toThrow('照片数据格式无效')
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('accepts 750 maximum multilingual descriptions within the public photo count contract', async () => {
+    const photos = Array.from({ length: 750 }, (_, index) => publicPhoto({
+      id: `photo-${String(index).padStart(4, '0')}`,
+      title: '👶'.repeat(120),
+      alt: '👶'.repeat(500),
+      capturedDate: '2026-02-03',
+      sources: {
+        avif: [{ url: `/media/photo-${String(index).padStart(4, '0')}/320.avif`, width: 320 }],
+        webp: [{ url: `/media/photo-${String(index).padStart(4, '0')}/320.webp`, width: 320 }],
+        jpeg: [{ url: `/media/photo-${String(index).padStart(4, '0')}/320.jpg`, width: 320 }],
+        fallback: {
+          url: `/media/photo-${String(index).padStart(4, '0')}/320.jpg`,
+          width: 320,
+          height: 240,
+        },
+      },
+    }))
+    const body = JSON.stringify(photos)
+    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(2 * 1024 * 1024)
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      chunkedJsonResponse([new TextEncoder().encode(body)]),
+    )
+
+    await expect(fetchPublicPhotos({ fetch: fetchMock })).resolves.toHaveLength(750)
+  })
+
+  it('cancels an unbounded stream as soon as it exceeds the 16 MiB limit', async () => {
+    const cancel = vi.fn().mockRejectedValue(new Error('cancel failed'))
+    const pullCount = { value: 0 }
+    const chunks = Array.from(
+      { length: 20 },
+      () => new Uint8Array(1024 * 1024).fill(0x20),
+    )
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      chunkedJsonResponse(chunks, { cancel, pullCount }),
+    )
+
+    await expect(fetchPublicPhotos({ fetch: fetchMock })).rejects.toThrow('照片数据格式无效')
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(pullCount.value).toBeLessThan(chunks.length)
+  })
+
+  it('decodes valid JSON when one UTF-8 character spans stream chunks', async () => {
+    const encoded = new TextEncoder().encode(JSON.stringify([publicPhoto()]))
+    const multibyteStart = encoded.findIndex((byte) => byte > 0x7f)
+    expect(multibyteStart).toBeGreaterThan(0)
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(chunkedJsonResponse([
+      encoded.slice(0, multibyteStart + 1),
+      encoded.slice(multibyteStart + 1),
+    ]))
+
+    await expect(fetchPublicPhotos({ fetch: fetchMock })).resolves.toMatchObject([
+      { caption: '满月啦' },
+    ])
+  })
+
+  it('cancels the stream when fatal UTF-8 decoding fails mid-response', async () => {
+    const cancel = vi.fn()
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(chunkedJsonResponse([
+      new Uint8Array([0xff]),
+      new TextEncoder().encode('[]'),
+    ], { cancel }))
+
+    await expect(fetchPublicPhotos({ fetch: fetchMock })).rejects.toThrow('照片数据格式无效')
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a missing or failed response body with the stable data error', async () => {
+    const missingBody = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    const failedBody = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(new Error('reader failed'))
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await expect(fetchPublicPhotos({ fetch: missingBody })).rejects.toThrow('照片数据格式无效')
+    await expect(fetchPublicPhotos({ fetch: failedBody })).rejects.toThrow('照片数据格式无效')
+  })
+
+  it('preserves an abort that occurs while reading the response body', async () => {
+    const abortError = new DOMException('request aborted', 'AbortError')
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(abortError)
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await expect(fetchPublicPhotos({ fetch: fetchMock })).rejects.toBe(abortError)
   })
 
   it('accepts an empty public album as a valid response', () => {

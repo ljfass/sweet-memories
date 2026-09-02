@@ -10,9 +10,15 @@ const TRANSFORM_KEYS = ['rotation', 'x', 'y']
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const MAX_PUBLIC_PHOTOS = 1_000
-const MAX_JSON_BYTES = 2 * 1024 * 1024
+const MAX_JSON_BYTES = 16 * 1024 * 1024
 
 type PublicFormat = 'avif' | 'webp' | 'jpeg'
+
+class InvalidPublicPhotoDataError extends Error {
+  constructor(cause?: unknown) {
+    super(INVALID_DATA_MESSAGE, cause === undefined ? undefined : { cause })
+  }
+}
 
 export interface FetchPublicPhotosOptions {
   readonly fetch?: typeof globalThis.fetch
@@ -20,7 +26,76 @@ export interface FetchPublicPhotosOptions {
 }
 
 function invalidData(): Error {
-  return new Error(INVALID_DATA_MESSAGE)
+  return new InvalidPublicPhotoDataError()
+}
+
+function invalidDataWithCause(cause: unknown): Error {
+  return new InvalidPublicPhotoDataError(cause)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+async function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<void> {
+  try {
+    await reader.cancel(INVALID_DATA_MESSAGE)
+  } catch {
+    // Cancellation is best-effort; callers still receive the stable boundary error.
+  }
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel(INVALID_DATA_MESSAGE)
+  } catch {
+    // Cancellation is best-effort; callers still receive the stable boundary error.
+  }
+}
+
+async function readBoundedResponseText(response: Response): Promise<string> {
+  if (response.body === null) {
+    throw invalidData()
+  }
+
+  let reader: ReadableStreamDefaultReader<Uint8Array>
+  try {
+    reader = response.body.getReader()
+  } catch (error) {
+    throw invalidDataWithCause(error)
+  }
+
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  const parts: string[] = []
+  let byteLength = 0
+  try {
+    while (true) {
+      const result = await reader.read()
+      if (result.done) {
+        parts.push(decoder.decode())
+        return parts.join('')
+      }
+
+      byteLength += result.value.byteLength
+      if (byteLength > MAX_JSON_BYTES) {
+        await cancelReader(reader)
+        throw invalidData()
+      }
+      parts.push(decoder.decode(result.value, { stream: true }))
+    }
+  } catch (error) {
+    if (!(error instanceof InvalidPublicPhotoDataError)) {
+      await cancelReader(reader)
+    }
+    if (error instanceof InvalidPublicPhotoDataError || isAbortError(error)) {
+      throw error
+    }
+    throw invalidDataWithCause(error)
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -251,7 +326,7 @@ export async function fetchPublicPhotos(
   try {
     response = await fetchImplementation('/api/photos', { signal: options.signal })
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (isAbortError(error)) {
       throw error
     }
     throw new Error(LOAD_ERROR_MESSAGE, { cause: error })
@@ -266,18 +341,11 @@ export async function fetchPublicPhotos(
     contentType !== 'application/json'
     || (Number.isFinite(contentLength) && contentLength > MAX_JSON_BYTES)
   ) {
+    await cancelResponseBody(response)
     throw invalidData()
   }
 
-  let responseText: string
-  try {
-    responseText = await response.text()
-  } catch {
-    throw invalidData()
-  }
-  if (new TextEncoder().encode(responseText).byteLength > MAX_JSON_BYTES) {
-    throw invalidData()
-  }
+  const responseText = await readBoundedResponseText(response)
 
   let body: unknown
   try {

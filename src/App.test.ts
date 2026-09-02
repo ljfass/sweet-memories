@@ -72,11 +72,36 @@ describe('App', () => {
 
     expect(wrapper.get('.public-album').classes()).toContain('is-loading')
     expect(wrapper.get('.public-album').attributes('aria-busy')).toBe('true')
-    expect(componentSource).toMatch(/\.public-album\s*\{[^}]*min-height:\s*780px/s)
-    expect(componentSource).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*min-height:\s*1960px/)
+    expect(componentSource).toMatch(/\.public-album\.is-loading\s*\{[^}]*min-height:\s*780px/s)
+    expect(componentSource).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*\.public-album\.is-loading\s*\{[^}]*min-height:\s*1960px/)
     expect(wrapper.get('[role="status"]').text()).toBe('照片正在加载')
     expect(wrapper.find('.video-section').exists()).toBe(true)
     expect(wrapper.find('audio').exists()).toBe(true)
+  })
+
+  it('keeps a ready empty album compact and shows a short empty state', () => {
+    const album = albumState()
+    album.memories.value = []
+    album.status.value = 'ready'
+
+    const wrapper = mount(App)
+
+    expect(wrapper.get('.public-album').classes()).toContain('is-ready')
+    expect(wrapper.get('.album-empty-state').text()).toBe('还没有照片')
+    expect(componentSource).not.toMatch(/\.public-album\.is-ready\s*\{[^}]*min-height/s)
+    expect(componentSource).not.toMatch(/\.public-album\s*\{[^}]*min-height/s)
+  })
+
+  it('lets a ready single photo determine the album height naturally', () => {
+    const album = albumState()
+    album.memories.value = [memories[0]!]
+    album.status.value = 'ready'
+
+    const wrapper = mount(App)
+
+    expect(wrapper.findAll('.polaroid')).toHaveLength(1)
+    expect(wrapper.find('.album-empty-state').exists()).toBe(false)
+    expect(wrapper.get('.public-album').classes()).toContain('is-ready')
   })
 
   it('keeps other media usable and exposes an accessible retry after an API failure', async () => {
@@ -90,6 +115,8 @@ describe('App', () => {
     expect(wrapper.get('[role="status"] > span').text()).toBe('照片暂时无法加载')
     expect(retry.attributes('type')).toBe('button')
     expect(retry.text()).toBe('重试')
+    expect(componentSource).toMatch(/\.public-album\.is-error\s*\{[^}]*min-height:\s*180px/s)
+    expect(componentSource).not.toMatch(/\.public-album\.is-error\s*\{[^}]*min-height:\s*1960px/s)
     expect(wrapper.find('.video-section').exists()).toBe(true)
     expect(wrapper.find('[data-testid="music-toggle"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="sleep-toggle"]').exists()).toBe(true)
