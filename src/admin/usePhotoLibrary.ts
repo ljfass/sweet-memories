@@ -55,6 +55,7 @@ export function usePhotoLibrary(
   const status = ref<PhotoLibraryState['status']['value']>('idle')
   const selectedId = ref<string | null>(null)
   const drafts = reactive(new Map<string, PhotoDraft>())
+  const draftBaseVersions = reactive(new Map<string, number>())
   const dirty = reactive(new Set<string>())
   const conflicts = reactive(new Set<string>())
   const saving = reactive(new Set<string>())
@@ -63,22 +64,37 @@ export function usePhotoLibrary(
   const isMigrationPending = computed(() =>
     photos.value.some((photo) => photo.status === 'migration_pending'))
   const uploadsDisabled = computed(() => isMigrationPending.value)
+  let loadGeneration = 0
 
-  function replacePhoto(nextPhoto: AdminPhoto): void {
+  function replacePhoto(nextPhoto: AdminPhoto): boolean {
+    const current = photos.value.find((photo) => photo.id === nextPhoto.id)
+    if (current === undefined || current.version > nextPhoto.version) {
+      return false
+    }
     photos.value = photos.value.map((photo) => photo.id === nextPhoto.id ? nextPhoto : photo)
+    return true
   }
 
   function synchronize(nextPhotos: readonly AdminPhoto[], replaceDraftId?: string): void {
-    photos.value = nextPhotos
-    const currentIds = new Set(nextPhotos.map((photo) => photo.id))
-    for (const photo of nextPhotos) {
+    const currentById = new Map(photos.value.map((photo) => [photo.id, photo]))
+    const acceptedPhotos = nextPhotos.map((photo) => {
+      const current = currentById.get(photo.id)
+      return current !== undefined && current.version > photo.version ? current : photo
+    })
+    photos.value = acceptedPhotos
+    const currentIds = new Set(acceptedPhotos.map((photo) => photo.id))
+    for (const photo of acceptedPhotos) {
       if (!dirty.has(photo.id) || replaceDraftId === photo.id) {
         drafts.set(photo.id, draftFrom(photo))
+        draftBaseVersions.set(photo.id, photo.version)
       }
       if (replaceDraftId === photo.id) {
         dirty.delete(photo.id)
         conflicts.delete(photo.id)
         messages.delete(photo.id)
+      } else if (dirty.has(photo.id) && draftBaseVersions.get(photo.id) !== photo.version) {
+        conflicts.add(photo.id)
+        messages.set(photo.id, '照片已在其他页面修改')
       }
     }
     for (const id of drafts.keys()) {
@@ -87,6 +103,7 @@ export function usePhotoLibrary(
         dirty.delete(id)
         conflicts.delete(id)
         messages.delete(id)
+        draftBaseVersions.delete(id)
       }
     }
     if (selectedId.value !== null && !currentIds.has(selectedId.value)) {
@@ -95,11 +112,15 @@ export function usePhotoLibrary(
   }
 
   async function load(): Promise<void> {
+    const generation = ++loadGeneration
     status.value = 'loading'
     try {
-      synchronize(await api.listPhotos())
+      const nextPhotos = await api.listPhotos()
+      if (generation !== loadGeneration) return
+      synchronize(nextPhotos)
       status.value = 'ready'
     } catch (error) {
+      if (generation !== loadGeneration) return
       status.value = 'error'
       messages.set('library', safeActionMessage(error, 'load'))
     }
@@ -113,7 +134,10 @@ export function usePhotoLibrary(
     selectedId.value = id
     if (id === null) return
     const photo = photos.value.find((candidate) => candidate.id === id)
-    if (photo !== undefined && !drafts.has(id)) drafts.set(id, draftFrom(photo))
+    if (photo !== undefined && !drafts.has(id)) {
+      drafts.set(id, draftFrom(photo))
+      draftBaseVersions.set(id, photo.version)
+    }
   }
 
   function draftFor(id: string): PhotoDraft {
@@ -124,6 +148,7 @@ export function usePhotoLibrary(
       ? { title: '', description: '', capturedDate: '' }
       : draftFrom(photo)
     drafts.set(id, draft)
+    if (photo !== undefined) draftBaseVersions.set(id, photo.version)
     return draft
   }
 
@@ -131,9 +156,16 @@ export function usePhotoLibrary(
     const next = { ...draftFor(id), ...patch }
     drafts.set(id, next)
     const photo = photos.value.find((candidate) => candidate.id === id)
-    if (photo !== undefined && sameDraft(next, photo)) dirty.delete(id)
-    else dirty.add(id)
-    conflicts.delete(id)
+    if (photo !== undefined && sameDraft(next, photo)) {
+      dirty.delete(id)
+      conflicts.delete(id)
+      draftBaseVersions.set(id, photo.version)
+    } else {
+      dirty.add(id)
+      if (photo !== undefined && draftBaseVersions.get(id) !== photo.version) {
+        conflicts.add(id)
+      }
+    }
     messages.delete(id)
   }
 
@@ -141,6 +173,11 @@ export function usePhotoLibrary(
     if (saving.has(id)) return
     const photo = photos.value.find((candidate) => candidate.id === id)
     if (photo === undefined) return
+    if (conflicts.has(id) || draftBaseVersions.get(id) !== photo.version) {
+      conflicts.add(id)
+      messages.set(id, '照片已在其他页面修改')
+      return
+    }
     const token = csrfToken.value
     if (token === null) {
       messages.set(id, '登录已过期，请重新登录')
@@ -161,8 +198,13 @@ export function usePhotoLibrary(
         capturedDate: draft.capturedDate,
         version: photo.version,
       }, token)
-      replacePhoto(updated)
+      if (!replacePhoto(updated)) {
+        conflicts.add(id)
+        messages.set(id, '照片已在其他页面修改')
+        return
+      }
       drafts.set(id, draftFrom(updated))
+      draftBaseVersions.set(id, updated.version)
       dirty.delete(id)
       conflicts.delete(id)
     } catch (error) {
@@ -174,8 +216,10 @@ export function usePhotoLibrary(
   }
 
   async function loadLatest(id: string): Promise<void> {
+    const generation = ++loadGeneration
     try {
       const latest = await api.listPhotos()
+      if (generation !== loadGeneration) return
       synchronize(latest, id)
       status.value = 'ready'
     } catch (error) {
@@ -197,6 +241,7 @@ export function usePhotoLibrary(
       await api.deletePhoto(id, photo.version, token)
       photos.value = photos.value.filter((candidate) => candidate.id !== id)
       drafts.delete(id)
+      draftBaseVersions.delete(id)
       dirty.delete(id)
       conflicts.delete(id)
       messages.delete(id)

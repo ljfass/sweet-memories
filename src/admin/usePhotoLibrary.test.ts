@@ -37,6 +37,20 @@ function fakeApi(initial: readonly AdminPhoto[] = [photo()]): AdminPhotoApiClien
   }
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>
+  readonly resolve: (value: T) => void
+} {
+  let resolve: ((value: T) => void) | undefined
+  const promise = new Promise<T>((next) => {
+    resolve = next
+  })
+  return {
+    promise,
+    resolve: (value) => resolve?.(value),
+  }
+}
+
 describe('usePhotoLibrary', () => {
   it('keeps independent drafts in memory and replaces the snapshot only after save succeeds', async () => {
     const api = fakeApi()
@@ -152,5 +166,85 @@ describe('usePhotoLibrary', () => {
     expect(library.photos.value[0]).toMatchObject({ title: '服务端新标题', version: 4 })
     expect(library.draftFor('photo-1').title).toBe('保留的本地草稿')
     expect(library.isDirty('photo-1')).toBe(true)
+  })
+
+  it('marks a dirty draft as conflicted when refresh advances its base version and blocks save', async () => {
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    library.updateDraft('photo-1', { title: '不能覆盖的本地草稿' })
+    vi.mocked(api.listPhotos).mockResolvedValueOnce([
+      photo({ title: '其他管理员的新标题', version: 2 }),
+    ])
+
+    await library.refresh()
+    await library.save('photo-1')
+
+    expect(library.photos.value[0]).toMatchObject({ title: '其他管理员的新标题', version: 2 })
+    expect(library.draftFor('photo-1').title).toBe('不能覆盖的本地草稿')
+    expect(library.hasConflict('photo-1')).toBe(true)
+    expect(api.updatePhoto).not.toHaveBeenCalled()
+  })
+
+  it('ignores an older load that resolves after a newer refresh', async () => {
+    const older = deferred<readonly AdminPhoto[]>()
+    const newer = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    vi.mocked(api.listPhotos)
+      .mockReset()
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise)
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+
+    const oldLoad = library.load()
+    const newRefresh = library.refresh()
+    newer.resolve([photo({ title: '最新响应', version: 3 })])
+    await newRefresh
+    older.resolve([photo({ title: '过期响应', version: 1 })])
+    await oldLoad
+
+    expect(library.photos.value[0]).toMatchObject({ title: '最新响应', version: 3 })
+  })
+
+  it('does not let a pending save response replace a newer refreshed version', async () => {
+    const update = deferred<AdminPhoto>()
+    const api = fakeApi()
+    vi.mocked(api.updatePhoto).mockImplementationOnce(() => update.promise)
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    library.updateDraft('photo-1', { title: '正在保存的草稿' })
+
+    const save = library.save('photo-1')
+    vi.mocked(api.listPhotos).mockResolvedValueOnce([
+      photo({ title: '更新的服务端版本', version: 3 }),
+    ])
+    await library.refresh()
+    update.resolve(photo({ title: '较早的保存响应', version: 2 }))
+    await save
+
+    expect(library.photos.value[0]).toMatchObject({ title: '更新的服务端版本', version: 3 })
+    expect(library.draftFor('photo-1').title).toBe('正在保存的草稿')
+    expect(library.hasConflict('photo-1')).toBe(true)
+  })
+
+  it('does not let a refresh started before save completion roll the saved version back', async () => {
+    const refresh = deferred<readonly AdminPhoto[]>()
+    const update = deferred<AdminPhoto>()
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    library.updateDraft('photo-1', { title: '已保存的新标题' })
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => refresh.promise)
+    vi.mocked(api.updatePhoto).mockImplementationOnce(() => update.promise)
+
+    const refreshing = library.refresh()
+    const saving = library.save('photo-1')
+    update.resolve(photo({ title: '已保存的新标题', version: 2 }))
+    await saving
+    refresh.resolve([photo({ title: '过期响应', version: 1 })])
+    await refreshing
+
+    expect(library.photos.value[0]).toMatchObject({ title: '已保存的新标题', version: 2 })
+    expect(library.isDirty('photo-1')).toBe(false)
   })
 })

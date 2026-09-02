@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RefreshCw, Upload } from '@lucide/vue'
 import DeletePhotoDialog from './DeletePhotoDialog.vue'
 import PhotoEditor from './PhotoEditor.vue'
@@ -10,8 +10,28 @@ const props = defineProps<{
 }>()
 
 const deleteCandidate = ref<AdminPhoto | null>(null)
+const libraryRoot = ref<HTMLElement | null>(null)
+const editorReturnTarget = ref<HTMLElement | null>(null)
+const mobileMedia = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+  ? window.matchMedia('(max-width: 720px)')
+  : null
+const isMobile = ref(mobileMedia?.matches ?? false)
 const selectedPhoto = computed(() =>
   props.library.photos.value.find((photo) => photo.id === props.library.selectedId.value) ?? null)
+const isMobileEditorOpen = computed(() => isMobile.value && selectedPhoto.value !== null)
+
+function updateViewport(event: MediaQueryListEvent): void {
+  isMobile.value = event.matches
+}
+
+onMounted(() => mobileMedia?.addEventListener('change', updateViewport))
+onBeforeUnmount(() => mobileMedia?.removeEventListener('change', updateViewport))
+
+watch(isMobileEditorOpen, async (open) => {
+  if (!open) return
+  await nextTick()
+  libraryRoot.value?.querySelector<HTMLElement>('.admin-photo-editor')?.focus()
+})
 
 function sourceSet(sources: AdminPhoto['sources']['avif']): string {
   return sources.map((source) => `${source.url} ${source.width}w`).join(', ')
@@ -20,10 +40,28 @@ function sourceSet(sources: AdminPhoto['sources']['avif']): string {
 function updateDraft(draft: PhotoDraft): void {
   if (selectedPhoto.value !== null) props.library.updateDraft(selectedPhoto.value.id, draft)
 }
+
+function openPhoto(id: string, event: Event): void {
+  editorReturnTarget.value = event.currentTarget instanceof HTMLElement
+    ? event.currentTarget
+    : null
+  props.library.select(id)
+}
+
+async function closeEditor(): Promise<void> {
+  props.library.select(null)
+  const returnTarget = editorReturnTarget.value
+  editorReturnTarget.value = null
+  await nextTick()
+  if (returnTarget?.isConnected) returnTarget.focus()
+}
 </script>
 
 <template>
-  <div class="admin-photo-library">
+  <div
+    ref="libraryRoot"
+    class="admin-photo-library"
+  >
     <div class="admin-library-actions">
       <button
         class="admin-primary-button admin-upload-button"
@@ -98,6 +136,8 @@ function updateDraft(draft: PhotoDraft): void {
         class="admin-photo-grid"
         data-mobile-columns="2"
         aria-label="照片库"
+        :inert="isMobileEditorOpen"
+        :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
       >
         <article
           v-for="photo in library.photos.value"
@@ -108,7 +148,7 @@ function updateDraft(draft: PhotoDraft): void {
         >
           <button
             type="button"
-            @click="library.select(photo.id)"
+            @click="openPhoto(photo.id, $event)"
           >
             <picture>
               <source
@@ -138,11 +178,14 @@ function updateDraft(draft: PhotoDraft): void {
         :conflict="library.hasConflict(selectedPhoto.id)"
         :saving="library.isSaving(selectedPhoto.id)"
         :message="library.messageFor(selectedPhoto.id)"
+        :role="isMobileEditorOpen ? 'dialog' : undefined"
+        :aria-modal="isMobileEditorOpen ? 'true' : undefined"
+        :tabindex="isMobileEditorOpen ? -1 : undefined"
         @update-draft="updateDraft"
         @save="library.save(selectedPhoto.id)"
         @load-latest="library.loadLatest(selectedPhoto.id)"
         @open-delete="deleteCandidate = selectedPhoto"
-        @close="library.select(null)"
+        @close="closeEditor"
       />
       <aside
         v-else

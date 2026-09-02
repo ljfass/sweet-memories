@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import type { AdminPhoto } from './types'
 import DeletePhotoDialog from './DeletePhotoDialog.vue'
@@ -47,5 +48,62 @@ describe('DeletePhotoDialog', () => {
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
     expect(wrapper.get('[aria-live="polite"]').text()).toBe('暂时无法删除照片，请稍后重试')
     expect(wrapper.emitted('deleted')).toBeUndefined()
+  })
+
+  it('traps keyboard focus inside the dialog', async () => {
+    const wrapper = mount(DeletePhotoDialog, {
+      attachTo: document.body,
+      props: { open: true, photo, confirm: vi.fn(async () => false), message: '' },
+    })
+    await nextTick()
+    const cancel = wrapper.findAll('.admin-dialog-actions button')[0]!
+    const confirm = wrapper.get('[data-confirm-delete]')
+
+    expect(document.activeElement).toBe(confirm.element)
+    await confirm.trigger('keydown', { key: 'Tab' })
+    expect(document.activeElement).toBe(cancel.element)
+    await cancel.trigger('keydown', { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(confirm.element)
+    wrapper.unmount()
+  })
+
+  it('restores focus to the connected trigger when the dialog closes', async () => {
+    const trigger = document.createElement('button')
+    trigger.textContent = '删除照片'
+    document.body.append(trigger)
+    trigger.focus()
+    const wrapper = mount(DeletePhotoDialog, {
+      attachTo: document.body,
+      props: { open: true, photo, confirm: vi.fn(async () => false), message: '' },
+    })
+    await nextTick()
+
+    await wrapper.setProps({ open: false })
+    await nextTick()
+
+    expect(document.activeElement).toBe(trigger)
+    wrapper.unmount()
+    trigger.remove()
+  })
+
+  it('cannot be cancelled with Escape or the cancel button while deletion is pending', async () => {
+    let resolveDelete: ((deleted: boolean) => void) | undefined
+    const confirm = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveDelete = resolve
+    }))
+    const wrapper = mount(DeletePhotoDialog, {
+      props: { open: true, photo, confirm, message: '' },
+    })
+
+    await wrapper.get('[data-confirm-delete]').trigger('click')
+    await nextTick()
+    await wrapper.get('[role="dialog"]').trigger('keydown', { key: 'Escape' })
+    await wrapper.findAll('.admin-dialog-actions button')[0]!.trigger('click')
+
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    resolveDelete?.(true)
+    await flushPromises()
+    expect(wrapper.emitted('deleted')).toHaveLength(1)
   })
 })

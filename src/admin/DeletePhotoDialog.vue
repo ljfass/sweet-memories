@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { AdminPhoto } from './types'
 
 const props = defineProps<{
@@ -15,17 +15,70 @@ const emit = defineEmits<{
 }>()
 
 const confirmButton = ref<HTMLButtonElement | null>(null)
+const dialog = ref<HTMLElement | null>(null)
 const isDeleting = ref(false)
+let focusReturnTarget: HTMLElement | null = null
+
+function restoreFocus(): void {
+  const returnTarget = focusReturnTarget
+  focusReturnTarget = null
+  if (returnTarget?.isConnected) returnTarget.focus()
+}
 
 watch(
   () => props.open,
-  async (open) => {
-    if (!open) return
-    await nextTick()
-    confirmButton.value?.focus()
+  async (open, wasOpen) => {
+    if (open) {
+      if (!wasOpen) {
+        focusReturnTarget = document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null
+      }
+      await nextTick()
+      confirmButton.value?.focus()
+      return
+    }
+    if (wasOpen) {
+      await nextTick()
+      restoreFocus()
+    }
   },
   { immediate: true },
 )
+
+onBeforeUnmount(restoreFocus)
+
+function requestCancel(): void {
+  if (!isDeleting.value) emit('cancel')
+}
+
+function focusableElements(): HTMLElement[] {
+  if (dialog.value === null) return []
+  return Array.from(dialog.value.querySelectorAll<HTMLElement>('button:not(:disabled)'))
+}
+
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    requestCancel()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const focusable = focusableElements()
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (first === undefined || last === undefined) {
+    event.preventDefault()
+    return
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
 
 async function confirmDeletion(): Promise<void> {
   if (isDeleting.value) return
@@ -42,13 +95,14 @@ async function confirmDeletion(): Promise<void> {
   <div
     v-if="open"
     class="admin-dialog-backdrop"
-    @keydown.esc.prevent="emit('cancel')"
   >
     <section
+      ref="dialog"
       class="admin-dialog admin-delete-dialog"
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-photo-title"
+      @keydown="handleKeydown"
     >
       <header class="admin-dialog-header">
         <p class="admin-eyebrow">
@@ -82,7 +136,7 @@ async function confirmDeletion(): Promise<void> {
           class="admin-secondary-button"
           type="button"
           :disabled="isDeleting"
-          @click="emit('cancel')"
+          @click="requestCancel"
         >
           取消
         </button>

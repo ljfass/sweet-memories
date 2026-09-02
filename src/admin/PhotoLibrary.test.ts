@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { computed, nextTick, ref } from 'vue'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import AdminApp from './AdminApp.vue'
 import type {
   AdminPhoto,
@@ -24,11 +24,12 @@ const photo: AdminPhoto = {
 }
 function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState {
   const draft: PhotoDraft = { title: photo.title, description: '', capturedDate: '2026-05-01' }
+  const selectedId = ref<string | null>(null)
   return {
-    photos: ref([photo]), status: ref('ready'), selectedId: ref(null),
+    photos: ref([photo]), status: ref('ready'), selectedId,
     isMigrationPending: computed(() => false), uploadsDisabled: computed(() => false),
     load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined),
-    select: vi.fn(), draftFor: vi.fn(() => draft), updateDraft: vi.fn(),
+    select: vi.fn((id) => { selectedId.value = id }), draftFor: vi.fn(() => draft), updateDraft: vi.fn(),
     isDirty: vi.fn(() => false), hasConflict: vi.fn(() => false),
     isSaving: vi.fn(() => false), messageFor: vi.fn(() => ''),
     save: vi.fn(async () => undefined), loadLatest: vi.fn(async () => undefined),
@@ -36,6 +37,23 @@ function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState 
     ...overrides,
   }
 }
+
+function useViewport(matches: boolean): void {
+  vi.stubGlobal('matchMedia', vi.fn(() => ({
+    matches,
+    media: '(max-width: 720px)',
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(() => true),
+  })))
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('PhotoLibrary', () => {
   it('renders a square photo grid and a semantic editor region with stable source dimensions', async () => {
@@ -91,6 +109,50 @@ describe('PhotoLibrary', () => {
     expect(wrapper.get('input[name="title"]').element).toBe(title.element)
     expect((title.element as HTMLInputElement).value).toBe('未提交标题')
     expect(wrapper.get('[role="dialog"]').text()).toContain('登录已过期')
+  })
+
+  it('isolates the grid, focuses the fullscreen editor on mobile, and restores its card on close', async () => {
+    useViewport(true)
+    const state = library()
+    const wrapper = mount(PhotoLibrary, { attachTo: document.body, props: { library: state } })
+    const card = wrapper.get('[data-photo-id="photo-1"] button')
+    ;(card.element as HTMLButtonElement).focus()
+
+    await card.trigger('click')
+    await nextTick()
+
+    const editor = wrapper.get('.admin-photo-editor')
+    expect(editor.attributes()).toMatchObject({
+      role: 'dialog',
+      'aria-modal': 'true',
+      tabindex: '-1',
+    })
+    expect(document.activeElement).toBe(editor.element)
+    expect(wrapper.get('.admin-photo-grid').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+
+    await editor.get('[aria-label="返回照片库"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.admin-photo-editor').exists()).toBe(false)
+    expect(document.activeElement).toBe(card.element)
+    expect(wrapper.get('.admin-photo-grid').attributes()).not.toHaveProperty('inert')
+    wrapper.unmount()
+  })
+
+  it('keeps the editor non-modal and the grid interactive on desktop', async () => {
+    useViewport(false)
+    const state = library()
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+
+    expect(wrapper.get('.admin-photo-editor').attributes()).not.toHaveProperty('aria-modal')
+    expect(wrapper.get('.admin-photo-editor').attributes()).not.toHaveProperty('role')
+    expect(wrapper.get('.admin-photo-grid').attributes()).not.toHaveProperty('inert')
   })
 
 })
