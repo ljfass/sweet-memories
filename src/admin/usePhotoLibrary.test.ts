@@ -287,4 +287,56 @@ describe('usePhotoLibrary', () => {
     expect(library.draftFor('photo-1').title).toBe('保留的本地草稿')
     expect(library.isDirty('photo-1')).toBe(true)
   })
+
+  it('keeps an uploaded photo while allowing an already pending refresh to finish', async () => {
+    const refresh = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => refresh.promise)
+
+    const refreshing = library.refresh()
+    const uploaded = photo({
+      id: 'uploaded-photo',
+      title: '刚上传的照片',
+      sources: {
+        avif: [{ url: '/media/uploaded-photo/320.avif', width: 320 }],
+        webp: [{ url: '/media/uploaded-photo/320.webp', width: 320 }],
+        jpeg: [{ url: '/media/uploaded-photo/320.jpg', width: 320 }],
+        fallback: { url: '/media/uploaded-photo/320.jpg', width: 320, height: 240 },
+      },
+    })
+    library.addUploadedPhoto(uploaded)
+    refresh.resolve([photo({ title: '刷新后的服务端照片', version: 2 })])
+    await refreshing
+
+    expect(library.photos.value.map((entry) => entry.id)).toEqual(['uploaded-photo', 'photo-1'])
+    expect(library.photos.value[1]).toMatchObject({ title: '刷新后的服务端照片', version: 2 })
+  })
+
+  it('does not cancel a pending load-latest action when an unrelated upload completes', async () => {
+    const latest = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    library.updateDraft('photo-1', { title: '应被最新版本替换的草稿' })
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => latest.promise)
+
+    const loadingLatest = library.loadLatest('photo-1')
+    library.addUploadedPhoto(photo({
+      id: 'uploaded-photo',
+      sources: {
+        avif: [{ url: '/media/uploaded-photo/320.avif', width: 320 }],
+        webp: [{ url: '/media/uploaded-photo/320.webp', width: 320 }],
+        jpeg: [{ url: '/media/uploaded-photo/320.jpg', width: 320 }],
+        fallback: { url: '/media/uploaded-photo/320.jpg', width: 320, height: 240 },
+      },
+    }))
+    latest.resolve([photo({ title: '已加载最新版本', version: 3 })])
+    await loadingLatest
+
+    expect(library.photos.value.map((entry) => entry.id)).toEqual(['uploaded-photo', 'photo-1'])
+    expect(library.draftFor('photo-1').title).toBe('已加载最新版本')
+    expect(library.hasConflict('photo-1')).toBe(false)
+  })
 })

@@ -179,6 +179,7 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
         type="file"
         accept=".heic,.heif,.jpg,.jpeg,.png,.webp,image/heic,image/heif,image/jpeg,image/png,image/webp"
         multiple
+        tabindex="-1"
         :disabled="library.uploadsDisabled.value"
         @change="addSelectedFiles"
       >

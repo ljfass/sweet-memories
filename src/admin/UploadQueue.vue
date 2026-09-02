@@ -100,6 +100,7 @@ function queueSummary(): string {
             v-if="item.status === 'uploading'"
             max="100"
             :value="item.progress"
+            :aria-label="`上传 ${item.file.name}`"
           >
             {{ item.progress }}%
           </progress>
@@ -122,7 +123,6 @@ function queueSummary(): string {
             />
           </button>
           <button
-            v-if="item.status !== 'uploading'"
             class="admin-icon-button"
             type="button"
             title="移除"

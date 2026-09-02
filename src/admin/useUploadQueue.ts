@@ -47,6 +47,11 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
   let activeCount = 0
   let authenticationPaused = false
   let disposed = false
+  const attemptGenerations = new Map<string, number>()
+  const activeUploads = new Map<string, {
+    readonly generation: number
+    readonly controller: AbortController
+  }>()
 
   function replaceItem(id: string, patch: Partial<UploadQueueItem>): void {
     items.value = items.value.map((item) => item.id === id ? { ...item, ...patch } : item)
@@ -103,6 +108,13 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
       pauseForAuthentication()
       return
     }
+    const generation = (attemptGenerations.get(item.id) ?? 0) + 1
+    const controller = new AbortController()
+    attemptGenerations.set(item.id, generation)
+    activeUploads.set(item.id, { generation, controller })
+    const isCurrentAttempt = () => !disposed
+      && attemptGenerations.get(item.id) === generation
+      && items.value.some((candidate) => candidate.id === item.id)
     activeCount += 1
     replaceItem(item.id, { status: 'uploading', progress: 0, errorCode: null })
     updateQueueStatus()
@@ -112,11 +124,12 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
         item.requestId,
         token,
         (progress) => {
-          if (disposed) return
+          if (!isCurrentAttempt()) return
           replaceItem(item.id, { progress: Math.max(0, Math.min(100, Math.round(progress))) })
         },
+        controller.signal,
       )
-      if (disposed) return
+      if (!isCurrentAttempt()) return
       replaceItem(item.id, {
         status: 'succeeded',
         progress: 100,
@@ -125,7 +138,7 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
       })
       options.onUploaded?.(uploaded)
     } catch (error) {
-      if (disposed) return
+      if (!isCurrentAttempt()) return
       if (error instanceof AdminApiError && error.kind === 'unauthorized') {
         pauseForAuthentication()
         replaceItem(item.id, { status: 'paused', errorCode: null })
@@ -134,6 +147,9 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
       }
     } finally {
       activeCount -= 1
+      if (activeUploads.get(item.id)?.generation === generation) {
+        activeUploads.delete(item.id)
+      }
       schedule()
     }
   }
@@ -178,7 +194,9 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
 
   function remove(id: string): void {
     const item = items.value.find((candidate) => candidate.id === id)
-    if (item === undefined || item.status === 'uploading') return
+    if (item === undefined) return
+    attemptGenerations.set(id, (attemptGenerations.get(id) ?? 0) + 1)
+    activeUploads.get(id)?.controller.abort()
     items.value = items.value.filter((candidate) => candidate.id !== id)
     revokeObjectUrl(item.previewUrl)
     updateQueueStatus()
@@ -213,6 +231,10 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
   if (getCurrentScope()) {
     onScopeDispose(() => {
       disposed = true
+      for (const [id, active] of activeUploads) {
+        attemptGenerations.set(id, active.generation + 1)
+        active.controller.abort()
+      }
       for (const item of items.value) revokeObjectUrl(item.previewUrl)
     })
   }

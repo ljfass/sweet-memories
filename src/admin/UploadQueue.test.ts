@@ -44,7 +44,12 @@ describe('UploadQueue', () => {
     })
     expect(wrapper.text()).toContain('family.jpg')
     expect(wrapper.text()).toContain('6 B')
-    expect(wrapper.get('progress').attributes()).toMatchObject({ max: '100', value: '46' })
+    expect(wrapper.get('progress').attributes()).toMatchObject({
+      max: '100',
+      value: '46',
+      'aria-label': '上传 family.jpg',
+    })
+    expect(wrapper.get('[aria-label="移除 family.jpg"]')).toBeDefined()
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('正在上传 1 张照片')
   })
 

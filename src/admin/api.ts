@@ -22,6 +22,7 @@ const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 const MAX_ADMIN_PHOTOS = 1_000
 const MAX_UPLOAD_RESPONSE_CHARACTERS = 1024 * 1024
+const UPLOAD_TIMEOUT_MILLISECONDS = 120_000
 
 export type AdminApiErrorKind =
   | 'credentials'
@@ -37,6 +38,7 @@ export type AdminApiErrorKind =
   | 'uploads-disabled'
   | 'storage-full'
   | 'upload-busy'
+  | 'cancelled'
 
 export class AdminApiError extends Error {
   constructor(
@@ -373,6 +375,7 @@ export function safeLoginErrorMessage(error: unknown): string {
       case 'uploads-disabled':
       case 'storage-full':
       case 'upload-busy':
+      case 'cancelled':
         return '登录暂时失败，请稍后重试'
     }
   }
@@ -388,6 +391,7 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
   readonly #xhr: () => XMLHttpRequest
   readonly #unauthorizedListeners = new Set<() => void>()
   #unauthorizedPublished = false
+  #authenticationEpoch = 0
 
   constructor(options: AdminApiOptions = {}) {
     this.#fetch = options.fetch ?? globalThis.fetch
@@ -404,6 +408,7 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
     const body = await readJson(response)
     const session = parseSessionResponse(body)
     this.#unauthorizedPublished = false
+    this.#authenticationEpoch += 1
     return {
       username: session.username,
       csrfToken: session.csrfToken,
@@ -421,6 +426,7 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
     })
     const session = parseLoginResponse(await readJson(response), username)
     this.#unauthorizedPublished = false
+    this.#authenticationEpoch += 1
     return session
   }
 
@@ -430,6 +436,7 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
       headers: { 'x-csrf-token': csrfToken },
     })
     this.#unauthorizedPublished = false
+    this.#authenticationEpoch += 1
   }
 
   async listPhotos(): Promise<readonly AdminPhoto[]> {
@@ -467,28 +474,51 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
     requestId: string,
     csrfToken: string,
     reportProgress: (progress: number) => void,
+    signal: AbortSignal,
   ): Promise<AdminPhoto> {
     return new Promise((resolve, reject) => {
       let request: XMLHttpRequest
+      let settled = false
+      const authenticationEpoch = this.#authenticationEpoch
+      const finish = (result: { readonly photo: AdminPhoto } | { readonly error: AdminApiError }) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', cancel)
+        if ('photo' in result) resolve(result.photo)
+        else reject(result.error)
+      }
+      const cancel = () => {
+        if (settled) return
+        try {
+          request.abort()
+        } catch {
+          // Cancellation must have a stable result even if the transport is already gone.
+        }
+        finish({ error: new AdminApiError('cancelled', '上传已取消') })
+      }
       try {
         request = this.#xhr()
         request.open('POST', PHOTO_ENDPOINT, true)
         request.withCredentials = true
+        request.timeout = UPLOAD_TIMEOUT_MILLISECONDS
         request.setRequestHeader('x-csrf-token', csrfToken)
         request.setRequestHeader('idempotency-key', requestId)
       } catch {
-        reject(new AdminApiError('unavailable', '服务暂时不可用，请稍后重试'))
+        finish({ error: new AdminApiError('unavailable', '服务暂时不可用，请稍后重试') })
         return
       }
 
       request.upload.addEventListener('progress', (event) => {
-        if (!event.lengthComputable || event.total <= 0) return
+        if (settled || !event.lengthComputable || event.total <= 0) return
         reportProgress((event.loaded / event.total) * 100)
       })
       request.addEventListener('load', () => {
-        if (request.status === 401) this.#publishUnauthorized()
+        if (settled) return
+        if (request.status === 401 && authenticationEpoch === this.#authenticationEpoch) {
+          this.#publishUnauthorized()
+        }
         if (request.status !== 200 && request.status !== 201) {
-          reject(responseError(request.status, 'upload'))
+          finish({ error: responseError(request.status, 'upload') })
           return
         }
         const contentType = request.getResponseHeader('content-type')
@@ -497,21 +527,29 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
           contentType !== 'application/json'
           || request.responseText.length > MAX_UPLOAD_RESPONSE_CHARACTERS
         ) {
-          reject(invalidResponse())
+          finish({ error: invalidResponse() })
           return
         }
         try {
-          resolve(parseUploadResponse(JSON.parse(request.responseText) as unknown))
+          finish({ photo: parseUploadResponse(JSON.parse(request.responseText) as unknown) })
         } catch (error) {
-          reject(error instanceof AdminApiError ? error : invalidResponse())
+          finish({ error: error instanceof AdminApiError ? error : invalidResponse() })
         }
       })
       const rejectUnavailable = () => {
-        reject(new AdminApiError('unavailable', '服务暂时不可用，请稍后重试'))
+        finish({ error: new AdminApiError('unavailable', '服务暂时不可用，请稍后重试') })
       }
       request.addEventListener('error', rejectUnavailable)
-      request.addEventListener('abort', rejectUnavailable)
+      request.addEventListener('abort', () => {
+        finish({ error: new AdminApiError('cancelled', '上传已取消') })
+      })
       request.addEventListener('timeout', rejectUnavailable)
+      signal.addEventListener('abort', cancel, { once: true })
+
+      if (signal.aborted) {
+        cancel()
+        return
+      }
 
       try {
         const body = new FormData()

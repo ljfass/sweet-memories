@@ -113,6 +113,8 @@ class FakeXhr extends EventTarget {
   withCredentials = false
   responseText = ''
   status = 0
+  timeout = 0
+  aborted = false
   body: Document | XMLHttpRequestBodyInit | null = null
   contentType = 'application/json'
 
@@ -132,6 +134,11 @@ class FakeXhr extends EventTarget {
 
   send(body: Document | XMLHttpRequestBodyInit | null): void {
     this.body = body
+  }
+
+  abort(): void {
+    this.aborted = true
+    this.dispatchEvent(new Event('abort'))
   }
 
   report(loaded: number, total: number): void {
@@ -211,7 +218,14 @@ describe('AdminApi', () => {
     const progress = vi.fn()
     const requestId = '0195c681-9c63-7db0-8000-000000000101'
 
-    const uploaded = api.uploadPhoto(selectedFile, requestId, 'csrf-token', progress)
+    const controller = new AbortController()
+    const uploaded = api.uploadPhoto(
+      selectedFile,
+      requestId,
+      'csrf-token',
+      progress,
+      controller.signal,
+    )
     const request = requests[0]!
     expect(request).toMatchObject({
       method: 'POST',
@@ -219,6 +233,7 @@ describe('AdminApi', () => {
       async: true,
       withCredentials: true,
     })
+    expect(request.timeout).toBeGreaterThan(0)
     expect(request.requestHeaders.get('x-csrf-token')).toBe('csrf-token')
     expect(request.requestHeaders.get('idempotency-key')).toBe(requestId)
     expect(request.requestHeaders.has('origin')).toBe(false)
@@ -230,6 +245,73 @@ describe('AdminApi', () => {
     expect(progress).toHaveBeenCalledWith(50)
     request.respond(201, { photo: adminPhoto })
     await expect(uploaded).resolves.toEqual(adminPhoto)
+  })
+
+  it('aborts an active XHR through its signal and rejects with a stable cancellation error', async () => {
+    let request!: FakeXhr
+    const api = new AdminApi({
+      fetch: vi.fn(),
+      xhr: () => {
+        request = new FakeXhr()
+        return request as unknown as XMLHttpRequest
+      },
+    })
+    const controller = new AbortController()
+    const upload = api.uploadPhoto(
+      new File(['photo'], 'family.jpg'),
+      '0195c681-9c63-7db0-8000-000000000106',
+      'csrf-token',
+      vi.fn(),
+      controller.signal,
+    )
+
+    controller.abort()
+
+    expect(request.aborted).toBe(true)
+    await expect(upload).rejects.toMatchObject({ kind: 'cancelled', message: '上传已取消' })
+  })
+
+  it('ignores an old upload 401 after a successful login but publishes a current-epoch 401', async () => {
+    const loginResponse = {
+      authenticated: true,
+      csrfToken: sessionResponse.csrfToken,
+      idleExpiresAt: sessionResponse.idleExpiresAt,
+      absoluteExpiresAt: sessionResponse.absoluteExpiresAt,
+    }
+    const requests: FakeXhr[] = []
+    const listener = vi.fn()
+    const api = new AdminApi({
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(loginResponse)),
+      xhr: () => {
+        const request = new FakeXhr()
+        requests.push(request)
+        return request as unknown as XMLHttpRequest
+      },
+    })
+    api.onUnauthorized(listener)
+    const oldUpload = api.uploadPhoto(
+      new File(['old'], 'old-session.jpg'),
+      '0195c681-9c63-7db0-8000-000000000107',
+      'old-csrf',
+      vi.fn(),
+      new AbortController().signal,
+    )
+
+    await api.login('alice', 'correct-password')
+    requests[0]?.respond(401, { error: {} })
+    await expect(oldUpload).rejects.toMatchObject({ kind: 'unauthorized' })
+    expect(listener).not.toHaveBeenCalled()
+
+    const currentUpload = api.uploadPhoto(
+      new File(['current'], 'current-session.jpg'),
+      '0195c681-9c63-7db0-8000-000000000108',
+      'fresh-csrf',
+      vi.fn(),
+      new AbortController().signal,
+    )
+    requests[1]?.respond(401, { error: {} })
+    await expect(currentUpload).rejects.toMatchObject({ kind: 'unauthorized' })
+    expect(listener).toHaveBeenCalledTimes(1)
   })
 
   it('fails closed on malformed upload envelopes and publishes unauthorized only once without retrying', async () => {
@@ -251,6 +333,7 @@ describe('AdminApi', () => {
       '0195c681-9c63-7db0-8000-000000000102',
       'csrf-token',
       vi.fn(),
+      new AbortController().signal,
     )
     requests[0]?.respond(201, { photo: { ...adminPhoto, originalFilename: 'private.jpg' } })
     await expect(invalid).rejects.toMatchObject({ kind: 'invalid-response' })
@@ -260,6 +343,7 @@ describe('AdminApi', () => {
       '0195c681-9c63-7db0-8000-000000000103',
       'csrf-token',
       vi.fn(),
+      new AbortController().signal,
     )
     requests[1]?.respond(401, { error: { code: 'PRIVATE', stack: '/srv/private.ts' } })
     await expect(firstUnauthorized).rejects.toMatchObject({ kind: 'unauthorized' })
@@ -268,6 +352,7 @@ describe('AdminApi', () => {
       '0195c681-9c63-7db0-8000-000000000104',
       'csrf-token',
       vi.fn(),
+      new AbortController().signal,
     )
     requests[2]?.respond(401, { error: {} })
     await expect(secondUnauthorized).rejects.toMatchObject({ kind: 'unauthorized' })
@@ -296,6 +381,7 @@ describe('AdminApi', () => {
       '0195c681-9c63-7db0-8000-000000000105',
       'csrf-token',
       vi.fn(),
+      new AbortController().signal,
     )
     request.respond(status, { error: { code: 'PRIVATE', message: '/srv/private' } })
     const error = await upload.catch((reason: unknown) => reason)

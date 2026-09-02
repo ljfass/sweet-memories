@@ -79,6 +79,7 @@ export interface AdminUploadApiClient {
     requestId: string,
     csrfToken: string,
     reportProgress: (progress: number) => void,
+    signal: AbortSignal,
   ): Promise<AdminPhoto>
 }
 

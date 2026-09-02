@@ -65,6 +65,8 @@ export function usePhotoLibrary(
     photos.value.some((photo) => photo.status === 'migration_pending'))
   const uploadsDisabled = computed(() => isMigrationPending.value)
   let loadGeneration = 0
+  let uploadRevision = 0
+  const localUploads = new Map<string, { readonly photo: AdminPhoto; readonly revision: number }>()
 
   function replacePhoto(nextPhoto: AdminPhoto): boolean {
     const current = photos.value.find((photo) => photo.id === nextPhoto.id)
@@ -75,15 +77,29 @@ export function usePhotoLibrary(
     return true
   }
 
-  function synchronize(nextPhotos: readonly AdminPhoto[], replaceDraftId?: string): void {
+  function synchronize(
+    nextPhotos: readonly AdminPhoto[],
+    replaceDraftId?: string,
+    uploadsAtRequestStart = uploadRevision,
+  ): void {
     const currentById = new Map(photos.value.map((photo) => [photo.id, photo]))
     const acceptedPhotos = nextPhotos.map((photo) => {
       const current = currentById.get(photo.id)
       return current !== undefined && current.version > photo.version ? current : photo
     })
-    photos.value = acceptedPhotos
-    const currentIds = new Set(acceptedPhotos.map((photo) => photo.id))
-    for (const photo of acceptedPhotos) {
+    const acceptedIds = new Set(acceptedPhotos.map((photo) => photo.id))
+    const uploadedAfterRequest = [...localUploads.values()]
+      .filter(({ photo, revision }) => revision > uploadsAtRequestStart && !acceptedIds.has(photo.id))
+      .map(({ photo }) => photo)
+    const synchronizedPhotos = [...uploadedAfterRequest, ...acceptedPhotos]
+    for (const [id, upload] of localUploads) {
+      if (upload.revision <= uploadsAtRequestStart || acceptedIds.has(id)) {
+        localUploads.delete(id)
+      }
+    }
+    photos.value = synchronizedPhotos
+    const currentIds = new Set(synchronizedPhotos.map((photo) => photo.id))
+    for (const photo of synchronizedPhotos) {
       if (!dirty.has(photo.id) || replaceDraftId === photo.id) {
         drafts.set(photo.id, draftFrom(photo))
         draftBaseVersions.set(photo.id, photo.version)
@@ -113,11 +129,12 @@ export function usePhotoLibrary(
 
   async function load(): Promise<void> {
     const generation = ++loadGeneration
+    const uploadsAtRequestStart = uploadRevision
     status.value = 'loading'
     try {
       const nextPhotos = await api.listPhotos()
       if (generation !== loadGeneration) return
-      synchronize(nextPhotos)
+      synchronize(nextPhotos, undefined, uploadsAtRequestStart)
       status.value = 'ready'
     } catch (error) {
       if (generation !== loadGeneration) return
@@ -217,10 +234,11 @@ export function usePhotoLibrary(
 
   async function loadLatest(id: string): Promise<void> {
     const generation = ++loadGeneration
+    const uploadsAtRequestStart = uploadRevision
     try {
       const latest = await api.listPhotos()
       if (generation !== loadGeneration) return
-      synchronize(latest, id)
+      synchronize(latest, id, uploadsAtRequestStart)
       status.value = 'ready'
     } catch (error) {
       messages.set(id, safeActionMessage(error, 'load'))
@@ -242,6 +260,7 @@ export function usePhotoLibrary(
       loadGeneration += 1
       status.value = 'ready'
       photos.value = photos.value.filter((candidate) => candidate.id !== id)
+      localUploads.delete(id)
       drafts.delete(id)
       draftBaseVersions.delete(id)
       dirty.delete(id)
@@ -259,7 +278,6 @@ export function usePhotoLibrary(
   }
 
   function addUploadedPhoto(uploaded: AdminPhoto): void {
-    loadGeneration += 1
     const current = photos.value.find((photo) => photo.id === uploaded.id)
     if (current !== undefined) {
       if (
@@ -268,11 +286,15 @@ export function usePhotoLibrary(
         || conflicts.has(uploaded.id)
       ) return
       replacePhoto(uploaded)
+      uploadRevision += 1
+      localUploads.set(uploaded.id, { photo: uploaded, revision: uploadRevision })
       drafts.set(uploaded.id, draftFrom(uploaded))
       draftBaseVersions.set(uploaded.id, uploaded.version)
       status.value = 'ready'
       return
     }
+    uploadRevision += 1
+    localUploads.set(uploaded.id, { photo: uploaded, revision: uploadRevision })
     photos.value = [uploaded, ...photos.value]
     drafts.set(uploaded.id, draftFrom(uploaded))
     draftBaseVersions.set(uploaded.id, uploaded.version)

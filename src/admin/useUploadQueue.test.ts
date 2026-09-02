@@ -56,6 +56,7 @@ interface UploadCall {
   readonly requestId: string
   readonly csrfToken: string
   readonly reportProgress: (progress: number) => void
+  readonly signal: AbortSignal | undefined
   readonly result: ReturnType<typeof deferred<AdminPhoto>>
 }
 
@@ -68,11 +69,11 @@ function controlledApi(): {
   let active = 0
   let maximum = 0
   const api: AdminUploadApiClient = {
-    uploadPhoto: vi.fn((selectedFile, requestId, csrfToken, reportProgress) => {
+    uploadPhoto: vi.fn((selectedFile, requestId, csrfToken, reportProgress, signal?: AbortSignal) => {
       active += 1
       maximum = Math.max(maximum, active)
       const result = deferred<AdminPhoto>()
-      calls.push({ file: selectedFile, requestId, csrfToken, reportProgress, result })
+      calls.push({ file: selectedFile, requestId, csrfToken, reportProgress, signal, result })
       return result.promise.finally(() => {
         active -= 1
       })
@@ -256,5 +257,58 @@ describe('useUploadQueue', () => {
     queue.add([file('second.jpg')])
     scope.stop()
     expect(revokeObjectUrl).toHaveBeenCalledWith('blob:second.jpg')
+  })
+
+  it('aborts an active item when removed and ignores every late callback before releasing its slot', async () => {
+    const controlled = controlledApi()
+    const uploaded = vi.fn()
+    const queue = createQueue(controlled.api, { onUploaded: uploaded })
+    queue.add([file('first.jpg'), file('second.jpg'), file('third.jpg')])
+    await flushPromises()
+    const first = controlled.calls[0]!
+    const firstId = queue.items.value[0]!.id
+
+    expect(first.signal).toBeInstanceOf(AbortSignal)
+    queue.remove(firstId)
+
+    expect(first.signal?.aborted).toBe(true)
+    expect(queue.items.value.some((item) => item.id === firstId)).toBe(false)
+    first.reportProgress(99)
+    first.result.resolve(photo('late-first'))
+    await flushPromises()
+
+    expect(uploaded).not.toHaveBeenCalledWith(photo('late-first'))
+    expect(queue.items.value.some((item) => item.id === firstId)).toBe(false)
+    expect(controlled.calls).toHaveLength(3)
+    expect(controlled.maxActive()).toBe(2)
+  })
+
+  it('aborts all active requests on disposal and ignores their late results', async () => {
+    const controlled = controlledApi()
+    const uploaded = vi.fn()
+    const scope = effectScope()
+    const queue = scope.run(() => useUploadQueue({
+      api: controlled.api,
+      sessionStatus: ref('authenticated'),
+      csrfToken: ref('csrf-token'),
+      createId: () => globalThis.crypto.randomUUID(),
+      createObjectUrl: (selectedFile) => `blob:${selectedFile.name}`,
+      revokeObjectUrl: vi.fn(),
+      onUploaded: uploaded,
+    }))!
+    queue.add([file('first.jpg'), file('second.jpg'), file('third.jpg')])
+    await flushPromises()
+
+    scope.stop()
+
+    expect(controlled.calls).toHaveLength(2)
+    expect(controlled.calls.every((call) => call.signal?.aborted === true)).toBe(true)
+    controlled.calls[0]?.reportProgress(95)
+    controlled.calls[0]?.result.resolve(photo('late-first'))
+    controlled.calls[1]?.result.resolve(photo('late-second'))
+    await flushPromises()
+
+    expect(uploaded).not.toHaveBeenCalled()
+    expect(controlled.calls).toHaveLength(2)
   })
 })

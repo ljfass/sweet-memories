@@ -126,6 +126,7 @@ describe('PhotoLibrary', () => {
 
     expect(input.attributes('multiple')).toBeDefined()
     expect(input.attributes('accept')).toContain('.heic')
+    expect(input.attributes('tabindex')).toBe('-1')
     expect(state.add).toHaveBeenCalledWith(selected)
   })
 
@@ -268,7 +269,7 @@ describe('PhotoLibrary', () => {
     await flushPromises()
     expect(uploadApi.uploadPhoto).toHaveBeenCalledTimes(4)
     expect(vi.mocked(uploadApi.uploadPhoto).mock.calls[2]).toMatchObject([
-      expect.any(File), firstRequestId, 'fresh-csrf', expect.any(Function),
+      expect.any(File), firstRequestId, 'fresh-csrf', expect.any(Function), expect.any(AbortSignal),
     ])
     wrapper.unmount()
   })
