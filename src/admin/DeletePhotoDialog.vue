@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { AdminPhoto } from './types'
 
 const props = defineProps<{
   open: boolean
+  suspended?: boolean
   photo: AdminPhoto
   confirm: () => Promise<boolean>
   message: string
@@ -18,6 +19,7 @@ const confirmButton = ref<HTMLButtonElement | null>(null)
 const dialog = ref<HTMLElement | null>(null)
 const isDeleting = ref(false)
 let focusReturnTarget: HTMLElement | null = null
+const isActive = computed(() => props.open && props.suspended !== true)
 
 function restoreFocus(): void {
   const returnTarget = focusReturnTarget
@@ -26,10 +28,10 @@ function restoreFocus(): void {
 }
 
 watch(
-  () => props.open,
-  async (open, wasOpen) => {
-    if (open) {
-      if (!wasOpen) {
+  isActive,
+  async (active, wasActive) => {
+    if (active) {
+      if (focusReturnTarget === null) {
         focusReturnTarget = document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null
@@ -38,7 +40,7 @@ watch(
       confirmButton.value?.focus()
       return
     }
-    if (wasOpen) {
+    if (wasActive && props.suspended !== true) {
       await nextTick()
       restoreFocus()
     }
@@ -46,7 +48,13 @@ watch(
   { immediate: true },
 )
 
-onBeforeUnmount(restoreFocus)
+onBeforeUnmount(() => {
+  if (props.suspended === true) {
+    focusReturnTarget = null
+    return
+  }
+  restoreFocus()
+})
 
 function requestCancel(): void {
   if (!isDeleting.value) emit('cancel')
@@ -93,7 +101,7 @@ async function confirmDeletion(): Promise<void> {
 
 <template>
   <div
-    v-if="open"
+    v-if="isActive"
     class="admin-dialog-backdrop"
   >
     <section

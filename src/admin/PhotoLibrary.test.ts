@@ -318,6 +318,54 @@ describe('PhotoLibrary', () => {
     expect(wrapper.get('.admin-photo-grid').attributes()).not.toHaveProperty('inert')
   })
 
+  it.each([
+    { mobile: false, restoredRole: undefined },
+    { mobile: true, restoredRole: 'dialog' },
+  ])('keeps the delete confirmation as the sole modal and restores the editor on $mobile viewport', async ({
+    mobile,
+    restoredRole,
+  }) => {
+    useViewport(mobile)
+    const state = library({ remove: vi.fn(async () => false) })
+    const wrapper = mount(PhotoLibrary, {
+      attachTo: document.body,
+      props: { library: state, uploadQueue: uploadQueue() },
+    })
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+    const deleteTrigger = wrapper.get('[data-open-delete]')
+    ;(deleteTrigger.element as HTMLButtonElement).focus()
+
+    await deleteTrigger.trigger('click')
+    await nextTick()
+
+    expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1)
+    expect(wrapper.get('[role="dialog"]').classes()).toContain('admin-delete-dialog')
+    expect(wrapper.get('.admin-photo-library-content').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    expect(wrapper.get('.admin-photo-editor').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    expect(wrapper.get('.admin-photo-editor').attributes()).not.toHaveProperty('role')
+    expect(wrapper.get('.admin-photo-editor').attributes()).not.toHaveProperty('aria-modal')
+
+    await wrapper.get('[data-confirm-delete]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.admin-delete-dialog').exists()).toBe(true)
+    expect(wrapper.get('.admin-photo-library-content').attributes()).toHaveProperty('inert')
+    await wrapper.findAll('.admin-dialog-actions button')[0]!.trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.admin-delete-dialog').exists()).toBe(false)
+    expect(wrapper.get('.admin-photo-library-content').attributes()).not.toHaveProperty('inert')
+    expect(wrapper.get('.admin-photo-editor').attributes('role')).toBe(restoredRole)
+    expect(document.activeElement).toBe(deleteTrigger.element)
+    wrapper.unmount()
+  })
+
   it('traps mobile Tab navigation and isolates all library controls behind the editor', async () => {
     useViewport(true)
     const state = uploadQueue()
@@ -388,6 +436,92 @@ describe('PhotoLibrary', () => {
       inert: '',
       'aria-hidden': 'true',
     })
+    wrapper.unmount()
+  })
+
+  it('isolates the administrator chrome while the desktop delete dialog is modal', async () => {
+    useViewport(false)
+    const status = ref<AdminSessionState['status']['value']>('authenticated')
+    const session: AdminSessionState = {
+      status,
+      username: ref('alice'),
+      csrfToken: ref('csrf-token'),
+      initialize: vi.fn(async () => undefined),
+      login: vi.fn(async () => undefined),
+      logout: vi.fn(async () => undefined),
+    }
+    const api: AdminPhotoApiClient = {
+      listPhotos: vi.fn(async () => [photo]),
+      updatePhoto: vi.fn(),
+      deletePhoto: vi.fn(),
+    }
+    const wrapper = mount(AdminApp, { attachTo: document.body, props: { session, photoApi: api } })
+    await flushPromises()
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+    const deleteTrigger = wrapper.get('[data-open-delete]')
+    ;(deleteTrigger.element as HTMLButtonElement).focus()
+    await deleteTrigger.trigger('click')
+    await nextTick()
+
+    expect(wrapper.get('.admin-toolbar').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    expect(wrapper.get('#photo-library-title').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('lets reauthentication temporarily supersede a delete dialog without retrying deletion', async () => {
+    useViewport(false)
+    const status = ref<AdminSessionState['status']['value']>('authenticated')
+    const session: AdminSessionState = {
+      status,
+      username: ref('alice'),
+      csrfToken: ref('csrf-token'),
+      initialize: vi.fn(async () => undefined),
+      login: vi.fn(async () => undefined),
+      logout: vi.fn(async () => undefined),
+    }
+    const deletePhoto = vi.fn(async () => {
+      status.value = 'reauth-required'
+      throw new AdminApiError('unauthorized', 'private session detail')
+    })
+    const api: AdminPhotoApiClient = {
+      listPhotos: vi.fn(async () => [photo]),
+      updatePhoto: vi.fn(),
+      deletePhoto,
+    }
+    const wrapper = mount(AdminApp, { attachTo: document.body, props: { session, photoApi: api } })
+    await flushPromises()
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+    const deleteTrigger = wrapper.get('[data-open-delete]')
+    ;(deleteTrigger.element as HTMLButtonElement).focus()
+    await deleteTrigger.trigger('click')
+    await nextTick()
+    await wrapper.get('[data-confirm-delete]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1)
+    expect(wrapper.get('[role="dialog"]').text()).toContain('登录已过期')
+    expect(wrapper.find('.admin-delete-dialog').exists()).toBe(false)
+    expect(deletePhoto).toHaveBeenCalledTimes(1)
+
+    status.value = 'authenticated'
+    await nextTick()
+    await flushPromises()
+
+    expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1)
+    expect(wrapper.get('[role="dialog"]').classes()).toContain('admin-delete-dialog')
+    expect(deletePhoto).toHaveBeenCalledTimes(1)
+    await wrapper.findAll('.admin-dialog-actions button')[0]!.trigger('click')
+    await nextTick()
+    expect(document.activeElement).toBe(deleteTrigger.element)
     wrapper.unmount()
   })
 

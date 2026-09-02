@@ -132,6 +132,37 @@ describe('ReauthDialog', () => {
     expect(wrapper.find('[data-testid="photo-library"]').exists()).toBe(true)
   })
 
+  it('announces a sanitized logout failure inside the active reauthentication dialog', async () => {
+    const status = ref<AdminSessionState['status']['value']>('reauth-required')
+    const logout = vi.fn(async () => {
+      throw new Error('SQLITE at /srv/private.sqlite password=secret')
+    })
+    const session: AdminSessionState = {
+      status,
+      username: ref('alice'),
+      csrfToken: ref(null),
+      initialize: vi.fn(async () => undefined),
+      login: vi.fn(async () => undefined),
+      logout,
+    }
+    const wrapper = mount(AdminApp, {
+      props: { session, photoApi: createEmptyPhotoApi() },
+    })
+
+    await wrapper.get('[data-testid="reauth-logout"]').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(dialog.get('[aria-live="polite"]').text())
+      .toBe('暂时无法退出登录，请稍后重试')
+    expect(dialog.text()).not.toMatch(/SQLITE|private|password|secret/i)
+    expect(wrapper.get('.admin-workspace-content').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    expect(logout).toHaveBeenCalledTimes(1)
+  })
+
   it('does not restore focus to a removed workspace control after logout opens the login page', async () => {
     const status = ref<AdminSessionState['status']['value']>('authenticated')
     const session: AdminSessionState = {

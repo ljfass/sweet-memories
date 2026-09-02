@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import { safeLoginErrorMessage } from './api'
+import { safeLoginErrorMessage, safeLogoutErrorMessage } from './api'
 
 const props = defineProps<{
   open: boolean
@@ -105,8 +105,11 @@ async function handleLogout(): Promise<void> {
     return
   }
   isSubmitting.value = true
+  message.value = ''
   try {
     await props.logout()
+  } catch {
+    message.value = safeLogoutErrorMessage()
   } finally {
     isSubmitting.value = false
   }

@@ -9,10 +9,12 @@ import UploadQueue from './UploadQueue.vue'
 const props = defineProps<{
   library: PhotoLibraryState
   uploadQueue?: UploadQueueState
+  suspended?: boolean
 }>()
 
 const emit = defineEmits<{
   'mobile-modal-change': [open: boolean]
+  'modal-change': [open: boolean]
 }>()
 
 const deleteCandidate = ref<AdminPhoto | null>(null)
@@ -28,6 +30,9 @@ const isMobile = ref(mobileMedia?.matches ?? false)
 const selectedPhoto = computed(() =>
   props.library.photos.value.find((photo) => photo.id === props.library.selectedId.value) ?? null)
 const isMobileEditorOpen = computed(() => isMobile.value && selectedPhoto.value !== null)
+const isDeleteDialogOpen = computed(() =>
+  deleteCandidate.value !== null && props.suspended !== true)
+const isAnyPhotoModalOpen = computed(() => isMobileEditorOpen.value || isDeleteDialogOpen.value)
 
 function updateViewport(event: MediaQueryListEvent): void {
   isMobile.value = event.matches
@@ -37,6 +42,7 @@ onMounted(() => mobileMedia?.addEventListener('change', updateViewport))
 onBeforeUnmount(() => {
   mobileMedia?.removeEventListener('change', updateViewport)
   if (isMobileEditorOpen.value) emit('mobile-modal-change', false)
+  if (isAnyPhotoModalOpen.value) emit('modal-change', false)
 })
 
 watch(isMobileEditorOpen, async (open) => {
@@ -45,6 +51,8 @@ watch(isMobileEditorOpen, async (open) => {
   await nextTick()
   libraryRoot.value?.querySelector<HTMLElement>('.admin-photo-editor')?.focus()
 })
+
+watch(isAnyPhotoModalOpen, (open) => emit('modal-change', open))
 
 function sourceSet(sources: AdminPhoto['sources']['avif']): string {
   return sources.map((source) => `${source.url} ${source.width}w`).join(', ')
@@ -154,174 +162,183 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
     class="admin-photo-library"
   >
     <div
-      class="admin-library-actions"
-      :inert="isMobileEditorOpen"
-      :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
-    >
-      <button
-        class="admin-primary-button admin-upload-button"
-        type="button"
-        data-upload
-        :disabled="library.uploadsDisabled.value"
-        :title="library.uploadsDisabled.value ? '旧照片准备完成后开放上传' : '上传照片'"
-        @click="openPhotoPicker"
-      >
-        <Upload
-          :size="18"
-          aria-hidden="true"
-        />
-        上传照片
-      </button>
-      <input
-        v-if="uploadQueue !== undefined"
-        ref="uploadInput"
-        class="admin-visually-hidden"
-        type="file"
-        accept=".heic,.heif,.jpg,.jpeg,.png,.webp,image/heic,image/heif,image/jpeg,image/png,image/webp"
-        multiple
-        tabindex="-1"
-        :disabled="library.uploadsDisabled.value"
-        @change="addSelectedFiles"
-      >
-      <button
-        class="admin-secondary-button"
-        type="button"
-        data-refresh
-        @click="library.refresh"
-      >
-        <RefreshCw
-          :size="18"
-          aria-hidden="true"
-        />
-        刷新
-      </button>
-    </div>
-
-    <p
-      v-if="uploadSelectionMessage !== ''"
-      class="admin-upload-selection-message"
-      role="alert"
-    >
-      {{ uploadSelectionMessage }}
-    </p>
-
-    <UploadQueue
-      v-if="uploadQueue !== undefined"
-      :queue="uploadQueue"
-      :inert="isMobileEditorOpen"
-      :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
-    />
-
-    <div
-      v-if="library.isMigrationPending.value"
-      class="admin-migration-banner"
-      role="status"
-    >
-      <strong>正在准备旧照片，暂未开放上传</strong>
-      <span>可继续补充拍摄日期、标题和图片描述。</span>
-    </div>
-
-    <p
-      v-if="library.status.value === 'loading'"
-      class="admin-empty-copy"
-      aria-live="polite"
-    >
-      正在加载照片
-    </p>
-    <div
-      v-else-if="library.status.value === 'error'"
-      class="admin-library-error"
-      role="alert"
-    >
-      <p>{{ library.messageFor('library') }}</p>
-      <button
-        class="admin-secondary-button"
-        type="button"
-        @click="library.refresh"
-      >
-        重试
-      </button>
-    </div>
-    <p
-      v-else-if="library.photos.value.length === 0"
-      class="admin-empty-copy"
-    >
-      还没有照片
-    </p>
-
-    <div
-      v-else
-      class="admin-library-layout"
-      data-mobile-editor="fullscreen"
+      class="admin-photo-library-content"
+      :inert="isDeleteDialogOpen"
+      :aria-hidden="isDeleteDialogOpen ? 'true' : undefined"
     >
       <div
-        class="admin-photo-grid"
-        data-mobile-columns="2"
-        aria-label="照片库"
+        class="admin-library-actions"
         :inert="isMobileEditorOpen"
         :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
       >
-        <article
-          v-for="photo in library.photos.value"
-          :key="photo.id"
-          class="admin-photo-card"
-          :class="{ 'is-selected': library.selectedId.value === photo.id }"
-          :data-photo-id="photo.id"
+        <button
+          class="admin-primary-button admin-upload-button"
+          type="button"
+          data-upload
+          :disabled="library.uploadsDisabled.value"
+          :title="library.uploadsDisabled.value ? '旧照片准备完成后开放上传' : '上传照片'"
+          @click="openPhotoPicker"
         >
-          <button
-            type="button"
-            @click="openPhoto(photo.id, $event)"
-          >
-            <picture>
-              <source
-                type="image/avif"
-                :srcset="sourceSet(photo.sources.avif)"
-              >
-              <source
-                type="image/webp"
-                :srcset="sourceSet(photo.sources.webp)"
-              >
-              <img
-                :src="photo.sources.fallback.url"
-                :alt="photo.alt"
-                :width="photo.sources.fallback.width"
-                :height="photo.sources.fallback.height"
-              >
-            </picture>
-            <span>{{ photo.title }}</span>
-          </button>
-        </article>
+          <Upload
+            :size="18"
+            aria-hidden="true"
+          />
+          上传照片
+        </button>
+        <input
+          v-if="uploadQueue !== undefined"
+          ref="uploadInput"
+          class="admin-visually-hidden"
+          type="file"
+          accept=".heic,.heif,.jpg,.jpeg,.png,.webp,image/heic,image/heif,image/jpeg,image/png,image/webp"
+          multiple
+          tabindex="-1"
+          :disabled="library.uploadsDisabled.value"
+          @change="addSelectedFiles"
+        >
+        <button
+          class="admin-secondary-button"
+          type="button"
+          data-refresh
+          @click="library.refresh"
+        >
+          <RefreshCw
+            :size="18"
+            aria-hidden="true"
+          />
+          刷新
+        </button>
       </div>
 
-      <PhotoEditor
-        v-if="selectedPhoto !== null"
-        :photo="selectedPhoto"
-        :draft="library.draftFor(selectedPhoto.id)"
-        :conflict="library.hasConflict(selectedPhoto.id)"
-        :saving="library.isSaving(selectedPhoto.id)"
-        :message="library.messageFor(selectedPhoto.id)"
-        :role="isMobileEditorOpen ? 'dialog' : undefined"
-        :aria-modal="isMobileEditorOpen ? 'true' : undefined"
-        :tabindex="isMobileEditorOpen ? -1 : undefined"
-        @update-draft="updateDraft"
-        @save="library.save(selectedPhoto.id)"
-        @load-latest="library.loadLatest(selectedPhoto.id)"
-        @open-delete="openDelete(selectedPhoto)"
-        @close="closeEditor"
-        @keydown="handleMobileEditorKeydown"
-      />
-      <aside
-        v-else
-        class="admin-editor-placeholder"
-        aria-label="照片编辑器"
+      <p
+        v-if="uploadSelectionMessage !== ''"
+        class="admin-upload-selection-message"
+        role="alert"
       >
-        选择一张照片进行编辑
-      </aside>
+        {{ uploadSelectionMessage }}
+      </p>
+
+      <UploadQueue
+        v-if="uploadQueue !== undefined"
+        :queue="uploadQueue"
+        :inert="isMobileEditorOpen"
+        :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
+      />
+
+      <div
+        v-if="library.isMigrationPending.value"
+        class="admin-migration-banner"
+        role="status"
+      >
+        <strong>正在准备旧照片，暂未开放上传</strong>
+        <span>可继续补充拍摄日期、标题和图片描述。</span>
+      </div>
+
+      <p
+        v-if="library.status.value === 'loading'"
+        class="admin-empty-copy"
+        aria-live="polite"
+      >
+        正在加载照片
+      </p>
+      <div
+        v-else-if="library.status.value === 'error'"
+        class="admin-library-error"
+        role="alert"
+      >
+        <p>{{ library.messageFor('library') }}</p>
+        <button
+          class="admin-secondary-button"
+          type="button"
+          @click="library.refresh"
+        >
+          重试
+        </button>
+      </div>
+      <p
+        v-else-if="library.photos.value.length === 0"
+        class="admin-empty-copy"
+      >
+        还没有照片
+      </p>
+
+      <div
+        v-else
+        class="admin-library-layout"
+        data-mobile-editor="fullscreen"
+      >
+        <div
+          class="admin-photo-grid"
+          data-mobile-columns="2"
+          aria-label="照片库"
+          :inert="isMobileEditorOpen"
+          :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
+        >
+          <article
+            v-for="photo in library.photos.value"
+            :key="photo.id"
+            class="admin-photo-card"
+            :class="{ 'is-selected': library.selectedId.value === photo.id }"
+            :data-photo-id="photo.id"
+          >
+            <button
+              type="button"
+              @click="openPhoto(photo.id, $event)"
+            >
+              <picture>
+                <source
+                  type="image/avif"
+                  :srcset="sourceSet(photo.sources.avif)"
+                >
+                <source
+                  type="image/webp"
+                  :srcset="sourceSet(photo.sources.webp)"
+                >
+                <img
+                  :src="photo.sources.fallback.url"
+                  :alt="photo.alt"
+                  :width="photo.sources.fallback.width"
+                  :height="photo.sources.fallback.height"
+                >
+              </picture>
+              <span>{{ photo.title }}</span>
+            </button>
+          </article>
+        </div>
+
+        <PhotoEditor
+          v-if="selectedPhoto !== null"
+          :photo="selectedPhoto"
+          :draft="library.draftFor(selectedPhoto.id)"
+          :conflict="library.hasConflict(selectedPhoto.id)"
+          :saving="library.isSaving(selectedPhoto.id)"
+          :message="library.messageFor(selectedPhoto.id)"
+          :role="isMobileEditorOpen && !isDeleteDialogOpen ? 'dialog' : undefined"
+          :aria-modal="isMobileEditorOpen && !isDeleteDialogOpen ? 'true' : undefined"
+          :tabindex="isMobileEditorOpen && !isDeleteDialogOpen ? -1 : undefined"
+          :inert="isDeleteDialogOpen"
+          :aria-hidden="isDeleteDialogOpen ? 'true' : undefined"
+          @update-draft="updateDraft"
+          @save="library.save(selectedPhoto.id)"
+          @load-latest="library.loadLatest(selectedPhoto.id)"
+          @open-delete="openDelete(selectedPhoto)"
+          @close="closeEditor"
+          @keydown="handleMobileEditorKeydown"
+        />
+        <aside
+          v-else
+          class="admin-editor-placeholder"
+          aria-label="照片编辑器"
+        >
+          选择一张照片进行编辑
+        </aside>
+      </div>
     </div>
 
     <DeletePhotoDialog
       v-if="deleteCandidate !== null"
       :open="true"
+      :suspended="suspended === true"
       :photo="deleteCandidate"
       :confirm="() => library.remove(deleteCandidate!.id)"
       :message="library.messageFor(deleteCandidate.id)"

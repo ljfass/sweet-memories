@@ -28,18 +28,24 @@ const logoutMessage = ref('')
 const isLoggingOut = ref(false)
 const isPhotoModalOpen = ref(false)
 
-async function logout(): Promise<void> {
+async function requestLogout(): Promise<void> {
   if (isLoggingOut.value) {
     return
   }
   isLoggingOut.value = true
-  logoutMessage.value = ''
   try {
     await session.logout()
-  } catch {
-    logoutMessage.value = safeLogoutErrorMessage()
   } finally {
     isLoggingOut.value = false
+  }
+}
+
+async function logout(): Promise<void> {
+  logoutMessage.value = ''
+  try {
+    await requestLogout()
+  } catch {
+    logoutMessage.value = safeLogoutErrorMessage()
   }
 }
 
@@ -107,6 +113,7 @@ watch(
         <p
           class="admin-session-message"
           aria-live="polite"
+          :inert="isPhotoModalOpen"
           :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
         >
           {{ logoutMessage }}
@@ -129,7 +136,8 @@ watch(
             <PhotoLibrary
               :library="photoLibrary"
               :upload-queue="uploadQueue"
-              @mobile-modal-change="isPhotoModalOpen = $event"
+              :suspended="session.status.value === 'reauth-required'"
+              @modal-change="isPhotoModalOpen = $event"
             />
           </slot>
         </section>
@@ -139,7 +147,7 @@ watch(
         :open="session.status.value === 'reauth-required'"
         :username="session.username.value ?? ''"
         :login="session.login"
-        :logout="logout"
+        :logout="requestLogout"
       />
     </div>
   </div>
