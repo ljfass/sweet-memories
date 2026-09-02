@@ -1,5 +1,8 @@
 .admin-app {
+  --admin-control-size: 40px;
+
   min-height: 100vh;
+  overflow-x: clip;
   color: #25282c;
   background: #f4f6f3;
   font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -135,6 +138,9 @@
   align-items: center;
   justify-content: center;
   width: auto;
+  height: var(--admin-control-size);
+  min-height: var(--admin-control-size);
+  padding-block: 0;
   gap: 8px;
 }
 
@@ -179,6 +185,12 @@
   padding: 24px 0 56px;
 }
 
+.admin-workspace-content,
+.admin-library,
+.admin-photo-library {
+  min-width: 0;
+}
+
 .admin-toolbar {
   display: flex;
   align-items: center;
@@ -196,12 +208,20 @@
 .admin-toolbar-actions {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 14px;
+}
+
+.admin-toolbar-actions .admin-secondary-button {
+  height: var(--admin-control-size);
+  min-height: var(--admin-control-size);
+  padding-block: 0;
 }
 
 .admin-username {
   color: #5d646a;
   font-size: 0.92rem;
+  overflow-wrap: anywhere;
 }
 
 .admin-library {
@@ -297,6 +317,7 @@
 }
 
 .admin-upload-item {
+  min-width: 0;
   min-height: 88px;
   padding: 12px 0;
   border-top: 1px solid #e0e4df;
@@ -349,7 +370,7 @@
 
 .admin-upload-actions {
   display: flex;
-  min-width: 36px;
+  min-width: var(--admin-control-size);
   justify-content: flex-end;
   gap: 8px;
 }
@@ -378,9 +399,13 @@
   gap: 24px;
 }
 
+.admin-library-layout > * {
+  min-width: 0;
+}
+
 .admin-photo-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 14px;
 }
 
@@ -459,7 +484,7 @@
 .admin-photo-editor-header {
   display: grid;
   align-items: center;
-  grid-template-columns: 36px 1fr 36px;
+  grid-template-columns: var(--admin-control-size) 1fr var(--admin-control-size);
   margin-bottom: 16px;
   gap: 8px;
 }
@@ -472,8 +497,8 @@
 .admin-icon-button,
 .admin-editor-back {
   display: inline-grid;
-  width: 36px;
-  height: 36px;
+  width: var(--admin-control-size);
+  height: var(--admin-control-size);
   padding: 0;
   border: 1px solid #c8ceca;
   border-radius: 6px;
@@ -543,6 +568,17 @@
 .admin-library-error p {
   margin: 0;
   color: #a32943;
+}
+
+.admin-form-message,
+.admin-session-message,
+.admin-upload-selection-message,
+.admin-upload-resume,
+.admin-upload-detail,
+.admin-migration-banner,
+.admin-library-error p,
+.admin-conflict-notice {
+  overflow-wrap: anywhere;
 }
 
 .admin-delete-summary {

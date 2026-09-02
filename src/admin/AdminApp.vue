@@ -75,59 +75,65 @@ watch(
       v-else
       class="admin-workspace"
     >
-      <header
-        class="admin-toolbar"
-        :inert="isPhotoModalOpen"
-        :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
+      <div
+        class="admin-workspace-content"
+        :inert="session.status.value === 'reauth-required'"
+        :aria-hidden="session.status.value === 'reauth-required' ? 'true' : undefined"
       >
-        <div>
-          <p class="admin-eyebrow">
-            甜蜜回忆
-          </p>
-          <h1>相册管理</h1>
-        </div>
-        <div class="admin-toolbar-actions">
-          <span class="admin-username">{{ session.username.value }}</span>
-          <button
-            class="admin-secondary-button"
-            type="button"
-            :disabled="isLoggingOut"
-            @click="logout"
-          >
-            退出登录
-          </button>
-        </div>
-      </header>
-
-      <p
-        class="admin-session-message"
-        aria-live="polite"
-        :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
-      >
-        {{ logoutMessage }}
-      </p>
-
-      <section
-        class="admin-library"
-        data-testid="photo-library"
-        aria-labelledby="photo-library-title"
-      >
-        <h2
-          id="photo-library-title"
-          tabindex="-1"
+        <header
+          class="admin-toolbar"
           :inert="isPhotoModalOpen"
           :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
         >
-          照片库
-        </h2>
-        <slot name="workspace">
-          <PhotoLibrary
-            :library="photoLibrary"
-            :upload-queue="uploadQueue"
-            @mobile-modal-change="isPhotoModalOpen = $event"
-          />
-        </slot>
-      </section>
+          <div>
+            <p class="admin-eyebrow">
+              甜蜜回忆
+            </p>
+            <h1>相册管理</h1>
+          </div>
+          <div class="admin-toolbar-actions">
+            <span class="admin-username">{{ session.username.value }}</span>
+            <button
+              class="admin-secondary-button"
+              type="button"
+              :disabled="isLoggingOut"
+              @click="logout"
+            >
+              退出登录
+            </button>
+          </div>
+        </header>
+
+        <p
+          class="admin-session-message"
+          aria-live="polite"
+          :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
+        >
+          {{ logoutMessage }}
+        </p>
+
+        <section
+          class="admin-library"
+          data-testid="photo-library"
+          aria-labelledby="photo-library-title"
+        >
+          <h2
+            id="photo-library-title"
+            tabindex="-1"
+            :inert="isPhotoModalOpen"
+            :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
+          >
+            照片库
+          </h2>
+          <slot name="workspace">
+            <PhotoLibrary
+              :library="photoLibrary"
+              :upload-queue="uploadQueue"
+              @mobile-modal-change="isPhotoModalOpen = $event"
+            />
+          </slot>
+        </section>
+      </div>
 
       <ReauthDialog
         :open="session.status.value === 'reauth-required'"

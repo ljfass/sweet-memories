@@ -1,0 +1,200 @@
+// @ts-expect-error -- Node test helpers are intentionally outside the browser tsconfig types.
+import { readFileSync } from 'node:fs'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
+import AdminApp from './AdminApp.vue'
+import { AdminApiError } from './api'
+import type {
+  AdminPhoto,
+  AdminPhotoApiClient,
+  AdminSessionState,
+  AdminUploadApiClient,
+} from './types'
+
+function photo(overrides: Partial<AdminPhoto> = {}): AdminPhoto {
+  return {
+    id: 'legacy-photo',
+    title: '第一次散步',
+    alt: '宝宝在公园散步',
+    description: null,
+    capturedDate: null,
+    status: 'migration_pending',
+    version: 1,
+    transform: { rotation: 0, x: 0, y: 0 },
+    sources: {
+      avif: [{ url: '/media/legacy-photo/320.avif', width: 320 }],
+      webp: [{ url: '/media/legacy-photo/320.webp', width: 320 }],
+      jpeg: [{ url: '/media/legacy-photo/320.jpg', width: 320 }],
+      fallback: { url: '/media/legacy-photo/320.jpg', width: 320, height: 240 },
+    },
+    ...overrides,
+  }
+}
+
+function session(initial: 'anonymous' | 'authenticated' = 'authenticated'): AdminSessionState {
+  const status = ref<AdminSessionState['status']['value']>(initial)
+  const username = ref<string | null>(initial === 'authenticated' ? 'alice' : null)
+  const csrfToken = ref<string | null>(initial === 'authenticated' ? 'csrf-token' : null)
+  return {
+    status,
+    username,
+    csrfToken,
+    initialize: vi.fn(async () => undefined),
+    login: vi.fn(async (nextUsername) => {
+      username.value = nextUsername
+      csrfToken.value = 'fresh-csrf-token'
+      status.value = 'authenticated'
+    }),
+    logout: vi.fn(async () => {
+      username.value = null
+      csrfToken.value = null
+      status.value = 'anonymous'
+    }),
+  }
+}
+
+function photoApi(initial: readonly AdminPhoto[]): AdminPhotoApiClient {
+  return {
+    listPhotos: vi.fn(async () => initial),
+    updatePhoto: vi.fn(async (id, input) => ({
+      ...initial.find((candidate) => candidate.id === id)!,
+      title: input.title,
+      description: input.description,
+      capturedDate: input.capturedDate,
+      version: input.version + 1,
+    })),
+    deletePhoto: vi.fn(async () => undefined),
+  }
+}
+
+function idleUploadApi(): AdminUploadApiClient {
+  return { uploadPhoto: vi.fn() }
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('AdminApp integration', () => {
+  const adminCss = readFileSync('src/styles/admin.css', 'utf8')
+
+  it('keeps the migration draft through reauthentication and only saves after an explicit action', async () => {
+    const adminSession = session('anonymous')
+    const legacyPhoto = photo()
+    const photos = photoApi([legacyPhoto])
+    const uploads = idleUploadApi()
+    const wrapper = mount(AdminApp, {
+      attachTo: document.body,
+      props: { session: adminSession, photoApi: photos, uploadApi: uploads },
+    })
+
+    await wrapper.get('input[name="username"]').setValue('alice')
+    await wrapper.get('input[name="password"]').setValue('correct-password')
+    await wrapper.get('.admin-login form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('.admin-migration-banner').text())
+      .toContain('正在准备旧照片，暂未开放上传')
+    expect(wrapper.get('[data-upload]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-photo-id="legacy-photo"] button').trigger('click')
+    const dateInput = wrapper.get('input[name="capturedDate"]')
+    await dateInput.setValue('2026-05-01')
+
+    adminSession.status.value = 'reauth-required'
+    adminSession.csrfToken.value = null
+    await flushPromises()
+
+    expect((wrapper.get('input[name="capturedDate"]').element as HTMLInputElement).value)
+      .toBe('2026-05-01')
+    expect(wrapper.get('.admin-workspace-content').attributes('inert')).toBeDefined()
+    expect(wrapper.get('.admin-workspace-content').attributes('aria-hidden')).toBe('true')
+    expect(photos.updatePhoto).not.toHaveBeenCalled()
+
+    await wrapper.get('[role="dialog"] input[name="password"]').setValue('new-password')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect((wrapper.get('input[name="capturedDate"]').element as HTMLInputElement).value)
+      .toBe('2026-05-01')
+    expect(photos.updatePhoto).not.toHaveBeenCalled()
+    await wrapper.get('.admin-photo-editor form').trigger('submit')
+    await flushPromises()
+
+    expect(photos.updatePhoto).toHaveBeenCalledWith('legacy-photo', {
+      title: '第一次散步',
+      description: null,
+      capturedDate: '2026-05-01',
+      version: 1,
+    }, 'fresh-csrf-token')
+    expect(uploads.uploadPhoto).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('recovers from an unavailable API to a compact empty library without exposing details', async () => {
+    const adminSession = session()
+    const photos = photoApi([])
+    vi.mocked(photos.listPhotos)
+      .mockRejectedValueOnce(new Error('ECONNREFUSED http://127.0.0.1:3000 private stack'))
+      .mockResolvedValueOnce([])
+    const wrapper = mount(AdminApp, {
+      props: { session: adminSession, photoApi: photos, uploadApi: idleUploadApi() },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('暂时无法加载照片，请稍后重试')
+    expect(wrapper.text()).not.toMatch(/ECONNREFUSED|127\.0\.0\.1|private|stack/i)
+    await wrapper.get('.admin-library-error button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('还没有照片')
+    expect(wrapper.find('.admin-library-layout').exists()).toBe(false)
+  })
+
+  it('shows independent network and disk-full failures in the real queue, then logs out cleanly', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((file) => `blob:${(file as File).name}`)
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const adminSession = session()
+    const uploads: AdminUploadApiClient = {
+      uploadPhoto: vi.fn()
+        .mockRejectedValueOnce(new AdminApiError('unavailable', '/srv/private network error'))
+        .mockRejectedValueOnce(new AdminApiError('storage-full', '/srv/private disk detail')),
+    }
+    const wrapper = mount(AdminApp, {
+      props: { session: adminSession, photoApi: photoApi([]), uploadApi: uploads },
+    })
+    await flushPromises()
+    const input = wrapper.get('input[type="file"]')
+    const longName = `${'家庭成长纪念照片'.repeat(14)}.jpg`
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['one'], longName), new File(['two'], '公园散步.jpg')],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('暂时无法上传，请稍后重试')
+    expect(wrapper.text()).toContain('服务器存储空间不足')
+    expect(wrapper.text()).toContain(longName)
+    expect(wrapper.text()).not.toMatch(/\/srv\/private|network error|disk detail/i)
+    expect(uploads.uploadPhoto).toHaveBeenCalledTimes(2)
+
+    await wrapper.get('.admin-toolbar button').trigger('click')
+    await flushPromises()
+
+    expect(adminSession.logout).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.admin-workspace').exists()).toBe(false)
+    expect(wrapper.get('.admin-login')).toBeDefined()
+  })
+
+  it('keeps photo-library toolbar controls at the stable 40px size', () => {
+    const toolbarRule = adminCss.match(
+      /\.admin-library-actions \.admin-primary-button,\s*\.admin-library-actions \.admin-secondary-button\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+
+    expect(toolbarRule).toContain('height: var(--admin-control-size)')
+    expect(toolbarRule).toContain('min-height: var(--admin-control-size)')
+  })
+})
