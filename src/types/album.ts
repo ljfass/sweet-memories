@@ -11,6 +11,8 @@ export interface ResponsiveImageSources {
   webp: string
   jpeg: string
   fallback: string
+  width?: number
+  height?: number
 }
 
 export interface MemoryTransform {

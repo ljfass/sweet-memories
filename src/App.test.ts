@@ -1,8 +1,47 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import type { Ref } from 'vue'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { memories } from './data/memories'
+import type { Memory } from './types/album'
 import App from './App.vue'
+import componentSource from './App.vue?raw'
+
+interface PublicAlbumMock {
+  memories: Ref<readonly Memory[]>
+  retry: ReturnType<typeof vi.fn<() => Promise<void>>>
+  status: Ref<'loading' | 'ready' | 'error'>
+}
+
+const publicAlbum = vi.hoisted(() => ({
+  current: undefined as PublicAlbumMock | undefined,
+}))
+
+vi.mock('./composables/usePublicMemories', async () => {
+  const { ref } = await import('vue')
+  const state: PublicAlbumMock = {
+    memories: ref([]),
+    retry: vi.fn<() => Promise<void>>(),
+    status: ref('ready'),
+  }
+  publicAlbum.current = state
+  return { usePublicMemories: () => state }
+})
+
+function albumState(): PublicAlbumMock {
+  if (!publicAlbum.current) {
+    throw new Error('public album mock is not initialized')
+  }
+  return publicAlbum.current
+}
 
 describe('App', () => {
+  beforeEach(() => {
+    const album = albumState()
+    album.memories.value = memories
+    album.status.value = 'ready'
+    album.retry.mockResolvedValue()
+  })
+
   it('composes the complete baby album experience', () => {
     const wrapper = mount(App)
 
@@ -21,6 +60,42 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="sleep-toggle"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="music-toggle"]').exists()).toBe(true)
     expect(wrapper.find('.ambient-effects').exists()).toBe(true)
+    expect(wrapper.get('.public-album').attributes('aria-busy')).toBe('false')
+  })
+
+  it('reserves a stable photo wall while API photos are loading', () => {
+    const album = albumState()
+    album.memories.value = []
+    album.status.value = 'loading'
+
+    const wrapper = mount(App)
+
+    expect(wrapper.get('.public-album').classes()).toContain('is-loading')
+    expect(wrapper.get('.public-album').attributes('aria-busy')).toBe('true')
+    expect(componentSource).toMatch(/\.public-album\s*\{[^}]*min-height:\s*780px/s)
+    expect(componentSource).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*min-height:\s*1960px/)
+    expect(wrapper.get('[role="status"]').text()).toBe('照片正在加载')
+    expect(wrapper.find('.video-section').exists()).toBe(true)
+    expect(wrapper.find('audio').exists()).toBe(true)
+  })
+
+  it('keeps other media usable and exposes an accessible retry after an API failure', async () => {
+    const album = albumState()
+    album.memories.value = []
+    album.status.value = 'error'
+
+    const wrapper = mount(App)
+    const retry = wrapper.get('button.album-retry')
+
+    expect(wrapper.get('[role="status"] > span').text()).toBe('照片暂时无法加载')
+    expect(retry.attributes('type')).toBe('button')
+    expect(retry.text()).toBe('重试')
+    expect(wrapper.find('.video-section').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="music-toggle"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sleep-toggle"]').exists()).toBe(true)
+
+    await retry.trigger('click')
+    expect(album.retry).toHaveBeenCalledTimes(1)
   })
 
   it('applies sleep mode from the floating control', async () => {

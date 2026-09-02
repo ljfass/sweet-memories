@@ -12,6 +12,8 @@ const memory: Memory = {
     webp: '/photo-1-320.webp 320w, /photo-1-640.webp 640w, /photo-1-960.webp 960w',
     jpeg: '/photo-1-320.jpg 320w, /photo-1-640.jpg 640w, /photo-1-960.jpg 960w',
     fallback: '/photo-1-640.jpg',
+    width: 640,
+    height: 480,
   },
   transform: { rotation: -5, x: 0, y: 10 },
 }
@@ -32,8 +34,8 @@ describe('PhotoCard', () => {
       alt: memory.alt,
       loading: 'lazy',
       decoding: 'async',
-      width: '960',
-      height: '960',
+      width: '640',
+      height: '480',
     })
   })
 

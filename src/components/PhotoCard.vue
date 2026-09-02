@@ -56,8 +56,8 @@ const cardStyle = computed(() => ({
           <img
             :src="memory.sources.fallback"
             :alt="memory.alt"
-            width="960"
-            height="960"
+            :width="memory.sources.width ?? 960"
+            :height="memory.sources.height ?? 960"
             loading="lazy"
             decoding="async"
           >
