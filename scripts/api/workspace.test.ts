@@ -92,7 +92,27 @@ describe('photo API workspace contract', () => {
     expect(source).toContain(
       'await app.listen({ host: options.config.host, port: options.config.port })',
     )
-    expect(source).toContain('void startApi({ config: loadConfig() })')
+
+    const mainStart = source.indexOf('export async function main(')
+    const directExecutionStart = source.indexOf('if (isDirectExecution()) {')
+
+    expect(mainStart).toBeGreaterThan(-1)
+    expect(directExecutionStart).toBeGreaterThan(mainStart)
+
+    const mainSource = source.slice(mainStart, directExecutionStart)
+    const directExecutionSource = source.slice(directExecutionStart)
+
+    expect(mainSource).toMatch(
+      /await\s+dependencies\.startApi\(\{\s*config:\s*dependencies\.loadConfig\(\)\s*\}\)/,
+    )
+    expect(mainSource).toContain('} catch {')
+    expect(mainSource).toContain("dependencies.writeError('图片 API 启动失败\\n')")
+    expect(mainSource).toContain('dependencies.setExitCode(1)')
+    expect(directExecutionSource).toMatch(
+      /if \(isDirectExecution\(\)\) \{\s*void main\(\{/,
+    )
+    expect(directExecutionSource).toContain('loadConfig,')
+    expect(directExecutionSource).toContain('startApi,')
   })
 
   it('runs frontend and API quality commands from the root', () => {
