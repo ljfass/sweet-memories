@@ -1,5 +1,5 @@
 import { getCurrentScope, onScopeDispose, ref } from 'vue'
-import { AdminApi } from './api'
+import { AdminApi, AdminApiError } from './api'
 import type { AdminApiClient, AdminSession, AdminSessionState } from './types'
 
 function clearSession(state: {
@@ -47,16 +47,20 @@ export function useAdminSession(api: AdminApiClient = new AdminApi()): AdminSess
 
   async function logout(): Promise<void> {
     const token = csrfToken.value
-    try {
-      if (token !== null) {
-        await api.logout(token)
-      }
-    } catch {
-      // Local logout must still complete when the server session is unavailable.
-    } finally {
+    if (token === null) {
       clearSession({ username, csrfToken })
       status.value = 'anonymous'
+      return
     }
+    try {
+      await api.logout(token)
+    } catch (error) {
+      if (!(error instanceof AdminApiError) || error.kind !== 'unauthorized') {
+        throw error
+      }
+    }
+    clearSession({ username, csrfToken })
+    status.value = 'anonymous'
   }
 
   return { status, username, csrfToken, initialize, login, logout }

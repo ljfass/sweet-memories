@@ -159,6 +159,14 @@
   padding: 32px 0;
 }
 
+.admin-session-message {
+  min-height: 24px;
+  margin: 12px 0 0;
+  color: #a32943;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
 .admin-library h2 {
   font-size: 1.2rem;
 }

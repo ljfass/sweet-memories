@@ -19,18 +19,33 @@ const username = ref(props.username)
 const password = ref('')
 const message = ref('')
 const isSubmitting = ref(false)
+let focusReturnTarget: HTMLElement | null = null
 
 watch(
   () => props.open,
-  async (isOpen) => {
-    if (!isOpen) {
+  async (isOpen, wasOpen) => {
+    if (isOpen) {
+      if (!wasOpen) {
+        focusReturnTarget = document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null
+      }
+      username.value = props.username
+      password.value = ''
+      message.value = ''
+      await nextTick()
+      usernameInput.value?.focus()
       return
     }
-    username.value = props.username
-    password.value = ''
-    message.value = ''
+    if (!wasOpen) {
+      return
+    }
+    const returnTarget = focusReturnTarget
+    focusReturnTarget = null
     await nextTick()
-    usernameInput.value?.focus()
+    if (returnTarget?.isConnected) {
+      returnTarget.focus()
+    }
   },
   { immediate: true },
 )

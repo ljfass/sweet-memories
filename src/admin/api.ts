@@ -152,6 +152,10 @@ export function safeLoginErrorMessage(error: unknown): string {
   return '登录暂时失败，请稍后重试'
 }
 
+export function safeLogoutErrorMessage(): string {
+  return '暂时无法退出登录，请稍后重试'
+}
+
 export class AdminApi implements AdminApiClient {
   readonly #fetch: typeof globalThis.fetch
   readonly #unauthorizedListeners = new Set<() => void>()

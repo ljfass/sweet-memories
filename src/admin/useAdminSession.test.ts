@@ -96,4 +96,22 @@ describe('useAdminSession', () => {
     expect(state.username.value).toBeNull()
     expect(state.csrfToken.value).toBeNull()
   })
+
+  it.each([
+    new AdminApiError('unavailable', '服务暂时不可用，请稍后重试'),
+    new AdminApiError('forbidden', '请求被拒绝，请刷新页面后重试'),
+    new AdminApiError('invalid-response', '服务器返回了无效数据'),
+    new Error('unexpected internal failure'),
+  ])('preserves authenticated memory and rejects when logout did not reach a valid boundary', async (error) => {
+    const { api } = fakeApi()
+    const state = useAdminSession(api)
+    await state.initialize()
+    vi.mocked(api.logout).mockRejectedValue(error)
+
+    await expect(state.logout()).rejects.toBe(error)
+
+    expect(state.status.value).toBe('authenticated')
+    expect(state.username.value).toBe('alice')
+    expect(state.csrfToken.value).toBe('csrf-token')
+  })
 })

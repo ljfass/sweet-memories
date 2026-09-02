@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import AdminLogin from './AdminLogin.vue'
 import ReauthDialog from './ReauthDialog.vue'
+import { safeLogoutErrorMessage } from './api'
 import type { AdminSessionState } from './types'
 import { useAdminSession } from './useAdminSession'
 
@@ -10,6 +11,23 @@ const props = defineProps<{
 }>()
 
 const session = props.session ?? useAdminSession()
+const logoutMessage = ref('')
+const isLoggingOut = ref(false)
+
+async function logout(): Promise<void> {
+  if (isLoggingOut.value) {
+    return
+  }
+  isLoggingOut.value = true
+  logoutMessage.value = ''
+  try {
+    await session.logout()
+  } catch {
+    logoutMessage.value = safeLogoutErrorMessage()
+  } finally {
+    isLoggingOut.value = false
+  }
+}
 
 onMounted(() => session.initialize())
 </script>
@@ -45,12 +63,20 @@ onMounted(() => session.initialize())
           <button
             class="admin-secondary-button"
             type="button"
-            @click="session.logout"
+            :disabled="isLoggingOut"
+            @click="logout"
           >
             退出登录
           </button>
         </div>
       </header>
+
+      <p
+        class="admin-session-message"
+        aria-live="polite"
+      >
+        {{ logoutMessage }}
+      </p>
 
       <section
         class="admin-library"
@@ -71,7 +97,7 @@ onMounted(() => session.initialize())
         :open="session.status.value === 'reauth-required'"
         :username="session.username.value ?? ''"
         :login="session.login"
-        :logout="session.logout"
+        :logout="logout"
       />
     </div>
   </div>
