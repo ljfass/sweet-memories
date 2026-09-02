@@ -5,8 +5,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PACKAGER="$SCRIPT_DIR/package-api.sh"
 REPOSITORY_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/sweet-memories-package-api-test.XXXXXX")"
+DIST_PATH="$REPOSITORY_ROOT/apps/api/dist"
+ORIGINAL_DIST_SNAPSHOT="$TEST_ROOT/original-dist"
+ORIGINAL_DIST_PRESENT=0
+
+if [[ -e "$DIST_PATH" || -L "$DIST_PATH" ]]; then
+  [[ -d "$DIST_PATH" && ! -L "$DIST_PATH" ]] || {
+    printf 'package-api test failed: initial dist must be an ordinary directory\n' >&2
+    exit 1
+  }
+  cp -a "$DIST_PATH" "$ORIGINAL_DIST_SNAPSHOT"
+  ORIGINAL_DIST_PRESENT=1
+fi
 
 cleanup() {
+  rm -rf -- "$DIST_PATH"
+  if [[ "$ORIGINAL_DIST_PRESENT" -eq 1 ]]; then
+    cp -a "$ORIGINAL_DIST_SNAPSHOT" "$DIST_PATH"
+  fi
   rm -rf -- "$TEST_ROOT"
 }
 trap cleanup EXIT
@@ -39,7 +55,6 @@ assert_archive_member() {
     fail "archive is missing $expected"
 }
 
-DIST_PATH="$REPOSITORY_ROOT/apps/api/dist"
 DIST_PRESENT_BEFORE=0
 DIST_DIGEST_BEFORE=''
 if [[ -e "$DIST_PATH" || -L "$DIST_PATH" ]]; then
@@ -106,21 +121,50 @@ EOF
 cat >"$MOCK_BIN/pnpm" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-if [[ " $* " == *' --dir apps/api build '* ]]; then
-  mkdir -p "$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist"
-  printf 'export const runtime = true;\n' >"$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist/index.js"
-  printf 'export const cli = true;\n' >"$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist/cli.js"
+if [[ " $* " == *' --dir apps/api build '* || " $* " == *' --dir apps/api exec tsc '* ]]; then
+  destination="$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist"
+  previous=''
+  for argument in "$@"; do
+    if [[ "$previous" == '--outDir' ]]; then
+      destination="$argument"
+      break
+    fi
+    previous="$argument"
+  done
+  mkdir -p "$destination"
+  build_id="${PACKAGE_API_RUN_ID:-default-package}"
+  printf 'export const runtime = "%s";\n' "$build_id" >"$destination/index.js"
+  printf 'export const cli = "%s";\n' "$build_id" >"$destination/cli.js"
   printf 'throw new Error("test must be pruned");\n' \
-    >"$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist/index.test.js"
-  printf '{}\n' >"$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist/index.js.map"
-  printf 'export {};\n' >"$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist/index.d.ts"
+    >"$destination/index.test.js"
+  printf '{}\n' >"$destination/index.js.map"
+  printf 'export {};\n' >"$destination/index.d.ts"
+  if [[ -n "${PACKAGE_API_BUILD_BARRIER:-}" ]]; then
+    : >"$PACKAGE_API_BUILD_BARRIER/$build_id.ready"
+    released=0
+    for _ in $(seq 1 1000); do
+      if [[ -e "$PACKAGE_API_BUILD_BARRIER/$build_id.release" ]]; then
+        released=1
+        break
+      fi
+      sleep 0.01
+    done
+    [[ "$released" -eq 1 ]] || {
+      printf 'build barrier timed out: %s\n' "$build_id" >&2
+      exit 1
+    }
+  fi
   exit 0
 fi
 if [[ " $* " == *' deploy '* ]]; then
   destination="${!#}"
   mkdir -p "$destination/dist" "$destination/migrations" \
     "$destination/seed" "$destination/node_modules/@fastify"
-  cp -R "$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist/." "$destination/dist/"
+  printf 'export const runtime = "stale-deploy-dist";\n' >"$destination/dist/index.js"
+  printf 'export const cli = "stale-deploy-dist";\n' >"$destination/dist/cli.js"
+  if [[ -d "$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist" ]]; then
+    cp -R "$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist/." "$destination/dist/"
+  fi
   cp -R "$PACKAGE_API_REPOSITORY_ROOT/apps/api/migrations/." "$destination/migrations/"
   cp -R "$PACKAGE_API_REPOSITORY_ROOT/apps/api/seed/." "$destination/seed/"
   cp "$PACKAGE_API_REPOSITORY_ROOT/apps/api/package.json" "$destination/package.json"
@@ -159,13 +203,35 @@ if [[ "${1:-}" == '--version' ]]; then
   exit 0
 fi
 translated=()
+archive=''
+previous=''
 for argument in "$@"; do
+  if [[ "$previous" == '-czf' ]]; then
+    archive="$argument"
+  fi
   case "$argument" in
     --dereference) translated+=('-h') ;;
     --hard-dereference|--numeric-owner|--quoting-style=escape) ;;
     *) translated+=("$argument") ;;
   esac
+  previous="$argument"
 done
+if [[ -n "$archive" && -n "${PACKAGE_API_ARCHIVE_BARRIER:-}" ]]; then
+  archive_id="${PACKAGE_API_RUN_ID:-default-package}"
+  : >"$PACKAGE_API_ARCHIVE_BARRIER/$archive_id.ready"
+  released=0
+  for _ in $(seq 1 1000); do
+    if [[ -e "$PACKAGE_API_ARCHIVE_BARRIER/$archive_id.release" ]]; then
+      released=1
+      break
+    fi
+    sleep 0.01
+  done
+  [[ "$released" -eq 1 ]] || {
+    printf 'archive barrier timed out: %s\n' "$archive_id" >&2
+    exit 1
+  }
+fi
 exec "$PACKAGE_API_REAL_TAR" "${translated[@]}"
 EOF
 
@@ -218,6 +284,62 @@ run_packager() {
     PACKAGE_API_REPOSITORY_ROOT="$REPOSITORY_ROOT" \
     "$@" \
     bash "$PACKAGER" "$output"
+}
+
+wait_for_path() {
+  local path="$1"
+  local label="$2"
+
+  for _ in $(seq 1 1000); do
+    [[ -e "$path" || -L "$path" ]] && return 0
+    sleep 0.01
+  done
+  fail "timed out waiting for $label"
+}
+
+wait_for_process() {
+  local pid="$1"
+  local result_name="$2"
+  local status
+
+  if wait "$pid"; then
+    status=0
+  else
+    status=$?
+  fi
+  printf -v "$result_name" '%s' "$status"
+}
+
+set_dist_fixture() {
+  local marker="$1"
+
+  rm -rf -- "$DIST_PATH"
+  mkdir -p "$DIST_PATH"
+  printf 'export const runtime = "%s";\n' "$marker" >"$DIST_PATH/index.js"
+  printf 'export const cli = "%s";\n' "$marker" >"$DIST_PATH/cli.js"
+  printf '%s\n' "$marker" >"$DIST_PATH/fixture-marker.txt"
+}
+
+clear_dist_fixture() {
+  rm -rf -- "$DIST_PATH"
+}
+
+dist_fixture_digest() {
+  "$REAL_TAR" -C "$REPOSITORY_ROOT" -cf - apps/api/dist | shasum -a 256
+}
+
+archive_runtime_marker() {
+  local archive="$1"
+
+  "$REAL_TAR" -xOzf "$archive" ./dist/index.js 2>/dev/null ||
+    "$REAL_TAR" -xOzf "$archive" dist/index.js
+}
+
+restore_original_dist() {
+  clear_dist_fixture
+  if [[ "$ORIGINAL_DIST_PRESENT" -eq 1 ]]; then
+    cp -a "$ORIGINAL_DIST_SNAPSHOT" "$DIST_PATH"
+  fi
 }
 
 ALPINE_RUNNER="$TEST_ROOT/alpine-runner"
@@ -310,6 +432,132 @@ assert_fails \
   fail 'unsafe package failure left temporary runner files behind'
 [[ "$(git -C "$REPOSITORY_ROOT" status --porcelain=v1)" == "$STATUS_BEFORE" ]] ||
   fail 'unsafe package failure changed the Git worktree'
+assert_dist_unchanged
+
+PARALLEL_ROOT="$TEST_ROOT/parallel-packages"
+PARALLEL_BARRIER="$PARALLEL_ROOT/build-barrier"
+PARALLEL_RUNNER_ONE="$PARALLEL_ROOT/runner-one"
+PARALLEL_RUNNER_TWO="$PARALLEL_ROOT/runner-two"
+PARALLEL_OUTPUT_ROOT="$PARALLEL_ROOT/output"
+PARALLEL_ARCHIVE_ONE="$PARALLEL_OUTPUT_ROOT/one.tar.gz"
+PARALLEL_ARCHIVE_TWO="$PARALLEL_OUTPUT_ROOT/two.tar.gz"
+mkdir -p "$PARALLEL_BARRIER" "$PARALLEL_RUNNER_ONE" "$PARALLEL_RUNNER_TWO" \
+  "$PARALLEL_OUTPUT_ROOT"
+set_dist_fixture 'pre-existing-dist'
+PARALLEL_DIST_DIGEST="$(dist_fixture_digest)"
+run_packager "$PARALLEL_RUNNER_ONE" "$PARALLEL_ARCHIVE_ONE" \
+  PACKAGE_API_RUN_ID=parallel-one \
+  PACKAGE_API_BUILD_BARRIER="$PARALLEL_BARRIER" \
+  >"$PARALLEL_ROOT/one.log" 2>&1 &
+PARALLEL_PID_ONE=$!
+wait_for_path "$PARALLEL_BARRIER/parallel-one.ready" 'first parallel package build'
+run_packager "$PARALLEL_RUNNER_TWO" "$PARALLEL_ARCHIVE_TWO" \
+  PACKAGE_API_RUN_ID=parallel-two \
+  PACKAGE_API_BUILD_BARRIER="$PARALLEL_BARRIER" \
+  >"$PARALLEL_ROOT/two.log" 2>&1 &
+PARALLEL_PID_TWO=$!
+wait_for_path "$PARALLEL_BARRIER/parallel-two.ready" 'second parallel package build'
+: >"$PARALLEL_BARRIER/parallel-one.release"
+wait_for_process "$PARALLEL_PID_ONE" PARALLEL_STATUS_ONE
+: >"$PARALLEL_BARRIER/parallel-two.release"
+wait_for_process "$PARALLEL_PID_TWO" PARALLEL_STATUS_TWO
+[[ "$PARALLEL_STATUS_ONE" -eq 0 && "$PARALLEL_STATUS_TWO" -eq 0 ]] ||
+  fail "parallel packages failed: one=$PARALLEL_STATUS_ONE ($(cat "$PARALLEL_ROOT/one.log")); two=$PARALLEL_STATUS_TWO ($(cat "$PARALLEL_ROOT/two.log"))"
+[[ -f "$PARALLEL_ARCHIVE_ONE" && -f "$PARALLEL_ARCHIVE_TWO" ]] ||
+  fail 'parallel packages did not both publish archives'
+[[ "$(archive_runtime_marker "$PARALLEL_ARCHIVE_ONE")" == *'parallel-one'* ]] ||
+  fail 'first parallel archive mixed another build output'
+[[ "$(archive_runtime_marker "$PARALLEL_ARCHIVE_TWO")" == *'parallel-two'* ]] ||
+  fail 'second parallel archive mixed another build output'
+[[ -d "$DIST_PATH" && "$(dist_fixture_digest)" == "$PARALLEL_DIST_DIGEST" ]] ||
+  fail 'parallel packages changed the pre-existing repository dist'
+[[ -z "$(find "$PARALLEL_RUNNER_ONE" "$PARALLEL_RUNNER_TWO" -mindepth 1 -print -quit)" ]] ||
+  fail 'parallel packages left owned runner temporary files behind'
+restore_original_dist
+
+BUILD_RACE_ROOT="$TEST_ROOT/package-build-race"
+BUILD_RACE_BARRIER="$BUILD_RACE_ROOT/build-barrier"
+BUILD_RACE_RUNNER="$BUILD_RACE_ROOT/runner"
+BUILD_RACE_OUTPUT="$BUILD_RACE_ROOT/output"
+BUILD_RACE_ARCHIVE="$BUILD_RACE_OUTPUT/photo-api.tar.gz"
+mkdir -p "$BUILD_RACE_BARRIER" "$BUILD_RACE_RUNNER" "$BUILD_RACE_OUTPUT"
+clear_dist_fixture
+run_packager "$BUILD_RACE_RUNNER" "$BUILD_RACE_ARCHIVE" \
+  PACKAGE_API_RUN_ID=isolated-package-build \
+  PACKAGE_API_BUILD_BARRIER="$BUILD_RACE_BARRIER" \
+  >"$BUILD_RACE_ROOT/package.log" 2>&1 &
+BUILD_RACE_PID=$!
+wait_for_path "$BUILD_RACE_BARRIER/isolated-package-build.ready" 'isolated package build'
+PACKAGE_API_REPOSITORY_ROOT="$REPOSITORY_ROOT" \
+  PACKAGE_API_RUN_ID=repository-build \
+  "$MOCK_BIN/pnpm" --dir apps/api build
+: >"$BUILD_RACE_BARRIER/isolated-package-build.release"
+wait_for_process "$BUILD_RACE_PID" BUILD_RACE_STATUS
+[[ "$BUILD_RACE_STATUS" -eq 0 ]] ||
+  fail "package failed beside repository build: $(cat "$BUILD_RACE_ROOT/package.log")"
+[[ -f "$DIST_PATH/index.js" && "$(cat "$DIST_PATH/index.js")" == *'repository-build'* ]] ||
+  fail 'packaging removed or replaced the concurrent repository build'
+[[ "$(archive_runtime_marker "$BUILD_RACE_ARCHIVE")" == *'isolated-package-build'* ]] ||
+  fail 'package archive mixed the concurrent repository build'
+[[ -z "$(find "$BUILD_RACE_RUNNER" -mindepth 1 -print -quit)" ]] ||
+  fail 'package/build race left owned runner temporary files behind'
+restore_original_dist
+
+SAME_OUTPUT_ROOT="$TEST_ROOT/same-output"
+SAME_OUTPUT_BUILD_BARRIER="$SAME_OUTPUT_ROOT/build-barrier"
+SAME_OUTPUT_ARCHIVE_BARRIER="$SAME_OUTPUT_ROOT/archive-barrier"
+SAME_OUTPUT_RUNNER_ONE="$SAME_OUTPUT_ROOT/runner-one"
+SAME_OUTPUT_RUNNER_TWO="$SAME_OUTPUT_ROOT/runner-two"
+SAME_OUTPUT_DIRECTORY="$SAME_OUTPUT_ROOT/output"
+SAME_OUTPUT_ARCHIVE="$SAME_OUTPUT_DIRECTORY/photo-api.tar.gz"
+mkdir -p "$SAME_OUTPUT_BUILD_BARRIER" "$SAME_OUTPUT_ARCHIVE_BARRIER" \
+  "$SAME_OUTPUT_RUNNER_ONE" "$SAME_OUTPUT_RUNNER_TWO" "$SAME_OUTPUT_DIRECTORY"
+set_dist_fixture 'same-output-pre-existing-dist'
+SAME_OUTPUT_DIST_DIGEST="$(dist_fixture_digest)"
+run_packager "$SAME_OUTPUT_RUNNER_ONE" "$SAME_OUTPUT_ARCHIVE" \
+  PACKAGE_API_RUN_ID=same-output-one \
+  PACKAGE_API_BUILD_BARRIER="$SAME_OUTPUT_BUILD_BARRIER" \
+  PACKAGE_API_ARCHIVE_BARRIER="$SAME_OUTPUT_ARCHIVE_BARRIER" \
+  >"$SAME_OUTPUT_ROOT/one.log" 2>&1 &
+SAME_OUTPUT_PID_ONE=$!
+wait_for_path "$SAME_OUTPUT_BUILD_BARRIER/same-output-one.ready" 'first same-output build'
+run_packager "$SAME_OUTPUT_RUNNER_TWO" "$SAME_OUTPUT_ARCHIVE" \
+  PACKAGE_API_RUN_ID=same-output-two \
+  PACKAGE_API_BUILD_BARRIER="$SAME_OUTPUT_BUILD_BARRIER" \
+  PACKAGE_API_ARCHIVE_BARRIER="$SAME_OUTPUT_ARCHIVE_BARRIER" \
+  >"$SAME_OUTPUT_ROOT/two.log" 2>&1 &
+SAME_OUTPUT_PID_TWO=$!
+wait_for_path "$SAME_OUTPUT_BUILD_BARRIER/same-output-two.ready" 'second same-output build'
+: >"$SAME_OUTPUT_BUILD_BARRIER/same-output-one.release"
+wait_for_path "$SAME_OUTPUT_ARCHIVE_BARRIER/same-output-one.ready" 'first private archive'
+: >"$SAME_OUTPUT_BUILD_BARRIER/same-output-two.release"
+wait_for_path "$SAME_OUTPUT_ARCHIVE_BARRIER/same-output-two.ready" 'second private archive'
+: >"$SAME_OUTPUT_ARCHIVE_BARRIER/same-output-one.release"
+: >"$SAME_OUTPUT_ARCHIVE_BARRIER/same-output-two.release"
+wait_for_process "$SAME_OUTPUT_PID_ONE" SAME_OUTPUT_STATUS_ONE
+wait_for_process "$SAME_OUTPUT_PID_TWO" SAME_OUTPUT_STATUS_TWO
+SAME_OUTPUT_SUCCESS_COUNT=0
+[[ "$SAME_OUTPUT_STATUS_ONE" -eq 0 ]] && SAME_OUTPUT_SUCCESS_COUNT=$((SAME_OUTPUT_SUCCESS_COUNT + 1))
+[[ "$SAME_OUTPUT_STATUS_TWO" -eq 0 ]] && SAME_OUTPUT_SUCCESS_COUNT=$((SAME_OUTPUT_SUCCESS_COUNT + 1))
+[[ "$SAME_OUTPUT_SUCCESS_COUNT" -eq 1 ]] ||
+  fail "same output must have exactly one winner: one=$SAME_OUTPUT_STATUS_ONE ($(cat "$SAME_OUTPUT_ROOT/one.log")); two=$SAME_OUTPUT_STATUS_TWO ($(cat "$SAME_OUTPUT_ROOT/two.log"))"
+[[ -f "$SAME_OUTPUT_ARCHIVE" && ! -L "$SAME_OUTPUT_ARCHIVE" ]] ||
+  fail 'same-output winner did not leave one ordinary archive'
+"$REAL_TAR" -tzf "$SAME_OUTPUT_ARCHIVE" >/dev/null ||
+  fail 'same-output winner left a partial archive'
+SAME_OUTPUT_MARKER="$(archive_runtime_marker "$SAME_OUTPUT_ARCHIVE")"
+[[ "$SAME_OUTPUT_MARKER" == *'same-output-one'* || "$SAME_OUTPUT_MARKER" == *'same-output-two'* ]] ||
+  fail 'same-output archive mixed or lost its isolated build'
+[[ -d "$DIST_PATH" && "$(dist_fixture_digest)" == "$SAME_OUTPUT_DIST_DIGEST" ]] ||
+  fail 'same-output race changed the pre-existing repository dist'
+[[ -z "$(find "$SAME_OUTPUT_RUNNER_ONE" "$SAME_OUTPUT_RUNNER_TWO" -mindepth 1 -print -quit)" ]] ||
+  fail 'same-output packages left owned runner temporary files behind'
+[[ "$(find "$SAME_OUTPUT_DIRECTORY" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" == '1' ]] ||
+  fail 'same-output race left a private or partial publication behind'
+restore_original_dist
+
+[[ "$(git -C "$REPOSITORY_ROOT" status --porcelain=v1)" == "$STATUS_BEFORE" ]] ||
+  fail 'concurrency packaging tests changed the Git worktree'
 assert_dist_unchanged
 
 printf 'package-api tests passed\n'

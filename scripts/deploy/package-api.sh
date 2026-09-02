@@ -64,39 +64,35 @@ esac
 WORK_ROOT="$(mktemp -d "$RUNNER_TEMP/sweet-memories-api-package.XXXXXX")"
 DEPLOY_ROOT="$WORK_ROOT/deploy"
 SEED_ROOT="$WORK_ROOT/legacy-seed"
-DIST_BACKUP="$WORK_ROOT/original-dist"
-DIST_PATH="$REPOSITORY_ROOT/apps/api/dist"
-HAD_DIST=0
-ARCHIVE_COMPLETE=0
+ISOLATED_DIST="$WORK_ROOT/dist"
+OUTPUT_WORK_ROOT=''
+PRIVATE_ARCHIVE=''
 
 cleanup() {
   local status=$?
   trap - EXIT HUP INT TERM
-  if [[ -e "$DIST_PATH" || -L "$DIST_PATH" ]]; then
-    rm -rf -- "$DIST_PATH"
+  if [[ -n "$OUTPUT_WORK_ROOT" && -d "$OUTPUT_WORK_ROOT" && ! -L "$OUTPUT_WORK_ROOT" ]]; then
+    rm -rf -- "$OUTPUT_WORK_ROOT"
   fi
-  if [[ "$HAD_DIST" -eq 1 && -d "$DIST_BACKUP" && ! -L "$DIST_BACKUP" ]]; then
-    mv -- "$DIST_BACKUP" "$DIST_PATH"
-  fi
-  rm -rf -- "$WORK_ROOT"
-  if [[ "$ARCHIVE_COMPLETE" -ne 1 && ( -e "$OUTPUT" || -L "$OUTPUT" ) ]]; then
-    rm -f -- "$OUTPUT"
+  if [[ -d "$WORK_ROOT" && ! -L "$WORK_ROOT" ]]; then
+    rm -rf -- "$WORK_ROOT"
   fi
   exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-if [[ -e "$DIST_PATH" || -L "$DIST_PATH" ]]; then
-  [[ -d "$DIST_PATH" && ! -L "$DIST_PATH" ]] ||
-    die 'apps/api/dist must be an ordinary directory when present'
-  mv -- "$DIST_PATH" "$DIST_BACKUP"
-  HAD_DIST=1
-fi
+OUTPUT_WORK_ROOT="$(mktemp -d "$OUTPUT_PARENT/.sweet-memories-api-output.XXXXXX")"
+PRIVATE_ARCHIVE="$OUTPUT_WORK_ROOT/package.tar.gz"
 
-pnpm --dir apps/api build
-[[ -d "$DIST_PATH" && ! -L "$DIST_PATH" ]] || die 'API build did not create dist'
+pnpm --dir apps/api exec tsc -p tsconfig.json --outDir "$ISOLATED_DIST"
+[[ -d "$ISOLATED_DIST" && ! -L "$ISOLATED_DIST" ]] ||
+  die 'API build did not create isolated dist'
 pnpm --filter @sweet-memories/api deploy --prod "$DEPLOY_ROOT"
+if [[ -e "$DEPLOY_ROOT/dist" || -L "$DEPLOY_ROOT/dist" ]]; then
+  rm -rf -- "$DEPLOY_ROOT/dist"
+fi
+cp -a "$ISOLATED_DIST" "$DEPLOY_ROOT/dist"
 
 mkdir "$SEED_ROOT"
 node scripts/api/prepare-legacy-seed.mjs --output "$SEED_ROOT"
@@ -215,13 +211,14 @@ const database = new Database(':memory:');
 database.close();
 NODE
 
-tar --dereference --hard-dereference -C "$DEPLOY_ROOT" -czf "$OUTPUT" .
-[[ -f "$OUTPUT" && ! -L "$OUTPUT" ]] || die 'runtime archive was not created'
+tar --dereference --hard-dereference -C "$DEPLOY_ROOT" -czf "$PRIVATE_ARCHIVE" .
+[[ -f "$PRIVATE_ARCHIVE" && ! -L "$PRIVATE_ARCHIVE" ]] ||
+  die 'runtime archive was not created'
 
 MEMBER_LIST="$WORK_ROOT/archive-members.txt"
 TYPE_LIST="$WORK_ROOT/archive-types.txt"
-tar -tzf "$OUTPUT" >"$MEMBER_LIST"
-tar --numeric-owner --quoting-style=escape -tvzf "$OUTPUT" >"$TYPE_LIST"
+tar -tzf "$PRIVATE_ARCHIVE" >"$MEMBER_LIST"
+tar --numeric-owner --quoting-style=escape -tvzf "$PRIVATE_ARCHIVE" >"$TYPE_LIST"
 
 while IFS= read -r member; do
   normalized="$member"
@@ -252,5 +249,7 @@ if grep -Eq '^(\./)?(database|media)(/|$)' "$MEMBER_LIST"; then
   die 'archive contains persistent application data'
 fi
 
-ARCHIVE_COMPLETE=1
+ln -- "$PRIVATE_ARCHIVE" "$OUTPUT" 2>/dev/null ||
+  die 'output path must not already exist'
+[[ -f "$OUTPUT" && ! -L "$OUTPUT" ]] || die 'runtime archive was not published'
 printf 'photo API package created: %s\n' "$OUTPUT"
