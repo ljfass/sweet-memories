@@ -22,6 +22,17 @@ const photo: AdminPhoto = {
     fallback: { url: '/media/photo-1/320.jpg', width: 320, height: 240 },
   },
 }
+const secondPhoto: AdminPhoto = {
+  ...photo,
+  id: 'photo-2',
+  title: '第二次散步',
+  sources: {
+    avif: [{ url: '/media/photo-2/320.avif', width: 320 }],
+    webp: [{ url: '/media/photo-2/320.webp', width: 320 }],
+    jpeg: [{ url: '/media/photo-2/320.jpg', width: 320 }],
+    fallback: { url: '/media/photo-2/320.jpg', width: 320, height: 240 },
+  },
+}
 function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState {
   const draft: PhotoDraft = { title: photo.title, description: '', capturedDate: '2026-05-01' }
   const selectedId = ref<string | null>(null)
@@ -49,6 +60,28 @@ function useViewport(matches: boolean): void {
     removeListener: vi.fn(),
     dispatchEvent: vi.fn(() => true),
   })))
+}
+
+function deletableLibrary(photos: readonly AdminPhoto[]): PhotoLibraryState {
+  const state = library({ photos: ref(photos) })
+  vi.mocked(state.remove).mockImplementation(async (id) => {
+    state.photos.value = state.photos.value.filter((candidate) => candidate.id !== id)
+    state.select(null)
+    return true
+  })
+  return state
+}
+
+async function deleteSelectedPhoto(
+  wrapper: ReturnType<typeof mount>,
+  id: string,
+): Promise<void> {
+  await wrapper.get(`[data-photo-id="${id}"] button`).trigger('click')
+  await nextTick()
+  await wrapper.get('[data-open-delete]').trigger('click')
+  await nextTick()
+  await wrapper.get('[data-confirm-delete]').trigger('click')
+  await flushPromises()
 }
 
 afterEach(() => {
@@ -153,6 +186,113 @@ describe('PhotoLibrary', () => {
     expect(wrapper.get('.admin-photo-editor').attributes()).not.toHaveProperty('aria-modal')
     expect(wrapper.get('.admin-photo-editor').attributes()).not.toHaveProperty('role')
     expect(wrapper.get('.admin-photo-grid').attributes()).not.toHaveProperty('inert')
+  })
+
+  it('traps mobile Tab navigation and isolates the library controls behind the editor', async () => {
+    useViewport(true)
+    const wrapper = mount(PhotoLibrary, {
+      attachTo: document.body,
+      props: { library: library() },
+    })
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+    const editor = wrapper.get('.admin-photo-editor')
+    const focusable = editor.findAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled)')
+    const first = focusable[0]!
+    const last = focusable.at(-1)!
+
+    expect(document.activeElement).toBe(editor.element)
+    await editor.trigger('keydown', { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last.element)
+    ;(last.element as HTMLElement).focus()
+    await last.trigger('keydown', { key: 'Tab' })
+    expect(document.activeElement).toBe(first.element)
+    ;(first.element as HTMLElement).focus()
+    await first.trigger('keydown', { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last.element)
+    expect(wrapper.get('.admin-library-actions').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    wrapper.unmount()
+  })
+
+  it('isolates the administrator toolbar while the mobile editor is modal', async () => {
+    useViewport(true)
+    const status = ref<AdminSessionState['status']['value']>('authenticated')
+    const session: AdminSessionState = {
+      status,
+      username: ref('alice'),
+      csrfToken: ref('csrf-token'),
+      initialize: vi.fn(async () => undefined),
+      login: vi.fn(async () => undefined),
+      logout: vi.fn(async () => undefined),
+    }
+    const api: AdminPhotoApiClient = {
+      listPhotos: vi.fn(async () => [photo]),
+      updatePhoto: vi.fn(),
+      deletePhoto: vi.fn(),
+    }
+    const wrapper = mount(AdminApp, { attachTo: document.body, props: { session, photoApi: api } })
+    await flushPromises()
+
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+
+    expect(wrapper.get('.admin-toolbar').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    expect(wrapper.get('#photo-library-title').attributes()).toMatchObject({
+      inert: '',
+      'aria-hidden': 'true',
+    })
+    wrapper.unmount()
+  })
+
+  it('focuses the next card after deleting the selected photo', async () => {
+    useViewport(false)
+    const wrapper = mount(PhotoLibrary, {
+      attachTo: document.body,
+      props: { library: deletableLibrary([photo, secondPhoto]) },
+    })
+
+    await deleteSelectedPhoto(wrapper, 'photo-1')
+
+    expect(document.activeElement).toBe(wrapper.get('[data-photo-id="photo-2"] button').element)
+    wrapper.unmount()
+  })
+
+  it('focuses the previous card when deleting the final card in the row', async () => {
+    useViewport(false)
+    const wrapper = mount(PhotoLibrary, {
+      attachTo: document.body,
+      props: { library: deletableLibrary([photo, secondPhoto]) },
+    })
+
+    await deleteSelectedPhoto(wrapper, 'photo-2')
+
+    expect(document.activeElement).toBe(wrapper.get('[data-photo-id="photo-1"] button').element)
+    wrapper.unmount()
+  })
+
+  it('focuses the library heading after deleting the only photo', async () => {
+    useViewport(false)
+    const heading = document.createElement('h2')
+    heading.id = 'photo-library-title'
+    heading.tabIndex = -1
+    heading.textContent = '照片库'
+    document.body.append(heading)
+    const wrapper = mount(PhotoLibrary, {
+      attachTo: document.body,
+      props: { library: deletableLibrary([photo]) },
+    })
+
+    await deleteSelectedPhoto(wrapper, 'photo-1')
+
+    expect(document.activeElement).toBe(heading)
+    wrapper.unmount()
+    heading.remove()
   })
 
 })

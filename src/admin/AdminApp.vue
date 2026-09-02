@@ -18,6 +18,7 @@ const session = props.session ?? useAdminSession(defaultApi)
 const photoLibrary = usePhotoLibrary(props.photoApi ?? defaultApi, session.csrfToken)
 const logoutMessage = ref('')
 const isLoggingOut = ref(false)
+const isPhotoModalOpen = ref(false)
 
 async function logout(): Promise<void> {
   if (isLoggingOut.value) {
@@ -66,7 +67,11 @@ watch(
       v-else
       class="admin-workspace"
     >
-      <header class="admin-toolbar">
+      <header
+        class="admin-toolbar"
+        :inert="isPhotoModalOpen"
+        :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
+      >
         <div>
           <p class="admin-eyebrow">
             甜蜜回忆
@@ -89,6 +94,7 @@ watch(
       <p
         class="admin-session-message"
         aria-live="polite"
+        :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
       >
         {{ logoutMessage }}
       </p>
@@ -98,11 +104,19 @@ watch(
         data-testid="photo-library"
         aria-labelledby="photo-library-title"
       >
-        <h2 id="photo-library-title">
+        <h2
+          id="photo-library-title"
+          tabindex="-1"
+          :inert="isPhotoModalOpen"
+          :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
+        >
           照片库
         </h2>
         <slot name="workspace">
-          <PhotoLibrary :library="photoLibrary" />
+          <PhotoLibrary
+            :library="photoLibrary"
+            @mobile-modal-change="isPhotoModalOpen = $event"
+          />
         </slot>
       </section>
 

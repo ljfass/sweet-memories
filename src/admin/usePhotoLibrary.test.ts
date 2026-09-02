@@ -247,4 +247,20 @@ describe('usePhotoLibrary', () => {
     expect(library.photos.value[0]).toMatchObject({ title: '已保存的新标题', version: 2 })
     expect(library.isDirty('photo-1')).toBe(false)
   })
+
+  it('does not let a load started before successful deletion resurrect the photo', async () => {
+    const refresh = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => refresh.promise)
+
+    const refreshing = library.refresh()
+    await expect(library.remove('photo-1')).resolves.toBe(true)
+    refresh.resolve([photo()])
+    await refreshing
+
+    expect(library.photos.value).toEqual([])
+    expect(library.status.value).toBe('ready')
+  })
 })

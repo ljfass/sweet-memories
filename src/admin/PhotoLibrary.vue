@@ -9,7 +9,12 @@ const props = defineProps<{
   library: PhotoLibraryState
 }>()
 
+const emit = defineEmits<{
+  'mobile-modal-change': [open: boolean]
+}>()
+
 const deleteCandidate = ref<AdminPhoto | null>(null)
+const deleteCandidateIndex = ref<number | null>(null)
 const libraryRoot = ref<HTMLElement | null>(null)
 const editorReturnTarget = ref<HTMLElement | null>(null)
 const mobileMedia = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -25,9 +30,13 @@ function updateViewport(event: MediaQueryListEvent): void {
 }
 
 onMounted(() => mobileMedia?.addEventListener('change', updateViewport))
-onBeforeUnmount(() => mobileMedia?.removeEventListener('change', updateViewport))
+onBeforeUnmount(() => {
+  mobileMedia?.removeEventListener('change', updateViewport)
+  if (isMobileEditorOpen.value) emit('mobile-modal-change', false)
+})
 
 watch(isMobileEditorOpen, async (open) => {
+  emit('mobile-modal-change', open)
   if (!open) return
   await nextTick()
   libraryRoot.value?.querySelector<HTMLElement>('.admin-photo-editor')?.focus()
@@ -55,6 +64,67 @@ async function closeEditor(): Promise<void> {
   await nextTick()
   if (returnTarget?.isConnected) returnTarget.focus()
 }
+
+function openDelete(photo: AdminPhoto): void {
+  deleteCandidateIndex.value = props.library.photos.value.findIndex(
+    (candidate) => candidate.id === photo.id,
+  )
+  deleteCandidate.value = photo
+}
+
+function cancelDelete(): void {
+  deleteCandidate.value = null
+  deleteCandidateIndex.value = null
+}
+
+async function handleDeleted(): Promise<void> {
+  const deletedIndex = deleteCandidateIndex.value ?? 0
+  deleteCandidate.value = null
+  deleteCandidateIndex.value = null
+  editorReturnTarget.value = null
+  await nextTick()
+  const cards = Array.from(
+    libraryRoot.value?.querySelectorAll<HTMLElement>('.admin-photo-card button') ?? [],
+  )
+  const focusTarget = cards[deletedIndex]
+    ?? cards[deletedIndex - 1]
+    ?? document.getElementById('photo-library-title')
+  focusTarget?.focus()
+}
+
+function editorFocusableElements(): HTMLElement[] {
+  const editor = libraryRoot.value?.querySelector<HTMLElement>('.admin-photo-editor')
+  if (editor === null || editor === undefined) return []
+  return Array.from(editor.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), '
+    + 'select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+  ))
+}
+
+function handleMobileEditorKeydown(event: KeyboardEvent): void {
+  if (!isMobileEditorOpen.value || event.key !== 'Tab') return
+  const focusable = editorFocusableElements()
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (first === undefined || last === undefined) {
+    event.preventDefault()
+    return
+  }
+  const editor = libraryRoot.value?.querySelector<HTMLElement>('.admin-photo-editor')
+  if (document.activeElement === editor || !editor?.contains(document.activeElement)) {
+    event.preventDefault()
+    const focusTarget = event.shiftKey ? last : first
+    focusTarget.focus()
+    return
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
 </script>
 
 <template>
@@ -62,7 +132,11 @@ async function closeEditor(): Promise<void> {
     ref="libraryRoot"
     class="admin-photo-library"
   >
-    <div class="admin-library-actions">
+    <div
+      class="admin-library-actions"
+      :inert="isMobileEditorOpen"
+      :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
+    >
       <button
         class="admin-primary-button admin-upload-button"
         type="button"
@@ -184,8 +258,9 @@ async function closeEditor(): Promise<void> {
         @update-draft="updateDraft"
         @save="library.save(selectedPhoto.id)"
         @load-latest="library.loadLatest(selectedPhoto.id)"
-        @open-delete="deleteCandidate = selectedPhoto"
+        @open-delete="openDelete(selectedPhoto)"
         @close="closeEditor"
+        @keydown="handleMobileEditorKeydown"
       />
       <aside
         v-else
@@ -202,8 +277,8 @@ async function closeEditor(): Promise<void> {
       :photo="deleteCandidate"
       :confirm="() => library.remove(deleteCandidate!.id)"
       :message="library.messageFor(deleteCandidate.id)"
-      @cancel="deleteCandidate = null"
-      @deleted="deleteCandidate = null"
+      @cancel="cancelDelete"
+      @deleted="handleDeleted"
     />
   </div>
 </template>

@@ -239,6 +239,8 @@ export function usePhotoLibrary(
     messages.delete(id)
     try {
       await api.deletePhoto(id, photo.version, token)
+      loadGeneration += 1
+      status.value = 'ready'
       photos.value = photos.value.filter((candidate) => candidate.id !== id)
       drafts.delete(id)
       draftBaseVersions.delete(id)
