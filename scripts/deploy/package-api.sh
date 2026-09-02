@@ -24,11 +24,29 @@ case "$OUTPUT" in
   "$REPOSITORY_ROOT"/*) die 'output must be outside the repository' ;;
 esac
 
+PLATFORM_REQUIREMENT='requires Ubuntu 24.04 x64 with Node.js 24'
 [[ "$(uname -s)" == 'Linux' && "$(uname -m)" == 'x86_64' ]] ||
-  die 'requires Ubuntu Linux x64 with Node.js 24'
+  die "$PLATFORM_REQUIREMENT"
+if ! OS_RELEASE="$(cat /etc/os-release 2>/dev/null)"; then
+  die "$PLATFORM_REQUIREMENT"
+fi
+OS_ID=''
+OS_VERSION_ID=''
+while IFS='=' read -r key value; do
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  case "$key" in
+    ID) OS_ID="$value" ;;
+    VERSION_ID) OS_VERSION_ID="$value" ;;
+  esac
+done <<<"$OS_RELEASE"
+[[ "$OS_ID" == 'ubuntu' && "$OS_VERSION_ID" == '24.04' ]] ||
+  die "$PLATFORM_REQUIREMENT"
 NODE_VERSION="$(node --version 2>/dev/null || true)"
 [[ "$NODE_VERSION" =~ ^v24\.[0-9]+\.[0-9]+$ ]] ||
-  die 'requires Ubuntu Linux x64 with Node.js 24'
+  die "$PLATFORM_REQUIREMENT"
 tar --version 2>/dev/null | head -n 1 | grep -q 'GNU tar' ||
   die 'GNU tar is required'
 

@@ -68,7 +68,7 @@ REFUSAL_ROOT="$TEST_ROOT/refusal"
 mkdir "$REFUSAL_ROOT"
 assert_fails \
   'unsupported local platform' \
-  'requires Ubuntu Linux x64 with Node.js 24' \
+  'requires Ubuntu 24.04 x64 with Node.js 24' \
   env RUNNER_TEMP="$REFUSAL_ROOT" \
   bash "$PACKAGER" "$REFUSAL_ROOT/api.tar.gz"
 [[ ! -e "$REFUSAL_ROOT/api.tar.gz" ]] ||
@@ -81,6 +81,7 @@ REAL_NODE="$(command -v node)"
 REAL_PNPM="$(command -v pnpm)"
 REAL_TAR="$(command -v tar)"
 REAL_REALPATH="$(command -v realpath)"
+REAL_CAT="$(command -v cat)"
 MOCK_BIN="$TEST_ROOT/bin"
 mkdir "$MOCK_BIN"
 
@@ -174,8 +175,32 @@ set -Eeuo pipefail
 if [[ "${1:-}" == '-e' ]]; then shift; fi
 exec "$PACKAGE_API_REAL_REALPATH" "$@"
 EOF
+
+cat >"$MOCK_BIN/cat" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "$#" -eq 1 && "$1" == '/etc/os-release' ]]; then
+  case "${PACKAGE_API_OS_RELEASE_FIXTURE:-ubuntu}" in
+    ubuntu)
+      printf 'ID=ubuntu\nVERSION_ID="24.04"\n'
+      ;;
+    alpine)
+      printf 'ID=alpine\nVERSION_ID=3.22\n'
+      ;;
+    ubuntu-22)
+      printf 'ID=ubuntu\nVERSION_ID="22.04"\n'
+      ;;
+    *)
+      printf 'invalid os-release fixture\n' >&2
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+exec "$PACKAGE_API_REAL_CAT" "$@"
+EOF
 chmod +x "$MOCK_BIN/uname" "$MOCK_BIN/node" "$MOCK_BIN/pnpm" \
-  "$MOCK_BIN/tar" "$MOCK_BIN/realpath"
+  "$MOCK_BIN/tar" "$MOCK_BIN/realpath" "$MOCK_BIN/cat"
 
 run_packager() {
   local runner_temp="$1"
@@ -189,10 +214,45 @@ run_packager() {
     PACKAGE_API_REAL_PNPM="$REAL_PNPM" \
     PACKAGE_API_REAL_TAR="$REAL_TAR" \
     PACKAGE_API_REAL_REALPATH="$REAL_REALPATH" \
+    PACKAGE_API_REAL_CAT="$REAL_CAT" \
     PACKAGE_API_REPOSITORY_ROOT="$REPOSITORY_ROOT" \
     "$@" \
     bash "$PACKAGER" "$output"
 }
+
+ALPINE_RUNNER="$TEST_ROOT/alpine-runner"
+ALPINE_OUTPUT_ROOT="$TEST_ROOT/alpine-output"
+mkdir "$ALPINE_RUNNER" "$ALPINE_OUTPUT_ROOT"
+ALPINE_ARCHIVE="$ALPINE_OUTPUT_ROOT/photo-api.tar.gz"
+assert_fails \
+  'non-Ubuntu Linux platform' \
+  'requires Ubuntu 24.04 x64 with Node.js 24' \
+  run_packager "$ALPINE_RUNNER" "$ALPINE_ARCHIVE" \
+  PACKAGE_API_OS_RELEASE_FIXTURE=alpine
+[[ ! -e "$ALPINE_ARCHIVE" ]] ||
+  fail 'non-Ubuntu refusal left an archive behind'
+[[ -z "$(find "$ALPINE_RUNNER" -mindepth 1 -print -quit)" ]] ||
+  fail 'non-Ubuntu refusal left temporary runner files behind'
+[[ "$(git -C "$REPOSITORY_ROOT" status --porcelain=v1)" == "$STATUS_BEFORE" ]] ||
+  fail 'non-Ubuntu refusal changed the Git worktree'
+assert_dist_unchanged
+
+OLD_UBUNTU_RUNNER="$TEST_ROOT/old-ubuntu-runner"
+OLD_UBUNTU_OUTPUT_ROOT="$TEST_ROOT/old-ubuntu-output"
+mkdir "$OLD_UBUNTU_RUNNER" "$OLD_UBUNTU_OUTPUT_ROOT"
+OLD_UBUNTU_ARCHIVE="$OLD_UBUNTU_OUTPUT_ROOT/photo-api.tar.gz"
+assert_fails \
+  'unsupported Ubuntu version' \
+  'requires Ubuntu 24.04 x64 with Node.js 24' \
+  run_packager "$OLD_UBUNTU_RUNNER" "$OLD_UBUNTU_ARCHIVE" \
+  PACKAGE_API_OS_RELEASE_FIXTURE=ubuntu-22
+[[ ! -e "$OLD_UBUNTU_ARCHIVE" ]] ||
+  fail 'unsupported Ubuntu version left an archive behind'
+[[ -z "$(find "$OLD_UBUNTU_RUNNER" -mindepth 1 -print -quit)" ]] ||
+  fail 'unsupported Ubuntu version left temporary runner files behind'
+[[ "$(git -C "$REPOSITORY_ROOT" status --porcelain=v1)" == "$STATUS_BEFORE" ]] ||
+  fail 'unsupported Ubuntu version changed the Git worktree'
+assert_dist_unchanged
 
 RUNNER_ROOT="$TEST_ROOT/runner"
 OUTPUT_ROOT="$TEST_ROOT/output"

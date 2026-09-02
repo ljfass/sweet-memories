@@ -247,7 +247,7 @@ describe('startApi', () => {
     await runtime.shutdown();
   });
 
-  it('keeps SQLite open after the 60-second grace until the active queue job settles', async () => {
+  it('finishes shutdown after one 60-second grace with queue and maintenance still active', async () => {
     const config = testConfig();
     const order: string[] = [];
     const db = fakeDatabase(order);
@@ -262,9 +262,14 @@ describe('startApi', () => {
       clearTimeout: vi.fn(),
     };
     const queue = new ProcessingQueue();
-    let finishJob = (): void => undefined;
-    const job = queue.run(() => new Promise<void>((resolveJob) => {
-      finishJob = resolveJob;
+    let rejectJob: (error: Error) => void = () => undefined;
+    const job = queue.run(() => new Promise<void>((_resolveJob, reject) => {
+      rejectJob = reject;
+    }));
+    void job.catch(() => undefined);
+    let rejectMaintenance: (error: Error) => void = () => undefined;
+    const run = vi.fn<MaintenanceService['run']>(() => new Promise((_resolveRun, reject) => {
+      rejectMaintenance = reject;
     }));
     const runtime = await startApi({
       config,
@@ -275,10 +280,16 @@ describe('startApi', () => {
       runMigrations: () => undefined,
       verifyHeifTool: async () => undefined,
       createSessionService: async () => sessionService(),
+      createMaintenanceService: () => ({ run }),
       createApp: () => application.app,
     });
+    intervals[0]?.();
+    expect(run).toHaveBeenCalledOnce();
 
-    signals.emit('SIGTERM');
+    let shutdownFinished = false;
+    const shutdown = runtime.shutdown().then(() => {
+      shutdownFinished = true;
+    });
     await Promise.resolve();
     expect(timeouts).toHaveLength(1);
     timeouts[0]?.();
@@ -286,14 +297,19 @@ describe('startApi', () => {
       await Promise.resolve();
     }
 
+    expect(shutdownFinished).toBe(true);
     expect(application.close).toHaveBeenCalledOnce();
-    expect(db.close).not.toHaveBeenCalled();
-    expect(intervals.length).toBeGreaterThanOrEqual(3);
-    finishJob();
-    await job;
-    intervals.at(-1)?.();
-    await runtime.closed;
     expect(db.close).toHaveBeenCalledOnce();
+    expect(intervals).toHaveLength(2);
+    expect(application.app.server.closeAllConnections).toHaveBeenCalledOnce();
+    expect(order.indexOf('app.close')).toBeLessThan(order.indexOf('db.close'));
+    await shutdown;
+    await runtime.closed;
+
+    rejectJob(new Error('late queue failure'));
+    rejectMaintenance(new Error('late maintenance failure'));
+    await Promise.allSettled([job]);
+    await Promise.resolve();
   });
 
   it('waits for in-flight maintenance before closing the shared database', async () => {
@@ -331,12 +347,14 @@ describe('startApi', () => {
     for (let turn = 0; turn < 10; turn += 1) {
       await Promise.resolve();
     }
-    expect(application.close).toHaveBeenCalledOnce();
+    expect(application.close).not.toHaveBeenCalled();
     expect(db.close).not.toHaveBeenCalled();
 
     finishMaintenance();
     await shutdown;
+    expect(application.close).toHaveBeenCalledOnce();
     expect(db.close).toHaveBeenCalledOnce();
+    expect(order.indexOf('app.close')).toBeLessThan(order.indexOf('db.close'));
   });
 
   it('unwinds app, database and maintenance timer when listen fails', async () => {

@@ -293,49 +293,72 @@ function defaultVerifyHeifTool(executable: string): Promise<void> {
   });
 }
 
-async function waitForQueue(
-  queue: ProcessingQueue,
-  timers: ApiTimers,
-): Promise<boolean> {
-  if (queue.activeCount === 0 && queue.pendingCount === 0) {
-    return true;
-  }
-  return new Promise((resolveDrain) => {
-    let settled = false;
-    const handles: { interval?: unknown; timeout?: unknown } = {};
-    const finish = (drained: boolean) => {
-      if (settled) return;
-      settled = true;
-      if (handles.interval !== undefined) {
-        timers.clearInterval(handles.interval);
-      }
-      if (handles.timeout !== undefined) {
-        timers.clearTimeout(handles.timeout);
-      }
-      resolveDrain(drained);
-    };
-    handles.interval = timers.setInterval(() => {
-      if (queue.activeCount === 0 && queue.pendingCount === 0) {
-        finish(true);
-      }
-    }, QUEUE_POLL_INTERVAL_MS);
-    handles.timeout = timers.setTimeout(() => finish(false), QUEUE_DRAIN_TIMEOUT_MS);
-  });
+interface QueueDrainWait {
+  readonly promise: Promise<void>;
+  cancel(): void;
 }
 
-async function waitForQueueCompletely(
+function waitForQueueDrain(
   queue: ProcessingQueue,
   timers: ApiTimers,
-): Promise<void> {
-  if (queue.activeCount === 0 && queue.pendingCount === 0) return;
-  await new Promise<void>((resolveDrain) => {
-    const interval = timers.setInterval(() => {
-      if (queue.activeCount === 0 && queue.pendingCount === 0) {
-        timers.clearInterval(interval);
-        resolveDrain();
-      }
-    }, QUEUE_POLL_INTERVAL_MS);
+): QueueDrainWait {
+  if (queue.activeCount === 0 && queue.pendingCount === 0) {
+    return { promise: Promise.resolve(), cancel: () => undefined };
+  }
+  let resolveDrain = (): void => undefined;
+  let settled = false;
+  const handles: { interval?: unknown } = {};
+  const promise = new Promise<void>((resolvePromise) => {
+    resolveDrain = resolvePromise;
   });
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    if (handles.interval !== undefined) {
+      timers.clearInterval(handles.interval);
+    }
+    resolveDrain();
+  };
+  handles.interval = timers.setInterval(() => {
+    if (queue.activeCount === 0 && queue.pendingCount === 0) {
+      finish();
+    }
+  }, QUEUE_POLL_INTERVAL_MS);
+  return { promise, cancel: finish };
+}
+
+async function waitForShutdownGrace(
+  queue: ProcessingQueue,
+  maintenanceTask: Promise<void> | undefined,
+  timers: ApiTimers,
+): Promise<boolean> {
+  if (
+    queue.activeCount === 0
+    && queue.pendingCount === 0
+    && maintenanceTask === undefined
+  ) {
+    return true;
+  }
+  const queueDrain = waitForQueueDrain(queue, timers);
+  let timeout: unknown;
+  const expired = new Promise<boolean>((resolveExpiration) => {
+    timeout = timers.setTimeout(
+      () => resolveExpiration(false),
+      QUEUE_DRAIN_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([
+      Promise.all([
+        queueDrain.promise,
+        maintenanceTask ?? Promise.resolve(),
+      ]).then(() => true),
+      expired,
+    ]);
+  } finally {
+    queueDrain.cancel();
+    if (timeout !== undefined) timers.clearTimeout(timeout);
+  }
 }
 
 function stopAccepting(app: FastifyInstance): Promise<void> {
@@ -407,7 +430,7 @@ export async function startApi(options: StartApiOptions): Promise<ApiRuntime> {
         failure = error;
       }
     }
-    const drained = await waitForQueue(queue, timers);
+    const drained = await waitForShutdownGrace(queue, maintenanceTask, timers);
     if (!drained && app !== undefined && 'closeAllConnections' in app.server) {
       app.server.closeAllConnections();
     }
@@ -424,14 +447,6 @@ export async function startApi(options: StartApiOptions): Promise<ApiRuntime> {
       } catch (error) {
         failure ??= error;
       }
-    }
-    if (!drained) {
-      // The 60-second grace bounds connection draining. Keep SQLite alive until
-      // the already-running job settles so it can compensate media safely.
-      await waitForQueueCompletely(queue, timers);
-    }
-    if (maintenanceTask !== undefined) {
-      await maintenanceTask;
     }
     if (db !== undefined) {
       try {
