@@ -51,7 +51,7 @@ assert_archive_member() {
   local archive="$1"
   local expected="$2"
 
-  tar -tzf "$archive" | sed 's#^\./##' | grep -Fxq "$expected" ||
+  tar -tzf "$archive" | sed 's#^\./##' | grep -Fx "$expected" >/dev/null ||
     fail "archive is missing $expected"
 }
 
@@ -422,7 +422,7 @@ tar -tzf "$ARCHIVE" | sed 's#^\./##' >"$MEMBERS"
 if grep -Eq '^(src|database|media)(/|$)|^dist/.*(\.test\.js|\.ts|\.map)$|^\.env' "$MEMBERS"; then
   fail 'archive contains forbidden application files'
 fi
-if tar -tvzf "$ARCHIVE" | grep -Ev '^[-d]' | grep -q .; then
+if tar -tvzf "$ARCHIVE" | grep -Ev '^[-d]' | grep . >/dev/null; then
   fail 'archive contains a link or special member'
 fi
 
