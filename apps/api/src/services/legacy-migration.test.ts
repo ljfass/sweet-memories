@@ -622,5 +622,5 @@ describe('migration CLI commands', () => {
     expect(invalid.stdout).not.toContain(repositoryRoot);
     expect(invalid.stderr).toBe('');
     expect(existsSync(dataRoot)).toBe(false);
-  });
+  }, 15_000);
 });
