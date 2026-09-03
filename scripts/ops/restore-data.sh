@@ -82,10 +82,6 @@ file_link_count_follow() {
   stat -L -c '%h' "$1" 2>/dev/null || stat -L -f '%l' "$1"
 }
 
-file_type_follow() {
-  stat -L -c '%F' "$1" 2>/dev/null || stat -L -f '%HT' "$1"
-}
-
 file_mode() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
@@ -99,17 +95,16 @@ opened_fd_matches_file() {
   local path="$2"
   local identity="$3"
   local expected_links="$4"
-  local descriptor_identity descriptor_type
+  local descriptor_identity
 
+  [[ -f "$descriptor" ]] || return 1
   descriptor_identity="$(file_identity_follow "$descriptor")" || return 1
-  descriptor_type="$(file_type_follow "$descriptor")" || return 1
   if stat -L -c '%d:%i' "$descriptor" >/dev/null 2>&1; then
     [[ "$descriptor_identity" == "$identity" ]] || return 1
   else
     [[ "${descriptor_identity#*:}" == "${identity#*:}" ]] || return 1
   fi
-  [[ ( "$descriptor_type" == 'regular file' || "$descriptor_type" == 'Regular File' ) &&
-    "$(file_size_follow "$descriptor")" == "$(file_size "$path")" &&
+  [[ "$(file_size_follow "$descriptor")" == "$(file_size "$path")" &&
     "$(file_link_count_follow "$descriptor")" == "$expected_links" &&
     "$(file_identity "$path")" == "$identity" ]]
 }

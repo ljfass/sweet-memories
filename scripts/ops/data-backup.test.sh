@@ -302,7 +302,7 @@ switch (format) {
   case '%a': output = (value.mode & 0o7777).toString(8); break
   case '%u': output = String(value.uid); break
   case '%F':
-    output = value.isFile() ? 'regular file'
+    output = value.isFile() ? (value.size === 0 ? 'regular empty file' : 'regular file')
       : value.isDirectory() ? 'directory'
       : value.isSymbolicLink() ? 'symbolic link'
       : 'special file'
@@ -1149,7 +1149,7 @@ test_gnu_stat_fd_semantics() {
 
   [[ "$backup_status" == '0' && "$restore_status" == '0' && "$apply_status" == '0' ]] ||
     fail "GNU stat FD semantics rejected valid files: backup=$backup_status [$backup_output], verify=$restore_status [$restore_output], apply=$apply_status [$apply_output]"
-  for format in '%d:%i' '%s' '%h' '%F'; do
+  for format in '%d:%i' '%s' '%h'; do
     [[ "$backup_events" == *"stat:gnu-follow:$format:/dev/fd/8"* &&
       "$backup_events" == *"stat:gnu-follow:$format:/dev/fd/7"* &&
       "$restore_events" == *"stat:gnu-follow:$format:/dev/fd/7"* &&
