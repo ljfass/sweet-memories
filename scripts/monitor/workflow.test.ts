@@ -43,6 +43,9 @@ const workflowPath = fileURLToPath(
   new URL('../../.github/workflows/monitor.yml', import.meta.url),
 )
 const packagePath = fileURLToPath(new URL('../../package.json', import.meta.url))
+const monitoringGuidePath = fileURLToPath(
+  new URL('../../docs/monitoring.md', import.meta.url),
+)
 
 function loadWorkflow(): MonitorWorkflow {
   expect(existsSync(workflowPath), 'monitor workflow must exist').toBe(true)
@@ -142,6 +145,7 @@ describe('production site monitoring workflow', () => {
 
     expect(validateConfig.shell).toBe('bash')
     expect(validateConfig.run).toContain(': "${MONITOR_URL:?缺少仓库变量 MONITOR_URL}"')
+    expect(validateConfig.run).toContain("url.protocol !== 'https:'")
     expect(validateConfig.run).toContain(
       "readFileSync('src/config/album-source.json', 'utf8')",
     )
@@ -174,5 +178,19 @@ describe('production site monitoring workflow', () => {
     expect(packageJson.scripts['test:monitor']).toBe(
       'python3 scripts/monitor/test_extract_assets.py && bash scripts/monitor/check-site.test.sh && vitest run scripts/monitor/check-photo-api.test.ts',
     )
+  })
+
+  it('documents the HTTPS production origin and repository variable update', () => {
+    const guide = readFileSync(monitoringGuidePath, 'utf8')
+
+    expect(guide).toContain('`MONITOR_URL`，在 `Value` 中填写 `https://huangjianfen.cn`')
+    expect(guide).toContain('更新已有的 repository variable')
+    expect(guide).toContain(
+      'bash scripts/monitor/check-site.sh https://huangjianfen.cn',
+    )
+    expect(guide).toContain(
+      'node scripts/monitor/check-photo-api.mjs https://huangjianfen.cn',
+    )
+    expect(guide).not.toContain('http://8.163.27.231')
   })
 })

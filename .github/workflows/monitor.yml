@@ -33,6 +33,7 @@ jobs:
           set -euo pipefail
           : "${MONITOR_URL:?缺少仓库变量 MONITOR_URL}"
           python3 scripts/monitor/extract-assets.py --validate-url "$MONITOR_URL"
+          node -e "try { const url = new URL(process.argv[1]); if (url.protocol !== 'https:') process.exit(2) } catch { process.exit(2) }" "$MONITOR_URL"
           ALBUM_MODE="$(node -e "const { readFileSync } = require('node:fs'); const config = JSON.parse(readFileSync('src/config/album-source.json', 'utf8')); if (!(Object.keys(config).length === 1 && ['static', 'api'].includes(config.mode))) process.exit(2); process.stdout.write(config.mode)")"
           printf 'ALBUM_MODE=%s\n' "$ALBUM_MODE" >> "$GITHUB_ENV"
 

@@ -1,17 +1,17 @@
 # 生产站点定时巡检
 
-GitHub runner 每 30 分钟自动巡检一次生产站点，也支持随时手动运行。巡检会确认首页可以访问、响应类型是 HTML、页面包含 Vue 挂载点，并请求页面直接引用的同源 JavaScript 模块和 CSS 样式表。
+GitHub runner 每 30 分钟自动巡检一次生产站点，也支持随时手动运行。巡检会确认首页可以访问、响应类型是 HTML、页面包含 Vue 挂载点，并请求页面直接引用的同源 JavaScript 模块和 CSS 样式表；随后还会检查公开照片 API 和一张同源照片资源。
 
 巡检只通过公网进行只读访问，不使用 SSH，不修改服务器，不重启 Nginx，也不会自动回滚。
 
 ## 一次性配置仓库变量
 
 1. 打开 GitHub 仓库，进入 `Settings -> Secrets and variables -> Actions -> Variables`。
-2. 点击 `New repository variable`。
-3. 在 `Name` 中填写 `MONITOR_URL`，在 `Value` 中填写 `http://8.163.27.231`。
-4. 点击 `Add variable`。
+2. 如果已经存在 `MONITOR_URL`，点击铅笔按钮更新已有的 repository variable；如果不存在，点击 `New repository variable`。
+3. 在 `Name` 中填写 `MONITOR_URL`，在 `Value` 中填写 `https://huangjianfen.cn`。
+4. 点击 `Update variable` 或 `Add variable` 保存。
 
-这里配置的是仓库的 repository variable，不是 `production` Environment 中的变量，也不是 Secret。
+这里配置的是仓库的 repository variable，不是 `production` Environment 中的变量，也不是 Secret。巡检现在只接受 HTTPS 正式地址，不能继续填写旧的 HTTP 公网 IP。
 
 ## 第一次手动验证
 
@@ -103,7 +103,9 @@ pnpm test:monitor
 需要只读检查真实生产站点时运行：
 
 ```bash
-bash scripts/monitor/check-site.sh http://8.163.27.231
+bash scripts/monitor/check-site.sh https://huangjianfen.cn
+ALBUM_MODE="$(node -e "const { readFileSync } = require('node:fs'); const config = JSON.parse(readFileSync('src/config/album-source.json', 'utf8')); process.stdout.write(config.mode)")"
+node scripts/monitor/check-photo-api.mjs https://huangjianfen.cn "$ALBUM_MODE"
 ```
 
-第二条命令会通过公网读取真实生产站点，不会修改服务器。
+这些命令会通过公网读取真实生产站点，不会修改服务器。第一条检查首页和构建资源，第二条检查公开照片 API 和同源照片资源。

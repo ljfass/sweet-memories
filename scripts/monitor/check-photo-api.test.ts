@@ -1,8 +1,12 @@
 // @vitest-environment node
 
-import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import { describe, expect, it, vi } from 'vitest'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer, type RequestListener, type Server } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   checkPhotoApi,
   MONITOR_DEFAULTS,
@@ -11,6 +15,10 @@ import {
 const siteOrigin = 'https://album.example'
 const photoId = '550e8400-e29b-41d4-a716-446655440000'
 const scriptPath = fileURLToPath(new URL('./check-photo-api.mjs', import.meta.url))
+const integrationServers: Server[] = []
+const integrationDirectories: string[] = []
+const integrationChildren = new Set<ReturnType<typeof spawn>>()
+
 interface RecordedRequest {
   readonly init: RequestInit | undefined
   readonly url: string
@@ -55,6 +63,101 @@ function jsonResponse(value: unknown): Response {
     headers: { 'content-type': 'application/json' },
   })
 }
+
+async function startIntegrationServer(handler: RequestListener): Promise<string> {
+  const server = createServer(handler)
+  integrationServers.push(server)
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject)
+      resolve()
+    })
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    throw new Error('测试服务器地址无效')
+  }
+  return `http://127.0.0.1:${address.port}`
+}
+
+interface CliResult {
+  readonly code: number | null
+  readonly signal: NodeJS.Signals | null
+  readonly stderr: string
+  readonly stdout: string
+}
+
+async function runCliAgainstServer(
+  serverOrigin: string,
+  mode: 'api' | 'static',
+): Promise<CliResult> {
+  const fixtureDirectory = mkdtempSync(join(tmpdir(), 'sweet-memories-monitor-cli.'))
+  integrationDirectories.push(fixtureDirectory)
+  const bootstrapPath = join(fixtureDirectory, 'transport.mjs')
+  writeFileSync(bootstrapPath, `
+const productionOrigin = ${JSON.stringify(siteOrigin)}
+const serverOrigin = process.env.SWEET_MEMORIES_MONITOR_TEST_ORIGIN
+if (serverOrigin === undefined) throw new Error('missing test server origin')
+const realFetch = globalThis.fetch
+globalThis.fetch = (input, init) => {
+  const requested = new URL(input instanceof Request ? input.url : String(input))
+  if (requested.origin !== productionOrigin) throw new TypeError('unexpected origin')
+  return realFetch(new URL(requested.pathname + requested.search, serverOrigin), init)
+}
+`, 'utf8')
+
+  return await new Promise<CliResult>((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath, siteOrigin, mode], {
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `--import=${pathToFileURL(bootstrapPath).href}`,
+        SWEET_MEMORIES_MONITOR_TEST_ORIGIN: serverOrigin,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    integrationChildren.add(child)
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+    })
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk
+    })
+    const watchdog = setTimeout(() => child.kill('SIGKILL'), 4_000)
+    child.once('error', (error) => {
+      clearTimeout(watchdog)
+      integrationChildren.delete(child)
+      reject(error)
+    })
+    child.once('close', (code, signal) => {
+      clearTimeout(watchdog)
+      integrationChildren.delete(child)
+      resolve({ code, signal, stderr, stdout })
+    })
+  })
+}
+
+afterEach(async () => {
+  for (const child of integrationChildren) child.kill('SIGKILL')
+  integrationChildren.clear()
+  for (const server of integrationServers.splice(0)) {
+    server.closeAllConnections()
+    await new Promise<void>((resolve, reject) => {
+      if (!server.listening) {
+        resolve()
+        return
+      }
+      server.close((error) => error === undefined ? resolve() : reject(error))
+    })
+  }
+  for (const directory of integrationDirectories.splice(0)) {
+    rmSync(directory, { force: true, recursive: true })
+  }
+})
 
 describe('public photo API monitor', () => {
   it('checks strict health, photos, and one same-origin image without credentials', async () => {
@@ -416,5 +519,114 @@ describe('public photo API monitor', () => {
     expect(invalidMode.stdout).toBe('')
     expect(invalidMode.stderr).toContain('相册模式无效')
     expect(invalidMode.stderr).not.toContain(siteOrigin)
+  })
+})
+
+describe('public photo API monitor CLI integration', () => {
+  it('uses real streamed responses and prints only the safe success summary', async () => {
+    const requests: Array<{
+      readonly authorization: string | undefined
+      readonly cookie: string | undefined
+      readonly url: string | undefined
+    }> = []
+    let mediaClosed = false
+    const origin = await startIntegrationServer((request, response) => {
+      requests.push({
+        authorization: request.headers.authorization,
+        cookie: request.headers.cookie,
+        url: request.url,
+      })
+      if (request.url === '/api/health') {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.write('{"sta')
+        response.end('tus":"ok"}')
+        return
+      }
+      if (request.url === '/api/photos') {
+        const bytes = Buffer.from(JSON.stringify([publicPhoto()]))
+        const chineseCharacter = bytes.indexOf(Buffer.from('一'))
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.write(bytes.subarray(0, chineseCharacter + 1))
+        response.end(bytes.subarray(chineseCharacter + 1))
+        return
+      }
+      if (request.url === `/media/${photoId}/320.jpg`) {
+        response.writeHead(200, { 'content-type': 'image/jpeg' })
+        response.write(Uint8Array.from([0xff, 0xd8, 0xff]))
+        const interval = setInterval(() => response.write(Buffer.alloc(4_096)), 5)
+        response.once('close', () => {
+          clearInterval(interval)
+          mediaClosed = true
+        })
+        return
+      }
+      response.writeHead(404).end()
+    })
+
+    const result = await runCliAgainstServer(origin, 'api')
+
+    expect(result).toEqual({
+      code: 0,
+      signal: null,
+      stderr: '',
+      stdout: `${JSON.stringify({ origin: siteOrigin, photoCount: 1, status: 200 })}\n`,
+    })
+    expect(requests).toEqual([
+      { authorization: undefined, cookie: undefined, url: '/api/health' },
+      { authorization: undefined, cookie: undefined, url: '/api/photos' },
+      { authorization: undefined, cookie: undefined, url: `/media/${photoId}/320.jpg` },
+    ])
+    expect(mediaClosed).toBe(true)
+  })
+
+  it('does not follow redirects and does not expose the Location in stderr', async () => {
+    const paths: Array<string | undefined> = []
+    const origin = await startIntegrationServer((request, response) => {
+      paths.push(request.url)
+      if (request.url === '/api/health') {
+        response.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"ok"}')
+        return
+      }
+      if (request.url === '/api/photos') {
+        response.writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify([publicPhoto()]))
+        return
+      }
+      if (request.url === `/media/${photoId}/320.jpg`) {
+        response.writeHead(302, { location: '/admin/private-canary' }).end()
+        return
+      }
+      response.writeHead(200).end('private-canary')
+    })
+
+    const result = await runCliAgainstServer(origin, 'api')
+
+    expect(result.code).toBe(1)
+    expect(result.signal).toBeNull()
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('照片 API 巡检失败：公开照片媒体检查失败\n')
+    expect(result.stderr).not.toContain('private-canary')
+    expect(paths).not.toContain('/admin/private-canary')
+  })
+
+  it('cancels an oversized chunked response without exposing its body', async () => {
+    let responseClosed = false
+    const origin = await startIntegrationServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      const interval = setInterval(() => response.write('private-canary'.repeat(400)), 2)
+      response.once('close', () => {
+        clearInterval(interval)
+        responseClosed = true
+      })
+    })
+
+    const result = await runCliAgainstServer(origin, 'static')
+
+    expect(result.code).toBe(1)
+    expect(result.signal).toBeNull()
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('照片 API 巡检失败：健康检查失败\n')
+    expect(result.stderr).not.toContain('private-canary')
+    expect(responseClosed).toBe(true)
   })
 })
