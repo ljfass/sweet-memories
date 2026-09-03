@@ -144,7 +144,7 @@ if [[ " $* " == *' --dir apps/api build '* || " $* " == *' --dir apps/api exec t
   fi
   exit 0
 fi
-if [[ " $* " == *' deploy '* ]]; then
+if [[ " $* " == *' install '* ]]; then
   workspace_root=''
   previous=''
   for argument in "$@"; do
@@ -165,6 +165,10 @@ if [[ " $* " == *' deploy '* ]]; then
       exit 1
       ;;
   esac
+  [[ " $* " == *' --prod '* && " $* " == *' --config.node-linker=hoisted '* ]] || {
+    printf 'runtime dependencies must use a production hoisted install\n' >&2
+    exit 1
+  }
   "$PACKAGE_API_REAL_NODE" --input-type=module - \
     "$workspace_root/package.json" "$workspace_root/apps/api/package.json" <<'NODE'
 import { readFile } from 'node:fs/promises';
@@ -181,23 +185,21 @@ if ('devDependencies' in api) {
   throw new Error('deploy workspace API manifest must contain production dependencies only');
 }
 NODE
-  destination="${!#}"
-  mkdir -p "$destination/dist" "$destination/migrations" \
-    "$destination/seed" "$destination/node_modules/@fastify"
-  printf 'export const runtime = "stale-deploy-dist";\n' >"$destination/dist/index.js"
-  printf 'export const cli = "stale-deploy-dist";\n' >"$destination/dist/cli.js"
-  if [[ -d "$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist" ]]; then
-    cp -R "$PACKAGE_API_REPOSITORY_ROOT/apps/api/dist/." "$destination/dist/"
-  fi
-  cp -R "$PACKAGE_API_REPOSITORY_ROOT/apps/api/migrations/." "$destination/migrations/"
-  cp -R "$PACKAGE_API_REPOSITORY_ROOT/apps/api/seed/." "$destination/seed/"
-  cp "$PACKAGE_API_REPOSITORY_ROOT/apps/api/package.json" "$destination/package.json"
+  destination="$workspace_root"
+  mkdir -p "$destination/node_modules/@fastify" \
+    "$destination/node_modules/@phc/format" "$destination/node_modules/.bin"
+  printf '{"name":"@phc/format","type":"module","main":"index.js"}\n' \
+    >"$destination/node_modules/@phc/format/package.json"
+  printf 'export default {};\n' >"$destination/node_modules/@phc/format/index.js"
+  ln -s ../missing-vite/bin/vite.js "$destination/node_modules/.bin/vite"
   for dependency in argon2 better-sqlite3 exifr fastify file-type sharp; do
     package="$destination/node_modules/$dependency"
     mkdir -p "$package"
     printf '{"name":"%s","type":"module","main":"index.js"}\n' "$dependency" \
       >"$package/package.json"
-    if [[ "$dependency" == 'better-sqlite3' ]]; then
+    if [[ "$dependency" == 'argon2' ]]; then
+      printf 'import "@phc/format"; export default {};\n' >"$package/index.js"
+    elif [[ "$dependency" == 'better-sqlite3' ]]; then
       printf 'export default class Database { close() {} }\n' >"$package/index.js"
     else
       printf 'export default {};\n' >"$package/index.js"
@@ -436,6 +438,17 @@ process.stdout.write(`${manifest.photos.length}:${manifest.photos.flatMap((photo
 NODE
 )"
 [[ "$SEED_SUMMARY" == '5:50' ]] || fail "legacy seed summary is invalid: $SEED_SUMMARY"
+[[ -f "$EXTRACTED/node_modules/@phc/format/package.json" &&
+  ! -L "$EXTRACTED/node_modules/@phc/format/package.json" ]] ||
+  fail 'transitive runtime dependency was not preserved in the archive'
+"$REAL_NODE" --input-type=module - "$EXTRACTED" <<'NODE'
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+
+const root = process.argv[2];
+const require = createRequire(`${root}/package.json`);
+await import(pathToFileURL(require.resolve('argon2')).href);
+NODE
 [[ ! -e "$EXTRACTED/package.json.test" ]] || fail 'unexpected fixture file was packaged'
 [[ "$(git -C "$REPOSITORY_ROOT" status --porcelain=v1)" == "$STATUS_BEFORE" ]] ||
   fail 'successful packaging changed the Git worktree'

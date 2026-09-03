@@ -145,11 +145,18 @@ await Promise.all([
   writeFile(apiTargetPath, `${JSON.stringify(apiOutput, null, 2)}\n`, writeOptions),
 ]);
 NODE
-pnpm --dir "$DEPLOY_WORKSPACE" --filter @sweet-memories/api deploy --prod "$DEPLOY_ROOT"
-if [[ -e "$DEPLOY_ROOT/dist" || -L "$DEPLOY_ROOT/dist" ]]; then
-  rm -rf -- "$DEPLOY_ROOT/dist"
+pnpm --dir "$DEPLOY_WORKSPACE" install --prod \
+  --config.node-linker=hoisted --no-frozen-lockfile
+[[ -d "$DEPLOY_WORKSPACE/node_modules" && ! -L "$DEPLOY_WORKSPACE/node_modules" ]] ||
+  die 'hoisted runtime dependencies were not installed'
+mkdir "$DEPLOY_ROOT"
+cp -a "$DEPLOY_PACKAGE/." "$DEPLOY_ROOT/"
+cp -a "$DEPLOY_WORKSPACE/node_modules" "$DEPLOY_ROOT/node_modules"
+if [[ -e "$DEPLOY_ROOT/node_modules/.bin" || -L "$DEPLOY_ROOT/node_modules/.bin" ]]; then
+  [[ -d "$DEPLOY_ROOT/node_modules/.bin" && ! -L "$DEPLOY_ROOT/node_modules/.bin" ]] ||
+    die 'runtime command directory is unsafe'
+  rm -rf -- "$DEPLOY_ROOT/node_modules/.bin"
 fi
-cp -a "$ISOLATED_DIST" "$DEPLOY_ROOT/dist"
 
 mkdir "$SEED_ROOT"
 node scripts/api/prepare-legacy-seed.mjs --output "$SEED_ROOT"

@@ -145,7 +145,10 @@ describe('photo API workspace contract', () => {
       'for source in package.json pnpm-lock.yaml pnpm-workspace.yaml apps/api/package.json',
     )
     expect(packageScript).toContain(
-      'pnpm --dir "$DEPLOY_WORKSPACE" --filter @sweet-memories/api deploy --prod',
+      'pnpm --dir "$DEPLOY_WORKSPACE" install --prod',
+    )
+    expect(packageScript).toContain(
+      '--config.node-linker=hoisted --no-frozen-lockfile',
     )
     expect(packageScript).toContain('--hard-dereference')
     expect(packageTest).toContain('package-api tests passed')
