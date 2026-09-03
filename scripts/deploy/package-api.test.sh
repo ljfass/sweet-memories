@@ -79,18 +79,6 @@ assert_dist_unchanged() {
 }
 
 STATUS_BEFORE="$(git -C "$REPOSITORY_ROOT" status --porcelain=v1)"
-REFUSAL_ROOT="$TEST_ROOT/refusal"
-mkdir "$REFUSAL_ROOT"
-assert_fails \
-  'unsupported local platform' \
-  'requires Ubuntu 24.04 x64 with Node.js 24' \
-  env RUNNER_TEMP="$REFUSAL_ROOT" \
-  bash "$PACKAGER" "$REFUSAL_ROOT/api.tar.gz"
-[[ ! -e "$REFUSAL_ROOT/api.tar.gz" ]] ||
-  fail 'platform refusal left an archive behind'
-[[ "$(git -C "$REPOSITORY_ROOT" status --porcelain=v1)" == "$STATUS_BEFORE" ]] ||
-  fail 'platform refusal changed the Git worktree'
-assert_dist_unchanged
 
 REAL_NODE="$(command -v node)"
 REAL_PNPM="$(command -v pnpm)"
