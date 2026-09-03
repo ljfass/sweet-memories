@@ -177,6 +177,9 @@ if ('dependencies' in root || 'devDependencies' in root) {
 if (api.name !== '@sweet-memories/api') {
   throw new Error('deploy workspace must select the photo API package');
 }
+if ('devDependencies' in api) {
+  throw new Error('deploy workspace API manifest must contain production dependencies only');
+}
 NODE
   destination="${!#}"
   mkdir -p "$destination/dist" "$destination/migrations" \

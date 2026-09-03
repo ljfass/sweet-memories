@@ -97,30 +97,53 @@ for source in package.json pnpm-lock.yaml pnpm-workspace.yaml apps/api/package.j
 done
 cp "$REPOSITORY_ROOT/pnpm-lock.yaml" "$REPOSITORY_ROOT/pnpm-workspace.yaml" \
   "$DEPLOY_WORKSPACE/"
-cp "$REPOSITORY_ROOT/apps/api/package.json" "$DEPLOY_PACKAGE/package.json"
 cp -a "$REPOSITORY_ROOT/apps/api/migrations" "$REPOSITORY_ROOT/apps/api/seed" \
   "$DEPLOY_PACKAGE/"
 cp -a "$ISOLATED_DIST" "$DEPLOY_PACKAGE/dist"
 node --input-type=module - \
-  "$REPOSITORY_ROOT/package.json" "$DEPLOY_WORKSPACE/package.json" <<'NODE'
+  "$REPOSITORY_ROOT/package.json" "$REPOSITORY_ROOT/apps/api/package.json" \
+  "$DEPLOY_WORKSPACE/package.json" "$DEPLOY_PACKAGE/package.json" <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises';
 
-const sourcePath = process.argv[2];
-const targetPath = process.argv[3];
-const source = JSON.parse(await readFile(sourcePath, 'utf8'));
-if (typeof source.name !== 'string' || typeof source.packageManager !== 'string') {
+const rootSourcePath = process.argv[2];
+const apiSourcePath = process.argv[3];
+const rootTargetPath = process.argv[4];
+const apiTargetPath = process.argv[5];
+const rootSource = JSON.parse(await readFile(rootSourcePath, 'utf8'));
+const apiSource = JSON.parse(await readFile(apiSourcePath, 'utf8'));
+if (
+  typeof rootSource.name !== 'string' ||
+  typeof rootSource.packageManager !== 'string' ||
+  apiSource.name !== '@sweet-memories/api' ||
+  typeof apiSource.dependencies !== 'object' ||
+  apiSource.dependencies === null
+) {
   throw new Error('workspace package metadata is invalid');
 }
-const output = {
-  name: source.name,
+const rootOutput = {
+  name: rootSource.name,
   private: true,
-  packageManager: source.packageManager,
+  packageManager: rootSource.packageManager,
 };
-await writeFile(targetPath, `${JSON.stringify(output, null, 2)}\n`, {
+const apiOutput = {
+  name: apiSource.name,
+  private: true,
+  version: apiSource.version,
+  type: apiSource.type,
+  engines: apiSource.engines,
+  files: apiSource.files,
+  main: apiSource.main,
+  dependencies: apiSource.dependencies,
+};
+const writeOptions = {
   encoding: 'utf8',
   flag: 'wx',
   mode: 0o600,
-});
+};
+await Promise.all([
+  writeFile(rootTargetPath, `${JSON.stringify(rootOutput, null, 2)}\n`, writeOptions),
+  writeFile(apiTargetPath, `${JSON.stringify(apiOutput, null, 2)}\n`, writeOptions),
+]);
 NODE
 pnpm --dir "$DEPLOY_WORKSPACE" --filter @sweet-memories/api deploy --prod "$DEPLOY_ROOT"
 if [[ -e "$DEPLOY_ROOT/dist" || -L "$DEPLOY_ROOT/dist" ]]; then
