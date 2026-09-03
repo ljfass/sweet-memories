@@ -433,6 +433,25 @@ describe('terminal password input', () => {
     expect(input.isRaw).toBe(false);
   });
 
+  it('enables hidden terminal mode before displaying the password prompt', async () => {
+    const events: string[] = [];
+    const { input, setRawMode } = terminal();
+    setRawMode.mockImplementation((raw: boolean): PassThrough => {
+      input.isRaw = raw;
+      events.push(`raw:${String(raw)}`);
+      return input;
+    });
+    const guardedInput = createHiddenInput(input, {
+      write: (text) => events.push(`write:${text}`),
+    });
+
+    const reading = guardedInput.read('密码: ');
+    input.write('top secret\r');
+
+    await expect(reading).resolves.toBe('top secret');
+    expect(events.slice(0, 2)).toEqual(['raw:true', 'write:密码: ']);
+  });
+
   it('restores terminal mode when Ctrl-C aborts secret input', async () => {
     const { hiddenInput, input, setRawMode } = terminal();
     const reading = hiddenInput.read('密码: ');
@@ -536,6 +555,31 @@ describe('visible terminal input', () => {
       }),
     ]);
   }
+
+  it('accepts two hidden inputs after a visible prompt on the same terminal', async () => {
+    const { input, output, visibleInput } = visibleTerminal();
+    const setRawMode = vi.fn((raw: boolean) => {
+      Object.assign(input, { isRaw: raw });
+      return input;
+    });
+    Object.assign(input, { isRaw: false, setRawMode });
+    const hiddenInput = createHiddenInput(input, {
+      write: (text) => output.write(text),
+    });
+
+    const username = visibleInput.readLine('用户名: ');
+    input.write('owner\n');
+    await expect(settleWithin(username)).resolves.toBe('owner');
+
+    const password = hiddenInput.read('密码: ');
+    input.write('a secure password\r');
+    await expect(settleWithin(password)).resolves.toBe('a secure password');
+
+    const confirmation = hiddenInput.read('确认密码: ');
+    input.write('a secure password\r');
+    await expect(settleWithin(confirmation)).resolves.toBe('a secure password');
+    expect(setRawMode.mock.calls).toEqual([[true], [false], [true], [false]]);
+  });
 
   it('resolves only after receiving an answer and cleans up listeners', async () => {
     const { input, visibleInput } = visibleTerminal();

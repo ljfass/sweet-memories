@@ -140,12 +140,12 @@ export function createHiddenInput(
         };
 
         try {
-          output.write(prompt);
           emitKeypressEvents(input);
           input.on('keypress', onKeypress);
           input.once('error', onInputError);
           input.once('end', onInputEnd);
           setRawMode.call(input, true);
+          output.write(prompt);
           input.resume();
         } catch {
           restore();
@@ -167,7 +167,7 @@ export function createVisibleInput(
         let interface_: ReturnType<typeof createInterface>;
         const existingDataListeners = new Set(input.rawListeners('data'));
         try {
-          interface_ = createInterface({ input, output });
+          interface_ = createInterface({ input, output, terminal: false });
         } catch {
           rejectLine(new Error('用户名输入失败'));
           return;
@@ -183,6 +183,7 @@ export function createVisibleInput(
           interface_.removeListener('close', onClose);
           interface_.removeListener('error', onError);
           interface_.removeListener('SIGINT', onSigint);
+          input.removeListener('data', onInputData);
           input.removeListener('close', onClose);
           input.removeListener('error', onError);
           try {
@@ -211,10 +212,14 @@ export function createVisibleInput(
         const onClose = () => finish();
         const onError = () => finish();
         const onSigint = () => finish();
+        function onInputData(chunk: unknown): void {
+          if (String(chunk).includes('\u0003')) finish();
+        }
 
         interface_.once('close', onClose);
         interface_.once('error', onError);
         interface_.once('SIGINT', onSigint);
+        input.on('data', onInputData);
         input.once('close', onClose);
         input.once('error', onError);
         try {
