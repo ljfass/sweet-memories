@@ -34,6 +34,7 @@ restore_journal_metadata_identity=''
 restore_service_was_active=1
 restore_journal_source=''
 restore_journal_source_inode=''
+restore_journal_source_identity=''
 restore_declared_members=0
 restore_declared_bytes=0
 
@@ -62,7 +63,7 @@ file_identity() {
 }
 
 file_identity_follow() {
-  stat -Lc '%d:%i' "$1" 2>/dev/null || stat -Lf '%d:%i' "$1"
+  stat -L -c '%d:%i' "$1" 2>/dev/null || stat -L -f '%d:%i' "$1"
 }
 
 file_inode() {
@@ -71,6 +72,46 @@ file_inode() {
 
 file_link_count() {
   stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1"
+}
+
+file_size_follow() {
+  stat -L -c '%s' "$1" 2>/dev/null || stat -L -f '%z' "$1"
+}
+
+file_link_count_follow() {
+  stat -L -c '%h' "$1" 2>/dev/null || stat -L -f '%l' "$1"
+}
+
+file_type_follow() {
+  stat -L -c '%F' "$1" 2>/dev/null || stat -L -f '%HT' "$1"
+}
+
+file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+file_uid() {
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1"
+}
+
+opened_fd_matches_file() {
+  local descriptor="$1"
+  local path="$2"
+  local identity="$3"
+  local expected_links="$4"
+  local descriptor_identity descriptor_type
+
+  descriptor_identity="$(file_identity_follow "$descriptor")" || return 1
+  descriptor_type="$(file_type_follow "$descriptor")" || return 1
+  if stat -L -c '%d:%i' "$descriptor" >/dev/null 2>&1; then
+    [[ "$descriptor_identity" == "$identity" ]] || return 1
+  else
+    [[ "${descriptor_identity#*:}" == "${identity#*:}" ]] || return 1
+  fi
+  [[ ( "$descriptor_type" == 'regular file' || "$descriptor_type" == 'Regular File' ) &&
+    "$(file_size_follow "$descriptor")" == "$(file_size "$path")" &&
+    "$(file_link_count_follow "$descriptor")" == "$expected_links" &&
+    "$(file_identity "$path")" == "$identity" ]]
 }
 
 sha256_file() {
@@ -319,16 +360,14 @@ create_restore_workspace() {
 copy_open_file() {
   local source="$1"
   local destination="$2"
-  local destination_identity source_inode source_size
+  local destination_identity source_identity source_size
 
   [[ "$source" == /* ]] || restore_die 'archive and sidecar paths must be absolute'
   ordinary_single_link "$source" || restore_die "archive input is not a single-link ordinary file: $source"
-  source_inode="$(file_inode "$source")"
+  source_identity="$(file_identity "$source")"
   source_size="$(file_size "$source")"
   exec 7<"$source" || restore_die "could not open restore input: $source"
-  [[ -f /dev/fd/7 && "$(file_link_count /dev/fd/7)" == '1' &&
-    "$(file_inode /dev/fd/7)" == "$source_inode" &&
-    "$(file_size /dev/fd/7)" == "$source_size" ]] || {
+  opened_fd_matches_file /dev/fd/7 "$source" "$source_identity" 1 || {
     exec 7<&-
     restore_die 'opened restore input is not an ordinary file'
   }
@@ -791,21 +830,37 @@ journal_before_stage_publish() {
   :
 }
 
+journal_after_create() {
+  :
+}
+
 open_private_journal_source() {
   local stage="$2"
-  local attempt candidate
+  local attempt candidate source_root prefix
 
   directory_is_owned "$restore_workspace" "$restore_workspace_identity" ||
     restore_die 'restore workspace identity changed before journal write'
+  if [[ "$stage" == 'metadata' ]]; then
+    journal_directory_owned || restore_die 'restore journal identity changed before metadata write'
+    source_root="$RESTORE_JOURNAL"
+    prefix=.metadata
+  else
+    source_root="$restore_workspace"
+    prefix=".journal-$stage"
+  fi
   umask 077
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    candidate="$restore_workspace/.journal-$stage.$$.$RANDOM"
+    candidate="$source_root/$prefix.$$.$RANDOM"
     [[ ! -e "$candidate" && ! -L "$candidate" ]] || continue
     set -o noclobber
     if { exec 8>"$candidate"; } 2>/dev/null; then
       set +o noclobber
       restore_journal_source="$candidate"
-      restore_journal_source_inode="$(file_inode /dev/fd/8)"
+      restore_journal_source_identity="$(file_identity "$candidate")"
+      opened_fd_matches_file /dev/fd/8 "$candidate" \
+        "$restore_journal_source_identity" 1 ||
+        restore_die 'private restore journal descriptor identity changed'
+      restore_journal_source_inode="${restore_journal_source_identity#*:}"
       return 0
     fi
     set +o noclobber
@@ -819,7 +874,7 @@ publish_journal_source() {
 
   exec 8>&-
   ordinary_single_link "$restore_journal_source" &&
-    [[ "$(file_inode "$restore_journal_source")" == "$restore_journal_source_inode" ]] ||
+    [[ "$(file_identity "$restore_journal_source")" == "$restore_journal_source_identity" ]] ||
     restore_die 'private restore journal source identity changed'
   chmod 0600 "$restore_journal_source"
   journal_directory_owned || restore_die 'restore journal identity changed'
@@ -840,6 +895,7 @@ publish_journal_source() {
     restore_die 'finalized restore journal stage identity changed'
   restore_journal_source=''
   restore_journal_source_inode=''
+  restore_journal_source_identity=''
 }
 
 create_journal() {
@@ -857,6 +913,7 @@ create_journal() {
   chown root:root "$RESTORE_JOURNAL"
   restore_journal_identity="$(file_identity "$RESTORE_JOURNAL")"
   journal_directory_owned || restore_die 'restore journal transaction is unsafe'
+  journal_after_create
 
   metadata="$RESTORE_JOURNAL/metadata"
   open_private_journal_source "$metadata" metadata
@@ -896,21 +953,98 @@ write_journal_stage() {
 repair_interrupted_journal_link() {
   local path="$1"
   local stage="$2"
-  local candidate matching='' matches=0 inode
+  local candidate matching='' matches=0 inode source_root pattern
 
   [[ "$(file_link_count "$path")" == '2' && -n "$restore_workspace" &&
     -n "$restore_workspace_identity" ]] || return 1
   inode="$(file_inode "$path")"
+  if [[ "$stage" == 'metadata' ]]; then
+    source_root="$RESTORE_JOURNAL"
+    pattern='.metadata.*'
+  else
+    source_root="$restore_workspace"
+    pattern=".journal-$stage.*"
+  fi
   while IFS= read -r candidate; do
     [[ -f "$candidate" && ! -L "$candidate" &&
       "$(file_inode "$candidate")" == "$inode" ]] || continue
     matching="$candidate"
     matches=$((matches + 1))
-  done < <(find "$restore_workspace" -mindepth 1 -maxdepth 1 \
-    -type f -name ".journal-$stage.*" -print)
+  done < <(find "$source_root" -mindepth 1 -maxdepth 1 \
+    -type f -name "$pattern" -print)
   [[ "$matches" == '1' && "$(file_link_count "$matching")" == '2' ]] || return 1
   rm -f -- "$matching" || return 1
   ordinary_single_link "$path" && [[ "$(file_inode "$path")" == "$inode" ]]
+}
+
+runtime_root_owned() {
+  [[ "$EUID" -ne 0 || "$(file_uid "$1")" == '0' ]]
+}
+
+private_preflight_journal_directory() {
+  local identity="$1"
+
+  directory_is_owned "$RESTORE_JOURNAL" "$identity" &&
+    [[ "$(file_mode "$RESTORE_JOURNAL")" == '700' ]] &&
+    runtime_root_owned "$RESTORE_JOURNAL"
+}
+
+valid_preflight_metadata() {
+  local entry="$1"
+  local journal_identity="$2"
+  local recovery_name workspace_name workspace_identity original_identity installed_identity
+  local service_was_active parent workspace
+
+  ordinary_single_link "$entry" && [[ "$(file_mode "$entry")" == '600' ]] &&
+    runtime_root_owned "$entry" || return 1
+  [[ "$(wc -l <"$entry" | tr -d ' ')" == '7' ]] || return 1
+  [[ "$(sed -n 's/^journal_identity=//p' "$entry")" == "$journal_identity" ]] || return 1
+  recovery_name="$(sed -n 's/^recovery=//p' "$entry")"
+  workspace_name="$(sed -n 's/^workspace=//p' "$entry")"
+  workspace_identity="$(sed -n 's/^workspace_identity=//p' "$entry")"
+  original_identity="$(sed -n 's/^original_identity=//p' "$entry")"
+  installed_identity="$(sed -n 's/^installed_identity=//p' "$entry")"
+  service_was_active="$(sed -n 's/^service_was_active=//p' "$entry")"
+  [[ "$recovery_name" =~ ^sweet-memories-recovery-[0-9]{8}T[0-9]{6}Z$ &&
+    "$workspace_name" == .sweet-memories-restore.* &&
+    "$workspace_identity" =~ ^[0-9]+:[0-9]+$ &&
+    "$original_identity" =~ ^[0-9]+:[0-9]+$ &&
+    "$installed_identity" =~ ^[0-9]+:[0-9]+$ &&
+    ( "$service_was_active" == '0' || "$service_was_active" == '1' ) ]] || return 1
+  parent="$(dirname "$DATA_ROOT")"
+  workspace="$parent/$workspace_name"
+  directory_is_owned "$DATA_ROOT" "$original_identity" &&
+    directory_is_owned "$workspace" "$workspace_identity" &&
+    directory_is_owned "$workspace/data" "$installed_identity"
+}
+
+recover_preflight_journal() {
+  local journal_identity entry='' candidate entries=0 entry_identity
+
+  [[ -d "$RESTORE_JOURNAL" && ! -L "$RESTORE_JOURNAL" ]] || return 1
+  journal_identity="$(file_identity "$RESTORE_JOURNAL")"
+  private_preflight_journal_directory "$journal_identity" || return 1
+  while IFS= read -r candidate; do
+    entries=$((entries + 1))
+    entry="$candidate"
+  done < <(find "$RESTORE_JOURNAL" -mindepth 1 -maxdepth 1 -print)
+  if [[ "$entries" == '0' ]]; then
+    private_preflight_journal_directory "$journal_identity" &&
+      [[ -z "$(find "$RESTORE_JOURNAL" -mindepth 1 -maxdepth 1 -print -quit)" ]] || return 1
+    rmdir "$RESTORE_JOURNAL" || return 1
+    return 0
+  fi
+  [[ "$entries" == '1' && "$(basename "$entry")" =~ ^\.metadata\.[0-9]+\.[0-9]+$ ]] ||
+    return 1
+  valid_preflight_metadata "$entry" "$journal_identity" || return 1
+  entry_identity="$(file_identity "$entry")"
+  private_preflight_journal_directory "$journal_identity" &&
+    valid_preflight_metadata "$entry" "$journal_identity" &&
+    [[ "$(file_identity "$entry")" == "$entry_identity" ]] || return 1
+  rm -f -- "$entry" || return 1
+  private_preflight_journal_directory "$journal_identity" &&
+    [[ -z "$(find "$RESTORE_JOURNAL" -mindepth 1 -maxdepth 1 -print -quit)" ]] || return 1
+  rmdir "$RESTORE_JOURNAL" || return 1
 }
 
 load_journal() {
@@ -1095,6 +1229,9 @@ install_restore_traps() {
 
 recover_interrupted_restore() {
   [[ -e "$RESTORE_JOURNAL" || -L "$RESTORE_JOURNAL" ]] || return 0
+  if recover_preflight_journal; then
+    return 0
+  fi
   if ! rollback_from_journal; then
     restore_die 'interrupted restore compensation failed; journal retained for manual recovery'
   fi

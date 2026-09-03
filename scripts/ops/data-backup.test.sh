@@ -29,6 +29,7 @@ REAL_LN="$(command -v ln)"
 REAL_CAT="$(command -v cat)"
 REAL_RM="$(command -v rm)"
 REAL_SLEEP="$(command -v sleep)"
+REAL_STAT="$(command -v stat)"
 MOCK_BIN="$TEST_ROOT/bin"
 EVENT_LOG="$TEST_ROOT/events.log"
 SYSTEMCTL_STATE="$TEST_ROOT/systemctl.state"
@@ -41,6 +42,7 @@ STOP_HOOK_MARKER="$TEST_ROOT/stop-hook-fired"
 JOURNAL_HOOK_MARKER="$TEST_ROOT/journal-hook-fired"
 RM_HOOK_MARKER="$TEST_ROOT/rm-hook-fired"
 BACKUP_HOOK_MARKER="$TEST_ROOT/backup-hook-fired"
+PREFLIGHT_HOOK_MARKER="$TEST_ROOT/preflight-hook-fired"
 mkdir -p "$MOCK_BIN"
 mkdir -p "$TEST_ROOT/tmp"
 : >"$EVENT_LOG"
@@ -242,6 +244,75 @@ if [[ -n "${FAKE_KILL_AFTER_REMOVE_BASENAME:-}" && -n "$target" &&
 fi
 MOCK
 
+cat >"$MOCK_BIN/stat" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${FAKE_GNU_STAT:-0}" != '1' ]]; then
+  exec "$REAL_STAT" "$@"
+fi
+
+follow=0
+case "${1:-}" in
+  -L)
+    follow=1
+    shift
+    ;;
+  -Lc)
+    follow=1
+    set -- -c "${@:2}"
+    ;;
+esac
+[[ "${1:-}" == '-c' && "$#" == '3' ]] || exit 64
+format="$2"
+target="$3"
+if [[ "$target" == /dev/fd/* ]]; then
+  if [[ "$follow" == '0' ]]; then
+    printf 'stat:gnu-no-follow:%s:%s\n' "$format" "$target" >>"$EVENT_LOG"
+    case "$format" in
+      '%d:%i') printf '999:999\n' ;;
+      '%s') printf '64\n' ;;
+      '%i') printf '999\n' ;;
+      '%h') printf '1\n' ;;
+      '%F') printf 'symbolic link\n' ;;
+      '%a') printf '777\n' ;;
+      '%u') printf '0\n' ;;
+      *) exit 64 ;;
+    esac
+    exit 0
+  fi
+  printf 'stat:gnu-follow:%s:%s\n' "$format" "$target" >>"$EVENT_LOG"
+fi
+node - "$target" "$format" "$follow" <<'NODE'
+const fs = require('node:fs')
+const target = process.argv[2]
+const format = process.argv[3]
+const follow = process.argv[4] === '1'
+let value
+if (target.startsWith('/dev/fd/') && follow) {
+  value = fs.fstatSync(Number(target.slice('/dev/fd/'.length)))
+} else {
+  value = follow ? fs.statSync(target) : fs.lstatSync(target)
+}
+let output
+switch (format) {
+  case '%d:%i': output = `${value.dev}:${value.ino}`; break
+  case '%s': output = String(value.size); break
+  case '%i': output = String(value.ino); break
+  case '%h': output = String(value.nlink); break
+  case '%a': output = (value.mode & 0o7777).toString(8); break
+  case '%u': output = String(value.uid); break
+  case '%F':
+    output = value.isFile() ? 'regular file'
+      : value.isDirectory() ? 'directory'
+      : value.isSymbolicLink() ? 'symbolic link'
+      : 'special file'
+    break
+  default: process.exit(64)
+}
+process.stdout.write(`${output}\n`)
+NODE
+MOCK
+
 cat >"$MOCK_BIN/mv" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -271,9 +342,11 @@ MOCK
 
 chmod +x "$MOCK_BIN"/*
 export REAL_DF REAL_DATE REAL_TAR REAL_MV REAL_CP REAL_LN REAL_CAT REAL_RM REAL_SLEEP
+export REAL_STAT
 export EVENT_LOG SYSTEMCTL_STATE CURL_COUNT LOCK_DIR MV_HOOK_MARKER CP_HOOK_MARKER
 export CAT_HOOK_MARKER STOP_HOOK_MARKER JOURNAL_HOOK_MARKER RM_HOOK_MARKER
 export BACKUP_HOOK_MARKER
+export PREFLIGHT_HOOK_MARKER
 
 reset_fakes() {
   : >"$EVENT_LOG"
@@ -282,7 +355,7 @@ reset_fakes() {
   rmdir "$LOCK_DIR" 2>/dev/null || true
   rm -f "$MV_HOOK_MARKER" "$CP_HOOK_MARKER" "$CAT_HOOK_MARKER" \
     "$STOP_HOOK_MARKER" "$JOURNAL_HOOK_MARKER" "$RM_HOOK_MARKER" \
-    "$BACKUP_HOOK_MARKER"
+    "$BACKUP_HOOK_MARKER" "$PREFLIGHT_HOOK_MARKER"
   unset FAKE_DF_AVAILABLE_KB FAKE_STOP_FAIL FAKE_STOP_STUCK FAKE_START_FAIL
   unset FAKE_HEALTH_FAILURES FAKE_TAR_CREATE_FAIL FAKE_KILL_AFTER_MOVE_TO
   unset FAKE_TERM_AFTER_MOVE_TO FAKE_REPLACE_AFTER_MOVE_TO FAKE_THIRD_PARTY_SENTINEL
@@ -293,6 +366,7 @@ reset_fakes() {
   unset TEST_MAX_ARCHIVE_MEMBERS TEST_MAX_EXPANDED_BYTES
   unset TEST_JOURNAL_COLLISION_STAGE
   unset FAKE_KILL_AFTER_REMOVE_BASENAME TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE
+  unset FAKE_GNU_STAT FAKE_KILL_AFTER_JOURNAL_CREATE FAKE_KILL_BEFORE_METADATA_LINK
   FAKE_UTC_TIMESTAMP='20260903T020304Z'
   export FAKE_UTC_TIMESTAMP
 }
@@ -313,6 +387,7 @@ invoke_backup() {
     FAKE_HEALTH_FAILURES="${FAKE_HEALTH_FAILURES:-0}" \
     FAKE_TAR_CREATE_FAIL="${FAKE_TAR_CREATE_FAIL:-0}" \
     TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE="${TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE:-0}" \
+    FAKE_GNU_STAT="${FAKE_GNU_STAT:-0}" REAL_STAT="$REAL_STAT" \
     BACKUP_HOOK_MARKER="$BACKUP_HOOK_MARKER" \
     bash -c '
       source "$1"
@@ -356,7 +431,11 @@ invoke_restore() {
     TEST_MAX_ARCHIVE_MEMBERS="${TEST_MAX_ARCHIVE_MEMBERS:-}" \
     TEST_MAX_EXPANDED_BYTES="${TEST_MAX_EXPANDED_BYTES:-}" \
     TEST_JOURNAL_COLLISION_STAGE="${TEST_JOURNAL_COLLISION_STAGE:-}" \
+    FAKE_GNU_STAT="${FAKE_GNU_STAT:-0}" REAL_STAT="$REAL_STAT" \
+    FAKE_KILL_AFTER_JOURNAL_CREATE="${FAKE_KILL_AFTER_JOURNAL_CREATE:-0}" \
+    FAKE_KILL_BEFORE_METADATA_LINK="${FAKE_KILL_BEFORE_METADATA_LINK:-0}" \
     STOP_HOOK_MARKER="$STOP_HOOK_MARKER" JOURNAL_HOOK_MARKER="$JOURNAL_HOOK_MARKER" \
+    PREFLIGHT_HOOK_MARKER="$PREFLIGHT_HOOK_MARKER" \
     bash -c '
       source "$1"
       DATA_ROOT="$2"
@@ -365,10 +444,22 @@ invoke_restore() {
       [[ -z "$TEST_MAX_ARCHIVE_BYTES" ]] || MAX_ARCHIVE_BYTES="$TEST_MAX_ARCHIVE_BYTES"
       [[ -z "$TEST_MAX_ARCHIVE_MEMBERS" ]] || MAX_ARCHIVE_MEMBERS="$TEST_MAX_ARCHIVE_MEMBERS"
       [[ -z "$TEST_MAX_EXPANDED_BYTES" ]] || MAX_EXPANDED_BYTES="$TEST_MAX_EXPANDED_BYTES"
-      if [[ -n "$TEST_JOURNAL_COLLISION_STAGE" ]]; then
+      if [[ "$FAKE_KILL_AFTER_JOURNAL_CREATE" == '1' ]]; then
+        journal_after_create() {
+          : >"$PREFLIGHT_HOOK_MARKER"
+          kill -KILL "$$"
+        }
+      fi
+      if [[ -n "$TEST_JOURNAL_COLLISION_STAGE" ||
+        "$FAKE_KILL_BEFORE_METADATA_LINK" == '1' ]]; then
         journal_before_stage_publish() {
           local path="$1"
           local stage="$2"
+          if [[ "$stage" == 'metadata' && "$FAKE_KILL_BEFORE_METADATA_LINK" == '1' &&
+            ! -e "$PREFLIGHT_HOOK_MARKER" ]]; then
+            : >"$PREFLIGHT_HOOK_MARKER"
+            kill -KILL "$$"
+          fi
           if [[ "$stage" == "$TEST_JOURNAL_COLLISION_STAGE" &&
             ! -e "$JOURNAL_HOOK_MARKER" ]]; then
             : >"$JOURNAL_HOOK_MARKER"
@@ -1016,6 +1107,161 @@ test_backup_transaction_races() {
   fi
 }
 
+test_gnu_stat_fd_semantics() {
+  local reference_archive backup_root restore_root apply_root
+  local backup_output restore_output apply_output backup_status restore_status apply_status
+  local backup_events restore_events apply_events format
+
+  create_reference_archive gnu-stat-reference
+  reference_archive="$TEST_REFERENCE_ARCHIVE"
+
+  reset_fakes
+  backup_root="$TEST_ROOT/gnu-stat-backup/sweet-memories"
+  create_data_fixture "$backup_root" gnu-stat-backup
+  FAKE_GNU_STAT=1
+  export FAKE_GNU_STAT
+  set +e
+  backup_output="$(invoke_backup "$backup_root" "$backup_root/backups/manual" 2>&1)"
+  backup_status=$?
+  set -e
+  backup_events="$(cat "$EVENT_LOG")"
+
+  reset_fakes
+  FAKE_GNU_STAT=1
+  export FAKE_GNU_STAT
+  restore_root="$TEST_ROOT/gnu-stat-verify/sweet-memories"
+  set +e
+  restore_output="$(invoke_restore "$restore_root" verify "$reference_archive" 2>&1)"
+  restore_status=$?
+  set -e
+  restore_events="$(cat "$EVENT_LOG")"
+
+  reset_fakes
+  FAKE_GNU_STAT=1
+  export FAKE_GNU_STAT
+  apply_root="$TEST_ROOT/gnu-stat-apply/sweet-memories"
+  create_data_fixture "$apply_root" gnu-stat-current
+  set +e
+  apply_output="$(invoke_restore "$apply_root" apply "$reference_archive" 2>&1)"
+  apply_status=$?
+  set -e
+  apply_events="$(cat "$EVENT_LOG")"
+
+  [[ "$backup_status" == '0' && "$restore_status" == '0' && "$apply_status" == '0' ]] ||
+    fail "GNU stat FD semantics rejected valid files: backup=$backup_status [$backup_output], verify=$restore_status [$restore_output], apply=$apply_status [$apply_output]"
+  for format in '%d:%i' '%s' '%h' '%F'; do
+    [[ "$backup_events" == *"stat:gnu-follow:$format:/dev/fd/8"* &&
+      "$backup_events" == *"stat:gnu-follow:$format:/dev/fd/7"* &&
+      "$restore_events" == *"stat:gnu-follow:$format:/dev/fd/7"* &&
+      "$apply_events" == *"stat:gnu-follow:$format:/dev/fd/8"* ]] ||
+      fail "GNU stat fixture did not observe followed $format metadata across archive creation/fingerprint, restore input, and journal FD paths"
+  done
+}
+
+test_preflight_journal_window() {
+  local window="$1"
+  local root journal reference_id status output incoming entries
+
+  create_reference_archive "preflight-$window-reference"
+  reference_id="$(fixture_photo_id "preflight-$window-reference")"
+  root="$TEST_ROOT/preflight-$window/sweet-memories"
+  journal="$(dirname "$root")/.sweet-memories-restore"
+  create_data_fixture "$root" "preflight-$window-current"
+  reset_fakes
+  if [[ "$window" == 'mkdir' ]]; then
+    FAKE_KILL_AFTER_JOURNAL_CREATE=1
+    export FAKE_KILL_AFTER_JOURNAL_CREATE
+  else
+    FAKE_KILL_BEFORE_METADATA_LINK=1
+    export FAKE_KILL_BEFORE_METADATA_LINK
+  fi
+  set +e
+  invoke_restore "$root" apply "$TEST_REFERENCE_ARCHIVE" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" == '137' && -e "$PREFLIGHT_HOOK_MARKER" ]] ||
+    fail "preflight $window KILL fixture returned $status without hitting its hook"
+  ! grep -Fq 'systemctl:stop' "$EVENT_LOG" ||
+    fail "preflight $window KILL occurred after the service stop"
+  [[ -d "$journal" && ! -L "$journal" && "$(file_mode "$journal")" == '700' ]] ||
+    fail "preflight $window KILL did not retain a private journal directory"
+  entries="$(find "$journal" -mindepth 1 -maxdepth 1 -print)"
+  if [[ "$window" == 'mkdir' ]]; then
+    [[ -z "$entries" ]] || fail 'journal mkdir KILL retained an unexpected entry'
+  else
+    incoming="$(find "$journal" -mindepth 1 -maxdepth 1 -type f \
+      -name '.metadata.*' -print -quit)"
+    [[ -n "$incoming" && "$entries" == "$incoming" &&
+      "$(file_mode "$incoming")" == '600' && "$(file_link_count "$incoming")" == '1' ]] ||
+      fail 'metadata pre-link KILL did not retain exactly one private incoming metadata file'
+  fi
+
+  unset FAKE_KILL_AFTER_JOURNAL_CREATE FAKE_KILL_BEFORE_METADATA_LINK
+  rmdir "$LOCK_DIR" || fail "preflight $window KILL did not leave the fixture lock"
+  : >"$EVENT_LOG"
+  output="$(invoke_restore "$root" apply "$TEST_REFERENCE_ARCHIVE" 2>&1)" ||
+    fail "preflight $window journal recovery failed: $output"
+  [[ ! -e "$journal" && "$(cat "$SYSTEMCTL_STATE")" == 'active' &&
+    -f "$root/media/$reference_id/master.jpg" ]] ||
+    fail "preflight $window recovery did not complete a fresh restore"
+}
+
+test_preflight_journal_rejects_unknown() {
+  local root journal status output incoming sentinel
+
+  create_reference_archive preflight-unknown-reference
+
+  root="$TEST_ROOT/preflight-unknown-entry/sweet-memories"
+  journal="$(dirname "$root")/.sweet-memories-restore"
+  create_data_fixture "$root" preflight-unknown-current
+  reset_fakes
+  FAKE_KILL_AFTER_JOURNAL_CREATE=1
+  export FAKE_KILL_AFTER_JOURNAL_CREATE
+  set +e
+  invoke_restore "$root" apply "$TEST_REFERENCE_ARCHIVE" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" == '137' ]] || fail 'unknown preflight journal fixture did not stop after mkdir'
+  unset FAKE_KILL_AFTER_JOURNAL_CREATE
+  rmdir "$LOCK_DIR" || fail 'unknown preflight fixture lock remained'
+  printf 'third-party-entry\n' >"$journal/unexpected"
+  : >"$EVENT_LOG"
+  assert_fails 'unknown preflight journal entry' 'restore journal metadata is unsafe' \
+    invoke_restore "$root" apply "$TEST_REFERENCE_ARCHIVE"
+  [[ "$(cat "$journal/unexpected")" == 'third-party-entry' ]] ||
+    fail 'unknown preflight journal entry was removed or replaced'
+  ! grep -Fq 'systemctl:stop' "$EVENT_LOG" ||
+    fail 'unknown preflight journal entry stopped the service'
+
+  root="$TEST_ROOT/preflight-replaced-metadata/sweet-memories"
+  journal="$(dirname "$root")/.sweet-memories-restore"
+  create_data_fixture "$root" preflight-replaced-current
+  reset_fakes
+  FAKE_KILL_BEFORE_METADATA_LINK=1
+  export FAKE_KILL_BEFORE_METADATA_LINK
+  set +e
+  invoke_restore "$root" apply "$TEST_REFERENCE_ARCHIVE" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" == '137' ]] || fail 'replaced metadata fixture did not stop before link'
+  unset FAKE_KILL_BEFORE_METADATA_LINK
+  rmdir "$LOCK_DIR" || fail 'replaced metadata fixture lock remained'
+  incoming="$(find "$journal" -mindepth 1 -maxdepth 1 -type f \
+    -name '.metadata.*' -print -quit)"
+  [[ -n "$incoming" ]] || fail 'replaced metadata fixture lacks its incoming file'
+  sentinel="$TEST_ROOT/operation-owned-metadata"
+  "$REAL_MV" "$incoming" "$sentinel"
+  printf 'third-party-metadata\n' >"$incoming"
+  chmod 0600 "$incoming"
+  : >"$EVENT_LOG"
+  assert_fails 'replaced preflight metadata' 'restore journal metadata is unsafe' \
+    invoke_restore "$root" apply "$TEST_REFERENCE_ARCHIVE"
+  [[ "$(cat "$incoming")" == 'third-party-metadata' && -f "$sentinel" ]] ||
+    fail 'replaced preflight metadata was removed or overwritten'
+  ! grep -Fq 'systemctl:stop' "$EVENT_LOG" ||
+    fail 'replaced preflight metadata stopped the service'
+}
+
 case "${TASK20_TEST_CASE:-all}" in
   backup-publish-term) test_backup_publish_term ;;
   restore-limits) test_restore_resource_limits ;;
@@ -1025,6 +1271,12 @@ case "${TASK20_TEST_CASE:-all}" in
   kill-before-move) test_kill_after_stop_before_move ;;
   journal-atomic) test_journal_atomic_cleanup ;;
   backup-transaction) test_backup_transaction_races ;;
+  gnu-stat-fd) test_gnu_stat_fd_semantics ;;
+  preflight-mkdir) test_preflight_journal_window mkdir ;;
+  preflight-metadata)
+    test_preflight_journal_window metadata
+    test_preflight_journal_rejects_unknown
+    ;;
   all)
     test_restore_resource_limits
     test_complete_schema_and_uuid
@@ -1033,6 +1285,10 @@ case "${TASK20_TEST_CASE:-all}" in
     test_exact_schema_fingerprint
     test_journal_atomic_cleanup
     test_backup_transaction_races
+    test_gnu_stat_fd_semantics
+    test_preflight_journal_window mkdir
+    test_preflight_journal_window metadata
+    test_preflight_journal_rejects_unknown
     ;;
   *) fail "unknown TASK20_TEST_CASE: ${TASK20_TEST_CASE:-}" ;;
 esac

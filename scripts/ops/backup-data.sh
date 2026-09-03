@@ -52,12 +52,44 @@ file_identity() {
   stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1"
 }
 
-file_inode() {
-  stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1"
-}
-
 file_link_count() {
   stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1"
+}
+
+file_identity_follow() {
+  stat -L -c '%d:%i' "$1" 2>/dev/null || stat -L -f '%d:%i' "$1"
+}
+
+file_size_follow() {
+  stat -L -c '%s' "$1" 2>/dev/null || stat -L -f '%z' "$1"
+}
+
+file_link_count_follow() {
+  stat -L -c '%h' "$1" 2>/dev/null || stat -L -f '%l' "$1"
+}
+
+file_type_follow() {
+  stat -L -c '%F' "$1" 2>/dev/null || stat -L -f '%HT' "$1"
+}
+
+opened_fd_matches_file() {
+  local descriptor="$1"
+  local path="$2"
+  local identity="$3"
+  local expected_links="$4"
+  local descriptor_identity descriptor_type
+
+  descriptor_identity="$(file_identity_follow "$descriptor")" || return 1
+  descriptor_type="$(file_type_follow "$descriptor")" || return 1
+  if stat -L -c '%d:%i' "$descriptor" >/dev/null 2>&1; then
+    [[ "$descriptor_identity" == "$identity" ]] || return 1
+  else
+    [[ "${descriptor_identity#*:}" == "${identity#*:}" ]] || return 1
+  fi
+  [[ ( "$descriptor_type" == 'regular file' || "$descriptor_type" == 'Regular File' ) &&
+    "$(file_size_follow "$descriptor")" == "$(file_size "$path")" &&
+    "$(file_link_count_follow "$descriptor")" == "$expected_links" &&
+    "$(file_identity "$path")" == "$identity" ]]
 }
 
 sha256_file() {
@@ -71,15 +103,11 @@ sha256_file() {
 sha256_open_file() {
   local path="$1"
   local identity="$2"
-  local descriptor_inode digest
+  local expected_links="$3"
+  local digest
 
   exec 7<"$path" || return 1
-  descriptor_inode="$(file_inode /dev/fd/7)" || {
-    exec 7<&-
-    return 1
-  }
-  [[ "$descriptor_inode" == "${identity#*:}" &&
-    "$(file_identity "$path")" == "$identity" ]] || {
+  opened_fd_matches_file /dev/fd/7 "$path" "$identity" "$expected_links" || {
     exec 7<&-
     return 1
   }
@@ -589,7 +617,8 @@ backup_data() {
   chmod 0600 "$backup_temporary_archive"
   chown root:root "$backup_temporary_archive"
   backup_archive_identity="$(file_identity "$backup_temporary_archive")"
-  [[ "$(file_inode /dev/fd/8)" == "${backup_archive_identity#*:}" ]] ||
+  opened_fd_matches_file /dev/fd/8 "$backup_temporary_archive" \
+    "$backup_archive_identity" 1 ||
     backup_die 'private archive descriptor identity changed'
   if ! tar -czf - -C "$tree" database media SHA256SUMS MANIFEST.txt >&8; then
     exec 8>&-
@@ -598,7 +627,7 @@ backup_data() {
   exec 8>&-
   is_owned_ordinary_file "$backup_temporary_archive" "$backup_archive_identity" ||
     backup_die 'temporary archive identity changed'
-  digest="$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity")" ||
+  digest="$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity" 1)" ||
     backup_die 'could not hash private archive'
   backup_published_archive="$archive"
   publish_link_no_clobber "$backup_temporary_archive" "$archive" "$backup_archive_identity"
@@ -608,7 +637,7 @@ backup_data() {
   backup_before_sidecar_commit "$archive"
   linked_backup_pair_is_owned "$backup_temporary_archive" "$archive" "$backup_archive_identity" ||
     backup_die 'published archive identity changed before commit'
-  [[ "$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity")" == "$digest" &&
+  [[ "$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity" 2)" == "$digest" &&
     "$(file_identity "$target")" == "$target_identity" ]] ||
     backup_die 'published archive content changed before commit'
 
@@ -624,7 +653,8 @@ backup_data() {
   chmod 0600 "$backup_temporary_sidecar"
   chown root:root "$backup_temporary_sidecar"
   backup_sidecar_identity="$(file_identity "$backup_temporary_sidecar")"
-  [[ "$(file_inode /dev/fd/8)" == "${backup_sidecar_identity#*:}" ]] ||
+  opened_fd_matches_file /dev/fd/8 "$backup_temporary_sidecar" \
+    "$backup_sidecar_identity" 1 ||
     backup_die 'private sidecar descriptor identity changed'
   printf '%s  %s\n' "$digest" "$(basename "$archive")" >&8 || {
     exec 8>&-
@@ -637,7 +667,7 @@ backup_data() {
   publish_link_no_clobber "$backup_temporary_sidecar" "$sidecar" "$backup_sidecar_identity"
   linked_backup_pair_is_owned "$backup_temporary_archive" "$archive" "$backup_archive_identity" &&
     linked_backup_pair_is_owned "$backup_temporary_sidecar" "$sidecar" "$backup_sidecar_identity" &&
-    [[ "$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity")" == "$digest" &&
+    [[ "$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity" 2)" == "$digest" &&
       "$(cat "$backup_temporary_sidecar")" == "$digest  $(basename "$archive")" &&
       "$(file_identity "$target")" == "$target_identity" ]] ||
     backup_die 'published backup transaction failed identity validation'
