@@ -394,7 +394,7 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
   #authenticationEpoch = 0
 
   constructor(options: AdminApiOptions = {}) {
-    this.#fetch = options.fetch ?? globalThis.fetch
+    this.#fetch = (options.fetch ?? globalThis.fetch).bind(globalThis)
     this.#xhr = options.xhr ?? (() => new XMLHttpRequest())
   }
 

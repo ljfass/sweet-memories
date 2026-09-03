@@ -601,6 +601,25 @@ describe('AdminApi', () => {
     })
   })
 
+  it('invokes the browser fetch implementation with the global object as its receiver', async () => {
+    const browserFetch = vi.fn(async function browserFetch(this: unknown): Promise<Response> {
+      if (this !== globalThis) {
+        throw new TypeError('Illegal invocation')
+      }
+      return jsonResponse({
+        authenticated: true,
+        username: 'alice',
+        csrfToken: sessionResponse.csrfToken,
+        idleExpiresAt: sessionResponse.idleExpiresAt,
+        absoluteExpiresAt: sessionResponse.absoluteExpiresAt,
+      })
+    }) as unknown as typeof fetch
+    const api = new AdminApi({ fetch: browserFetch })
+
+    await expect(api.checkSession()).resolves.toMatchObject({ username: 'alice' })
+    expect(browserFetch).toHaveBeenCalledTimes(1)
+  })
+
   it('adds only the in-memory CSRF token to logout and never retries a rejected write', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
       error: { code: 'AUTHENTICATION_REQUIRED', message: '请重新登录' },
