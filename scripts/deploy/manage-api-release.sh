@@ -499,6 +499,9 @@ activate() {
   if ! run_release_cli "$release" database migrate; then
     die 'database migration failed'
   fi
+  if ! run_release_cli "$release" uploads disable; then
+    die 'uploads disable failed'
+  fi
 
   begin_link_switch "$current" "$previous" "$release" "$sha"
   if [[ -n "$current" ]]; then

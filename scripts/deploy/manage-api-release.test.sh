@@ -173,6 +173,9 @@ cat >"$MOCK_BIN/mv" <<'MOCK'
 set -euo pipefail
 destination="${!#}"
 "$REAL_MV" "$@"
+if [[ "$destination" == */current || "$destination" == */previous ]]; then
+  printf 'link-switch:%s\n' "${destination##*/}" >>"$EVENT_LOG"
+fi
 if [[ -n "${FAKE_CURRENT_REPLACE_SIGNAL_MARKER:-}" &&
   "$destination" == */current &&
   ! -e "$FAKE_CURRENT_REPLACE_SIGNAL_MARKER" ]]; then
@@ -262,10 +265,13 @@ elif [[ " $* " == *' database migrate '* ]]; then
   fi
   mkdir -p "$data_root/database"
   : >"$data_root/database/sweet-memories.sqlite3"
+elif [[ " $* " == *' uploads disable '* ]]; then
+  printf 'uploads:disable\n' >>"$EVENT_LOG"
+  [[ "${FAKE_UPLOADS_DISABLE_FAIL:-0}" != '1' ]] || exit 1
+  printf 'false\n' >"$data_root/uploads-enabled"
 elif [[ " $* " == *' migration check-ready '* ||
   " $* " == *' migration activate '* ||
   " $* " == *' uploads enable '* ||
-  " $* " == *' uploads disable '* ||
   " $* " == *' uploads status '* ]]; then
   printf 'management-cli\n' >>"$EVENT_LOG"
 else
@@ -357,6 +363,7 @@ invoke_manager_at() {
     FAKE_ARCHIVE_SWAP_MARKER="${FAKE_ARCHIVE_SWAP_MARKER:-}" \
     FAKE_HEALTH_MODE="${FAKE_HEALTH_MODE:-healthy}" \
     FAKE_MIGRATE_FAIL="${FAKE_MIGRATE_FAIL:-0}" \
+    FAKE_UPLOADS_DISABLE_FAIL="${FAKE_UPLOADS_DISABLE_FAIL:-0}" \
     FAKE_MIGRATE_BARRIER="${FAKE_MIGRATE_BARRIER:-}" \
     FAKE_RESTART_FAIL="${FAKE_RESTART_FAIL:-0}" \
     FAKE_RESTART_BARRIER="${FAKE_RESTART_BARRIER:-}" \
@@ -963,6 +970,8 @@ SHA_C='cccccccccccccccccccccccccccccccccccccccc'
 SHA_D='dddddddddddddddddddddddddddddddddddddddd'
 ARCHIVE_A="$TEST_ROOT/a.tar.gz"
 make_archive "$ARCHIVE_A" 'release-a'
+mkdir -p "$DATA_ROOT"
+printf 'true\n' >"$DATA_ROOT/uploads-enabled"
 invoke_manager activate "$SHA_A" "$ARCHIVE_A"
 assert_link "$API_ROOT/current" "$API_ROOT/releases/$SHA_A"
 [[ ! -e "$API_ROOT/previous" ]] || fail 'first activation created a previous link'
@@ -991,9 +1000,11 @@ grep -Fq -- "SWEET_MEMORIES_ORIGIN=https://huangjianfen.cn" "$EVENT_LOG" ||
   fail 'database CLI did not receive the fixed production Origin'
 grep -Fq -- "$API_ROOT/releases/$SHA_A/dist/cli.js database backup" "$EVENT_LOG" ||
   fail 'backup did not use the new release CLI'
+[[ "$(cat "$DATA_ROOT/uploads-enabled")" == 'false' ]] ||
+  fail 'activation did not disable an initially enabled upload state'
 EVENT_SEQUENCE="$(tr '\n' ' ' <"$EVENT_LOG")"
-[[ "$EVENT_SEQUENCE" == *'backup '*migrate*'systemctl:restart:sweet-memories-api.service '*curl* ]] ||
-  fail "activation order was not backup -> migrate -> restart -> health: $EVENT_SEQUENCE"
+[[ "$EVENT_SEQUENCE" == *'backup '*migrate*'uploads:disable '*link-switch:current*'systemctl:restart:sweet-memories-api.service '*curl* ]] ||
+  fail "activation order was not backup -> migrate -> disable uploads -> switch -> restart -> health: $EVENT_SEQUENCE"
 
 BEFORE_REPEAT="$(wc -l <"$EVENT_LOG" | tr -d ' ')"
 REPEAT_ARCHIVE="$TEST_ROOT/a-repeat.tar.gz"
@@ -1005,9 +1016,16 @@ invoke_manager activate "$SHA_A" "$REPEAT_ARCHIVE"
 
 ARCHIVE_B="$TEST_ROOT/b.tar.gz"
 make_archive "$ARCHIVE_B" 'release-b'
+reset_fixture_logs
+printf 'true\n' >"$DATA_ROOT/uploads-enabled"
 invoke_manager activate "$SHA_B" "$ARCHIVE_B"
 assert_link "$API_ROOT/current" "$API_ROOT/releases/$SHA_B"
 assert_link "$API_ROOT/previous" "$API_ROOT/releases/$SHA_A"
+[[ "$(cat "$DATA_ROOT/uploads-enabled")" == 'false' ]] ||
+  fail 'replacement activation did not disable an initially enabled upload state'
+EVENT_SEQUENCE="$(tr '\n' ' ' <"$EVENT_LOG")"
+[[ "$EVENT_SEQUENCE" == *migrate*'uploads:disable '*link-switch:previous*link-switch:current*'systemctl:restart:sweet-memories-api.service '* ]] ||
+  fail "replacement activation did not disable uploads before both link switches and restart: $EVENT_SEQUENCE"
 
 ARCHIVE_C="$TEST_ROOT/c.tar.gz"
 make_archive "$ARCHIVE_C" 'release-c'
@@ -1037,6 +1055,24 @@ assert_fails 'failed migration' 'database migration failed' \
   invoke_manager activate "$SHA_D" "$ARCHIVE_D"
 unset FAKE_MIGRATE_FAIL
 assert_link "$API_ROOT/current" "$API_ROOT/releases/$SHA_A"
+
+SHA_DISABLE_FAIL='f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0'
+ARCHIVE_DISABLE_FAIL="$TEST_ROOT/disable-fail.tar.gz"
+make_archive "$ARCHIVE_DISABLE_FAIL" 'disable-fail'
+printf 'true\n' >"$DATA_ROOT/uploads-enabled"
+reset_fixture_logs
+FAKE_UPLOADS_DISABLE_FAIL=1
+export FAKE_UPLOADS_DISABLE_FAIL
+assert_fails 'failed pre-activation uploads disable' 'uploads disable failed' \
+  invoke_manager activate "$SHA_DISABLE_FAIL" "$ARCHIVE_DISABLE_FAIL"
+unset FAKE_UPLOADS_DISABLE_FAIL
+assert_link "$API_ROOT/current" "$API_ROOT/releases/$SHA_A"
+assert_link "$API_ROOT/previous" "$API_ROOT/releases/$SHA_B"
+grep -Fq 'uploads:disable' "$EVENT_LOG" ||
+  fail 'failed pre-activation uploads disable was not attempted'
+if grep -Eq '^link-switch:|^systemctl:restart:' "$EVENT_LOG"; then
+  fail 'failed pre-activation uploads disable switched a link or restarted the service'
+fi
 
 SHA_E='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
 ARCHIVE_E="$TEST_ROOT/e.tar.gz"
