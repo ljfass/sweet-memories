@@ -1,4 +1,15 @@
-import { chmodSync, closeSync, lstatSync, openSync, realpathSync, unlinkSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  linkSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  realpathSync,
+  rmdirSync,
+  unlinkSync,
+} from 'node:fs';
+import type { Stats } from 'node:fs';
 import { dirname, isAbsolute, join, normalize } from 'node:path';
 import type Database from 'better-sqlite3';
 
@@ -39,6 +50,18 @@ function writeLine(output: AdminCommandOutput, message: string): void {
   output.write(`${message}\n`);
 }
 
+function isMissingPath(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+function sameIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function isOrdinarySingleLink(stat: Stats): boolean {
+  return stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1;
+}
+
 async function backupDatabase(
   db: Database.Database,
   dataRoot: string,
@@ -58,29 +81,95 @@ async function backupDatabase(
     throw new Error('部署备份目录无效');
   }
 
-  let descriptor: number | undefined;
-  let ownsDestination = false;
   try {
-    descriptor = openSync(normalizedDestination, 'wx', 0o600);
-    ownsDestination = true;
+    lstatSync(normalizedDestination);
+    throw new Error('数据库备份目标已存在');
+  } catch (error) {
+    if (!isMissingPath(error)) throw error;
+  }
+
+  let descriptor: number | undefined;
+  let workspace = '';
+  let temporary = '';
+  let workspaceIdentity: Stats | undefined;
+  let temporaryIdentity: Stats | undefined;
+  let publishedIdentity: Stats | undefined;
+  let completed = false;
+  try {
+    workspace = mkdtempSync(join(backupRoot, '.incoming-'));
+    chmodSync(workspace, 0o700);
+    workspaceIdentity = lstatSync(workspace);
+    if (
+      !workspaceIdentity.isDirectory() ||
+      workspaceIdentity.isSymbolicLink() ||
+      realpathSync(workspace) !== workspace
+    ) {
+      throw new Error('数据库备份临时目录无效');
+    }
+
+    temporary = join(workspace, 'database.sqlite3');
+    descriptor = openSync(temporary, 'wx', 0o600);
+    temporaryIdentity = lstatSync(temporary);
+    if (!isOrdinarySingleLink(temporaryIdentity)) {
+      throw new Error('数据库备份临时文件无效');
+    }
     closeSync(descriptor);
     descriptor = undefined;
-    await db.backup(normalizedDestination);
-    const destinationStat = lstatSync(normalizedDestination);
-    if (!destinationStat.isFile() || destinationStat.isSymbolicLink()) {
+
+    await db.backup(temporary);
+    let temporaryStat = lstatSync(temporary);
+    if (!isOrdinarySingleLink(temporaryStat) || !sameIdentity(temporaryIdentity, temporaryStat)) {
       throw new Error('数据库备份不是普通文件');
     }
-    chmodSync(normalizedDestination, 0o600);
-  } catch (error) {
+    chmodSync(temporary, 0o600);
+    temporaryStat = lstatSync(temporary);
+    if (!isOrdinarySingleLink(temporaryStat) || !sameIdentity(temporaryIdentity, temporaryStat)) {
+      throw new Error('数据库备份文件身份发生变化');
+    }
+
+    linkSync(temporary, normalizedDestination);
+    const publishedStat = lstatSync(normalizedDestination);
+    if (!publishedStat.isFile() || publishedStat.isSymbolicLink() || !sameIdentity(temporaryStat, publishedStat)) {
+      throw new Error('数据库备份发布身份无效');
+    }
+    publishedIdentity = publishedStat;
+    unlinkSync(temporary);
+    temporary = '';
+    rmdirSync(workspace);
+    workspace = '';
+
+    const finalStat = lstatSync(normalizedDestination);
+    if (!isOrdinarySingleLink(finalStat) || !sameIdentity(publishedStat, finalStat)) {
+      throw new Error('数据库备份发布结果无效');
+    }
+    completed = true;
+  } finally {
     if (descriptor !== undefined) closeSync(descriptor);
-    if (ownsDestination) {
+    if (!completed && publishedIdentity !== undefined) {
       try {
-        unlinkSync(normalizedDestination);
+        const current = lstatSync(normalizedDestination);
+        if (sameIdentity(publishedIdentity, current)) unlinkSync(normalizedDestination);
       } catch {
-        // The original backup failure remains the actionable error.
+        // Preserve the original backup failure.
       }
     }
-    throw error;
+    if (workspace && workspaceIdentity !== undefined) {
+      try {
+        const currentWorkspace = lstatSync(workspace);
+        if (sameIdentity(workspaceIdentity, currentWorkspace)) {
+          if (temporary) {
+            try {
+              unlinkSync(temporary);
+            } catch {
+              // Preserve the original backup failure.
+            }
+          }
+          rmdirSync(workspace);
+        }
+      } catch {
+        // Preserve the original backup failure.
+      }
+    }
   }
 }
 

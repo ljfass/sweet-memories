@@ -123,23 +123,42 @@ database.close();
 NODE
 
 REAL_TAR="$(command -v tar)"
+REAL_SLEEP="$(command -v sleep)"
 MOCK_BIN="$TEST_ROOT/bin"
 EVENT_LOG="$TEST_ROOT/events.log"
 CHOWN_LOG="$TEST_ROOT/chown.log"
 CURL_LOG="$TEST_ROOT/curl.log"
 INSTALL_LOG="$TEST_ROOT/install.log"
+LOCK_LOG="$TEST_ROOT/lock.log"
+TAR_LOG="$TEST_ROOT/tar.log"
 mkdir -p "$MOCK_BIN"
 : >"$EVENT_LOG"
 : >"$CHOWN_LOG"
 : >"$CURL_LOG"
 : >"$INSTALL_LOG"
+: >"$LOCK_LOG"
+: >"$TAR_LOG"
 
 cat >"$MOCK_BIN/install" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$INSTALL_LOG"
+mode=''
+arguments=("$@")
+for ((index = 0; index < ${#arguments[@]}; index++)); do
+  if [[ "${arguments[index]}" == '-m' ]]; then
+    mode="${arguments[index + 1]}"
+  fi
+done
 target="${!#}"
 mkdir -p "$target"
+if [[ -n "$mode" ]] && ! chmod "$mode" "$target"; then
+  if [[ "$mode" == '2750' && "$(uname -s)" != 'Linux' ]]; then
+    chmod 0750 "$target"
+  else
+    exit 1
+  fi
+fi
 MOCK
 
 cat >"$MOCK_BIN/chown" <<'MOCK'
@@ -153,6 +172,15 @@ cat >"$MOCK_BIN/systemctl" <<'MOCK'
 set -euo pipefail
 [[ "$#" -eq 2 && "$1" == 'restart' && "$2" == 'sweet-memories-api.service' ]]
 printf 'systemctl:%s:%s\n' "$1" "$2" >>"$EVENT_LOG"
+if [[ -n "${FAKE_RESTART_BARRIER:-}" && ! -e "$FAKE_RESTART_BARRIER/used" ]]; then
+  mkdir -p "$FAKE_RESTART_BARRIER"
+  : >"$FAKE_RESTART_BARRIER/used"
+  printf '%s\n' "$PPID" >"$FAKE_RESTART_BARRIER/manager-pid"
+  : >"$FAKE_RESTART_BARRIER/ready"
+  while [[ ! -e "$FAKE_RESTART_BARRIER/release" ]]; do
+    "$REAL_SLEEP" 0.02
+  done
+fi
 [[ "${FAKE_RESTART_FAIL:-0}" != '1' ]]
 MOCK
 
@@ -201,6 +229,14 @@ if [[ " $* " == *' database backup '* ]]; then
 elif [[ " $* " == *' database migrate '* ]]; then
   printf 'migrate\n' >>"$EVENT_LOG"
   [[ "${FAKE_MIGRATE_FAIL:-0}" != '1' ]] || exit 1
+  if [[ -n "${FAKE_MIGRATE_BARRIER:-}" && ! -e "$FAKE_MIGRATE_BARRIER/used" ]]; then
+    mkdir -p "$FAKE_MIGRATE_BARRIER"
+    : >"$FAKE_MIGRATE_BARRIER/used"
+    : >"$FAKE_MIGRATE_BARRIER/ready"
+    while [[ ! -e "$FAKE_MIGRATE_BARRIER/release" ]]; do
+      "$REAL_SLEEP" 0.02
+    done
+  fi
   mkdir -p "$data_root/database"
   : >"$data_root/database/sweet-memories.sqlite3"
 elif [[ " $* " == *' migration check-ready '* ||
@@ -217,6 +253,23 @@ MOCK
 cat >"$MOCK_BIN/tar" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
+archive=''
+for argument in "$@"; do
+  if [[ "$argument" == *.tar.gz && -f "$argument" ]]; then
+    archive="$argument"
+  fi
+done
+if [[ -n "$archive" ]]; then
+  printf '%s\n' "$archive" >>"$TAR_LOG"
+  mode="$(stat -c '%a' "$archive" 2>/dev/null || stat -f '%Lp' "$archive")"
+  links="$(stat -c '%h' "$archive" 2>/dev/null || stat -f '%l' "$archive")"
+  parent_mode="$(stat -c '%a' "$(dirname "$archive")" 2>/dev/null || stat -f '%Lp' "$(dirname "$archive")")"
+  printf 'tar-meta:%s:%s:%s:%s\n' "$archive" "$mode" "$links" "$parent_mode" >>"$EVENT_LOG"
+fi
+if [[ -n "${FAKE_ARCHIVE_SWAP_SOURCE:-}" && ! -e "${FAKE_ARCHIVE_SWAP_MARKER:-}" ]]; then
+  : >"$FAKE_ARCHIVE_SWAP_MARKER"
+  mv -f "$FAKE_ARCHIVE_REPLACEMENT" "$FAKE_ARCHIVE_SWAP_SOURCE"
+fi
 if [[ "${FAKE_TAR_TERM:-0}" == '1' && " $* " == *' -x'* ]]; then
   staging=''
   while (($# > 0)); do
@@ -235,8 +288,27 @@ fi
 exec "$REAL_TAR" "$@"
 MOCK
 
+cat >"$MOCK_BIN/flock" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -n "${FAKE_LOCK_DIR:-}" ]]
+case "$1" in
+  -x|--exclusive)
+    while ! mkdir "$FAKE_LOCK_DIR" 2>/dev/null; do
+      "$REAL_SLEEP" 0.02
+    done
+    printf 'acquire:%s\n' "$PPID" >>"$LOCK_LOG"
+    ;;
+  -u|--unlock)
+    rmdir "$FAKE_LOCK_DIR"
+    printf 'release:%s\n' "$PPID" >>"$LOCK_LOG"
+    ;;
+  *) exit 64 ;;
+esac
+MOCK
+
 chmod +x "$MOCK_BIN"/*
-export REAL_TAR EVENT_LOG CHOWN_LOG CURL_LOG INSTALL_LOG
+export REAL_TAR REAL_SLEEP EVENT_LOG CHOWN_LOG CURL_LOG INSTALL_LOG LOCK_LOG TAR_LOG
 
 API_ROOT="$TEST_ROOT/opt/sweet-memories-api"
 DATA_ROOT="$TEST_ROOT/var/lib/sweet-memories"
@@ -248,19 +320,29 @@ invoke_manager_at() {
 
   env PATH="$MOCK_BIN:$PATH" \
     REAL_TAR="$REAL_TAR" \
+    REAL_SLEEP="$REAL_SLEEP" \
     EVENT_LOG="$EVENT_LOG" \
     CHOWN_LOG="$CHOWN_LOG" \
     CURL_LOG="$CURL_LOG" \
     INSTALL_LOG="$INSTALL_LOG" \
+    LOCK_LOG="$LOCK_LOG" \
+    TAR_LOG="$TAR_LOG" \
+    FAKE_LOCK_DIR="$TEST_ROOT/.fixture-lock" \
+    FAKE_ARCHIVE_SWAP_SOURCE="${FAKE_ARCHIVE_SWAP_SOURCE:-}" \
+    FAKE_ARCHIVE_REPLACEMENT="${FAKE_ARCHIVE_REPLACEMENT:-}" \
+    FAKE_ARCHIVE_SWAP_MARKER="${FAKE_ARCHIVE_SWAP_MARKER:-}" \
     FAKE_HEALTH_MODE="${FAKE_HEALTH_MODE:-healthy}" \
     FAKE_MIGRATE_FAIL="${FAKE_MIGRATE_FAIL:-0}" \
+    FAKE_MIGRATE_BARRIER="${FAKE_MIGRATE_BARRIER:-}" \
     FAKE_RESTART_FAIL="${FAKE_RESTART_FAIL:-0}" \
+    FAKE_RESTART_BARRIER="${FAKE_RESTART_BARRIER:-}" \
     FAKE_TAR_TERM="${FAKE_TAR_TERM:-0}" \
     bash -c '
       source "$1"
       API_ROOT="$2"
       DATA_ROOT="$3"
       ARCHIVE_ROOT="$4"
+      LOCK_FILE="$4/sweet-memories-api-release.lock"
       SERVICE_NAME="sweet-memories-api.service"
       manage_api_release "${@:5}"
     ' _ "$MANAGER" "$api_root" "$data_root" "$TEST_ROOT" "$@"
@@ -286,6 +368,488 @@ make_archive() {
   "$REAL_TAR" -C "$source" -czf "$archive" .
   rm -rf "$source"
 }
+
+wait_for_path() {
+  local path="$1"
+  local label="$2"
+  local attempt
+
+  for attempt in $(seq 1 250); do
+    [[ -e "$path" ]] && return 0
+    "$REAL_SLEEP" 0.02
+  done
+  fail "timed out waiting for $label"
+}
+
+wait_for_process() {
+  local pid="$1"
+  local result_name="$2"
+  local process_status
+
+  set +e
+  wait "$pid"
+  process_status=$?
+  set -e
+  printf -v "$result_name" '%s' "$process_status"
+}
+
+reset_fixture_logs() {
+  : >"$EVENT_LOG"
+  : >"$CHOWN_LOG"
+  : >"$CURL_LOG"
+  : >"$INSTALL_LOG"
+  : >"$LOCK_LOG"
+  : >"$TAR_LOG"
+}
+
+probe_persistent_permissions() {
+  local api_root="$TEST_ROOT/review-permissions/opt/sweet-memories-api"
+  local data_root="$TEST_ROOT/review-permissions/var/lib/sweet-memories"
+  local archive="$TEST_ROOT/review-permissions.tar.gz"
+  local sha='6060606060606060606060606060606060606060'
+  local path
+  local expected_media_mode='2750'
+
+  if [[ "$(uname -s)" != 'Linux' ]]; then
+    expected_media_mode='750'
+  fi
+
+  make_archive "$archive" 'review-permissions'
+  invoke_manager_at "$api_root" "$data_root" activate "$sha" "$archive"
+  [[ "$(file_mode "$data_root")" == '750' ]] || fail 'data root mode must be 0750'
+  for path in database staging backups backups/deploy; do
+    [[ "$(file_mode "$data_root/$path")" == '700' ]] ||
+      fail "$path mode must be 0700"
+  done
+  [[ "$(file_mode "$data_root/media")" == "$expected_media_mode" ]] ||
+    fail "media mode must be $expected_media_mode on this host"
+
+  chmod 0777 "$data_root/database" "$data_root/staging" "$data_root/backups" \
+    "$data_root/backups/deploy" "$data_root/media"
+  invoke_manager_at "$api_root" "$data_root" cli uploads status
+  for path in database staging backups backups/deploy; do
+    [[ "$(file_mode "$data_root/$path")" == '700' ]] ||
+      fail "$path mode was not restored to 0700 on a later invocation"
+  done
+  [[ "$(file_mode "$data_root/media")" == "$expected_media_mode" ]] ||
+    fail "media mode was not restored to $expected_media_mode on a later invocation"
+
+  mkdir -p "$data_root/media/www-data-fixture"
+  if ! chmod 2750 "$data_root/media/www-data-fixture"; then
+    chmod 0750 "$data_root/media/www-data-fixture"
+  fi
+  printf 'media\n' >"$data_root/media/www-data-fixture/photo.jpg"
+  chmod 0640 "$data_root/media/www-data-fixture/photo.jpg"
+  [[ "$(file_mode "$data_root/media/www-data-fixture")" == "$expected_media_mode" &&
+    "$(file_mode "$data_root/media/www-data-fixture/photo.jpg")" == '640' ]] ||
+    fail 'www-data fixture does not grant group read/traverse without group write'
+  grep -Fq -- "-o sweet-memories -g sweet-memories-media -m 2750 $data_root/media" \
+    "$INSTALL_LOG" || fail 'media ownership/mode installation contract is missing'
+
+  if [[ "$(id -u)" -eq 0 ]] && id -u www-data >/dev/null 2>&1 &&
+    id -nG www-data 2>/dev/null | tr ' ' '\n' | grep -Fxq sweet-memories-media; then
+    local access_fixture="$TEST_ROOT/www-data-media-access"
+
+    install -d -o sweet-memories -g sweet-memories-media -m 2750 "$access_fixture"
+    install -o sweet-memories -g sweet-memories-media -m 0640 \
+      /dev/null "$access_fixture/photo.jpg"
+    runuser --user www-data -- test -r "$access_fixture/photo.jpg" ||
+      fail 'configured www-data user cannot read group-readable media'
+    if runuser --user www-data -- test -w "$access_fixture/photo.jpg"; then
+      fail 'configured www-data user can write group-readable media'
+    fi
+  else
+    grep -Fq 'Group=sweet-memories-media' "$SYSTEMD_TEMPLATE" ||
+      fail 'service template does not establish the media group contract'
+    grep -Fq 'root /var/lib/sweet-memories;' "$NGINX_TEMPLATE" ||
+      fail 'nginx template does not serve the protected media root'
+  fi
+}
+
+probe_private_archive_copy() {
+  local api_root="$TEST_ROOT/review-archive/opt/sweet-memories-api"
+  local data_root="$TEST_ROOT/review-archive/var/lib/sweet-memories"
+  local archive="$TEST_ROOT/review-archive.tar.gz"
+  local replacement="$TEST_ROOT/review-archive-replacement.tar.gz"
+  local marker="$TEST_ROOT/review-archive-swapped"
+  local sha='6161616161616161616161616161616161616161'
+  local tar_path unique_count
+
+  reset_fixture_logs
+  make_archive "$archive" 'immutable-original'
+  make_archive "$replacement" 'attacker-replacement'
+  FAKE_ARCHIVE_SWAP_SOURCE="$archive" \
+  FAKE_ARCHIVE_REPLACEMENT="$replacement" \
+  FAKE_ARCHIVE_SWAP_MARKER="$marker" \
+    invoke_manager_at "$api_root" "$data_root" activate "$sha" "$archive"
+  grep -Fq 'immutable-original' "$api_root/releases/$sha/dist/index.js" ||
+    fail 'activation consumed the caller path after it was replaced'
+  if grep -Fqx -- "$archive" "$TAR_LOG"; then
+    fail 'tar reopened the mutable caller archive path'
+  fi
+  unique_count="$(sort -u "$TAR_LOG" | wc -l | tr -d ' ')"
+  [[ "$unique_count" == '1' ]] || fail 'validation and extraction did not use one archive copy'
+  tar_path="$(head -1 "$TAR_LOG")"
+  [[ "$tar_path" == "$api_root"/.archive-*/release.tar.gz ]] ||
+    fail 'archive was not copied into a root-owned private workspace'
+  grep -Fq "tar-meta:$tar_path:400:1:700" "$EVENT_LOG" ||
+    fail 'private archive copy was not mode 0400, single-linked, inside mode 0700'
+  grep -Fq -- "root:root $tar_path" "$CHOWN_LOG" ||
+    fail 'private archive copy was not normalized to root:root'
+  [[ -z "$(find "$api_root" -maxdepth 1 -name '.archive-*' -print -quit)" ]] ||
+    fail 'private archive workspace was not cleaned'
+}
+
+probe_cleanup_requires_five() {
+  local api_root="$TEST_ROOT/review-cleanup/opt/sweet-memories-api"
+  local data_root="$TEST_ROOT/review-cleanup/var/lib/sweet-memories"
+
+  assert_fails 'cleanup count other than five' 'cleanup count must be exactly 5' \
+    invoke_manager_at "$api_root" "$data_root" cleanup 4
+}
+
+probe_global_serialization() {
+  local api_root="$TEST_ROOT/review-lock/opt/sweet-memories-api"
+  local data_root="$TEST_ROOT/review-lock/var/lib/sweet-memories"
+  local base_sha='6262626262626262626262626262626262626262'
+  local first_sha='6363636363636363636363636363636363636363'
+  local second_sha='6464646464646464646464646464646464646464'
+  local third_sha='6565656565656565656565656565656565656565'
+  local base_archive="$TEST_ROOT/review-lock-base.tar.gz"
+  local first_archive="$TEST_ROOT/review-lock-first.tar.gz"
+  local second_archive="$TEST_ROOT/review-lock-second.tar.gz"
+  local third_archive="$TEST_ROOT/review-lock-third.tar.gz"
+  local first_barrier="$TEST_ROOT/review-lock-first-barrier"
+  local third_barrier="$TEST_ROOT/review-lock-third-barrier"
+  local first_pid second_pid third_pid rollback_pid
+  local first_status second_status third_status rollback_status
+  local second_started_early=0 rollback_finished_early=0
+  local acquire_count release_count
+
+  reset_fixture_logs
+  make_archive "$base_archive" 'lock-base'
+  invoke_manager_at "$api_root" "$data_root" activate "$base_sha" "$base_archive"
+
+  make_archive "$first_archive" 'lock-first'
+  make_archive "$second_archive" 'lock-second'
+  FAKE_MIGRATE_BARRIER="$first_barrier" \
+    invoke_manager_at "$api_root" "$data_root" activate "$first_sha" "$first_archive" \
+    >"$TEST_ROOT/review-lock-first.log" 2>&1 &
+  first_pid=$!
+  wait_for_path "$first_barrier/ready" 'first serialized migration barrier'
+  invoke_manager_at "$api_root" "$data_root" activate "$second_sha" "$second_archive" \
+    >"$TEST_ROOT/review-lock-second.log" 2>&1 &
+  second_pid=$!
+  "$REAL_SLEEP" 0.2
+  if [[ -e "$api_root/releases/$second_sha" ]]; then
+    second_started_early=1
+  fi
+  : >"$first_barrier/release"
+  wait_for_process "$first_pid" first_status
+  wait_for_process "$second_pid" second_status
+  [[ "$second_started_early" -eq 0 ]] ||
+    fail 'parallel activation entered the mutation phase before the first lock released'
+  [[ "$first_status" -eq 0 && "$second_status" -eq 0 ]] ||
+    fail "parallel activation failed: first=$first_status second=$second_status"
+  assert_link "$api_root/current" "$api_root/releases/$second_sha"
+  assert_link "$api_root/previous" "$api_root/releases/$first_sha"
+
+  make_archive "$third_archive" 'lock-third'
+  FAKE_MIGRATE_BARRIER="$third_barrier" \
+    invoke_manager_at "$api_root" "$data_root" activate "$third_sha" "$third_archive" \
+    >"$TEST_ROOT/review-lock-third.log" 2>&1 &
+  third_pid=$!
+  wait_for_path "$third_barrier/ready" 'conditional rollback serialization barrier'
+  invoke_manager_at "$api_root" "$data_root" rollback-if-current "$second_sha" \
+    >"$TEST_ROOT/review-lock-rollback.log" 2>&1 &
+  rollback_pid=$!
+  "$REAL_SLEEP" 0.2
+  if ! kill -0 "$rollback_pid" 2>/dev/null; then
+    rollback_finished_early=1
+  fi
+  : >"$third_barrier/release"
+  wait_for_process "$third_pid" third_status
+  wait_for_process "$rollback_pid" rollback_status
+  [[ "$rollback_finished_early" -eq 0 ]] ||
+    fail 'conditional rollback was not serialized behind activation'
+  [[ "$third_status" -eq 0 && "$rollback_status" -ne 0 ]] ||
+    fail "conditional rollback did not re-check current under lock: activate=$third_status rollback=$rollback_status"
+  assert_link "$api_root/current" "$api_root/releases/$third_sha"
+
+  invoke_manager_at "$api_root" "$data_root" cleanup 5
+  invoke_manager_at "$api_root" "$data_root" cli uploads status
+  [[ "$(file_mode "$TEST_ROOT/sweet-memories-api-release.lock")" == '600' ]] ||
+    fail 'release lock file is not mode 0600'
+  grep -Fq -- "root:root $TEST_ROOT/sweet-memories-api-release.lock" "$CHOWN_LOG" ||
+    fail 'release lock file was not normalized to root:root'
+  acquire_count="$(grep -c '^acquire:' "$LOCK_LOG" || true)"
+  release_count="$(grep -c '^release:' "$LOCK_LOG" || true)"
+  [[ "$acquire_count" -ge 7 && "$release_count" == "$acquire_count" ]] ||
+    fail "all manager commands were not covered by one balanced lock: acquire=$acquire_count release=$release_count"
+}
+
+probe_signal_recovery() {
+  local api_root="$TEST_ROOT/review-signal/opt/sweet-memories-api"
+  local data_root="$TEST_ROOT/review-signal/var/lib/sweet-memories"
+  local base_sha='6666666666666666666666666666666666666666'
+  local target_sha='6767676767676767676767676767676767676767'
+  local base_archive="$TEST_ROOT/review-signal-base.tar.gz"
+  local target_archive="$TEST_ROOT/review-signal-target.tar.gz"
+  local barrier="$TEST_ROOT/review-signal-barrier"
+  local wrapper_pid manager_pid status restart_count leftovers
+
+  reset_fixture_logs
+  make_archive "$base_archive" 'signal-base'
+  invoke_manager_at "$api_root" "$data_root" activate "$base_sha" "$base_archive"
+  reset_fixture_logs
+  make_archive "$target_archive" 'signal-target'
+  FAKE_RESTART_BARRIER="$barrier" \
+    invoke_manager_at "$api_root" "$data_root" activate "$target_sha" "$target_archive" \
+    >"$TEST_ROOT/review-signal.log" 2>&1 &
+  wrapper_pid=$!
+  wait_for_path "$barrier/manager-pid" 'post-switch manager PID'
+  assert_link "$api_root/current" "$api_root/releases/$target_sha"
+  manager_pid="$(cat "$barrier/manager-pid")"
+  kill -TERM "$manager_pid"
+  : >"$barrier/release"
+  wait_for_process "$wrapper_pid" status
+  [[ "$status" -ne 0 ]] || fail 'TERM-interrupted activation unexpectedly succeeded'
+  assert_link "$api_root/current" "$api_root/releases/$base_sha"
+  [[ ! -e "$api_root/previous" ]] || fail 'TERM recovery did not restore the previous-link state'
+  restart_count="$(grep -c '^systemctl:restart:' "$EVENT_LOG" || true)"
+  [[ "$restart_count" -eq 2 ]] || fail 'TERM recovery did not restart the old release exactly once'
+  leftovers="$(find "$api_root" -maxdepth 2 \
+    \( -name '.archive-*' -o -name '.incoming-*' -o -name '.current-*' -o -name '.previous-*' -o -name '.fixture-lock' \) \
+    -print -quit)"
+  [[ -z "$leftovers" ]] || fail "TERM recovery left owned temporary state: $leftovers"
+}
+
+probe_signal_does_not_overwrite_newer_current() {
+  local api_root="$TEST_ROOT/review-signal-newer/opt/sweet-memories-api"
+  local data_root="$TEST_ROOT/review-signal-newer/var/lib/sweet-memories"
+  local base_sha='6868686868686868686868686868686868686868'
+  local target_sha='6969696969696969696969696969696969696969'
+  local newer_sha='7070707070707070707070707070707070707070'
+  local base_archive="$TEST_ROOT/review-signal-newer-base.tar.gz"
+  local target_archive="$TEST_ROOT/review-signal-newer-target.tar.gz"
+  local barrier="$TEST_ROOT/review-signal-newer-barrier"
+  local wrapper_pid manager_pid status
+
+  reset_fixture_logs
+  make_archive "$base_archive" 'signal-newer-base'
+  invoke_manager_at "$api_root" "$data_root" activate "$base_sha" "$base_archive"
+  make_archive "$target_archive" 'signal-newer-target'
+  FAKE_RESTART_BARRIER="$barrier" \
+    invoke_manager_at "$api_root" "$data_root" activate "$target_sha" "$target_archive" \
+    >"$TEST_ROOT/review-signal-newer.log" 2>&1 &
+  wrapper_pid=$!
+  wait_for_path "$barrier/manager-pid" 'newer-current signal manager PID'
+  mkdir -p "$api_root/releases/$newer_sha"
+  ln -s "$api_root/releases/$newer_sha" "$api_root/.external-current"
+  mv -hf "$api_root/.external-current" "$api_root/current"
+  manager_pid="$(cat "$barrier/manager-pid")"
+  kill -TERM "$manager_pid"
+  : >"$barrier/release"
+  wait_for_process "$wrapper_pid" status
+  [[ "$status" -ne 0 ]] || fail 'newer-current TERM activation unexpectedly succeeded'
+  assert_link "$api_root/current" "$api_root/releases/$newer_sha"
+}
+
+probe_hardened_database_backup() {
+  REPOSITORY_ROOT="$REPOSITORY_ROOT" TEST_ROOT="$TEST_ROOT" \
+    node --experimental-strip-types --input-type=module <<'NODE'
+import assert from 'node:assert/strict';
+import {
+  chmodSync,
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const repositoryRoot = process.env.REPOSITORY_ROOT;
+const testRoot = process.env.TEST_ROOT;
+assert.ok(repositoryRoot);
+assert.ok(testRoot);
+const { runDatabaseCommand } = await import(pathToFileURL(
+  join(repositoryRoot, 'apps/api/src/cli/database.ts'),
+).href);
+const root = realpathSync(testRoot);
+const dataRoot = join(root, 'review-backup');
+const backupRoot = join(dataRoot, 'backups', 'deploy');
+mkdirSync(backupRoot, { recursive: true });
+const failures = [];
+const check = async (name, operation) => {
+  try {
+    await operation();
+  } catch (error) {
+    failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+};
+const command = (database, destination) => runDatabaseCommand({
+  argv: ['database', 'backup', destination],
+  db: database,
+  dataRoot,
+  migrationsRoot: '/release/migrations',
+  output: { write: () => undefined },
+  migrate: () => undefined,
+});
+
+await check('private unpredictable temporary backup', async () => {
+  const final = join(backupRoot, 'private.sqlite3');
+  let observed;
+  const result = await command({
+    backup: async (temporary) => {
+      observed = temporary;
+      assert.equal(existsSync(final), false);
+      assert.notEqual(temporary, final);
+      assert.ok(temporary.startsWith(`${backupRoot}${sep}.incoming-`));
+      assert.equal(lstatSync(dirname(temporary)).mode & 0o777, 0o700);
+      writeFileSync(temporary, 'private-snapshot');
+    },
+  }, final);
+  assert.equal(result, 0);
+  assert.ok(observed);
+  assert.equal(readFileSync(final, 'utf8'), 'private-snapshot');
+  const finalStat = lstatSync(final);
+  assert.equal(finalStat.isFile(), true);
+  assert.equal(finalStat.isSymbolicLink(), false);
+  assert.equal(finalStat.nlink, 1);
+  assert.equal(finalStat.mode & 0o777, 0o600);
+});
+
+await check('final symlink no-clobber', async () => {
+  const external = join(dataRoot, 'symlink-external');
+  const final = join(backupRoot, 'symlink.sqlite3');
+  writeFileSync(external, 'external-safe');
+  symlinkSync(external, final);
+  assert.equal(await command({ backup: async () => assert.fail('backup must not run') }, final), 1);
+  assert.equal(readFileSync(external, 'utf8'), 'external-safe');
+  assert.equal(lstatSync(final).isSymbolicLink(), true);
+});
+
+await check('final hard-link no-clobber', async () => {
+  const external = join(dataRoot, 'hardlink-external');
+  const final = join(backupRoot, 'hardlink.sqlite3');
+  writeFileSync(external, 'hardlink-safe');
+  chmodSync(external, 0o640);
+  linkSync(external, final);
+  assert.equal(await command({ backup: async () => assert.fail('backup must not run') }, final), 1);
+  assert.equal(readFileSync(external, 'utf8'), 'hardlink-safe');
+  assert.equal(lstatSync(final).ino, lstatSync(external).ino);
+  assert.equal(lstatSync(external).mode & 0o777, 0o640);
+});
+
+await check('publish race no-clobber', async () => {
+  const final = join(backupRoot, 'race.sqlite3');
+  const result = await command({
+    backup: async (temporary) => {
+      writeFileSync(temporary, 'snapshot');
+      writeFileSync(final, 'attacker-won-race');
+    },
+  }, final);
+  assert.equal(result, 1);
+  assert.equal(readFileSync(final, 'utf8'), 'attacker-won-race');
+});
+
+await check('temporary symlink rejected', async () => {
+  const external = join(dataRoot, 'temporary-symlink-external');
+  const final = join(backupRoot, 'temporary-symlink.sqlite3');
+  writeFileSync(external, 'temporary-symlink-safe');
+  const result = await command({
+    backup: async (temporary) => {
+      unlinkSync(temporary);
+      symlinkSync(external, temporary);
+    },
+  }, final);
+  assert.equal(result, 1);
+  assert.equal(readFileSync(external, 'utf8'), 'temporary-symlink-safe');
+  assert.equal(existsSync(final), false);
+});
+
+await check('temporary ordinary replacement rejected by identity', async () => {
+  const replacement = join(dataRoot, 'temporary-replacement');
+  const final = join(backupRoot, 'temporary-replacement.sqlite3');
+  writeFileSync(replacement, 'replacement');
+  const result = await command({
+    backup: async (temporary) => {
+      unlinkSync(temporary);
+      renameSync(replacement, temporary);
+    },
+  }, final);
+  assert.equal(result, 1);
+  assert.equal(existsSync(final), false);
+});
+
+await check('temporary hard link rejected without chmod', async () => {
+  const external = join(dataRoot, 'temporary-hardlink-external');
+  const final = join(backupRoot, 'temporary-hardlink.sqlite3');
+  writeFileSync(external, 'temporary-hardlink-safe');
+  chmodSync(external, 0o640);
+  const result = await command({
+    backup: async (temporary) => {
+      unlinkSync(temporary);
+      linkSync(external, temporary);
+    },
+  }, final);
+  assert.equal(result, 1);
+  assert.equal(readFileSync(external, 'utf8'), 'temporary-hardlink-safe');
+  assert.equal(lstatSync(external).mode & 0o777, 0o640);
+  assert.equal(existsSync(final), false);
+});
+
+await check('temporary cleanup after backup error', async () => {
+  const final = join(backupRoot, 'failure.sqlite3');
+  const result = await command({
+    backup: async (temporary) => {
+      writeFileSync(temporary, 'partial');
+      throw new Error('injected backup failure');
+    },
+  }, final);
+  assert.equal(result, 1);
+  assert.equal(existsSync(final), false);
+  assert.deepEqual(readdirSync(backupRoot).filter((name) => name.startsWith('.incoming-')), []);
+});
+
+rmSync(dataRoot, { recursive: true, force: true });
+if (failures.length > 0) {
+  for (const failure of failures) console.error(`BACKUP RED: ${failure}`);
+  process.exitCode = 1;
+}
+NODE
+}
+
+review_failure_count=0
+for review_probe in \
+  probe_persistent_permissions \
+  probe_private_archive_copy \
+  probe_global_serialization \
+  probe_signal_recovery \
+  probe_signal_does_not_overwrite_newer_current \
+  probe_hardened_database_backup \
+  probe_cleanup_requires_five; do
+  if review_output="$($review_probe 2>&1)"; then
+    printf 'review probe passed: %s\n' "$review_probe"
+  else
+    review_failure_count=$((review_failure_count + 1))
+    printf 'review probe failed: %s\n%s\n' "$review_probe" "$review_output" >&2
+  fi
+done
+if [[ "$review_failure_count" -ne 0 ]]; then
+  fail "$review_failure_count Task18 review regression probes failed"
+fi
+
+reset_fixture_logs
 
 SHA_A='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 SHA_B='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'

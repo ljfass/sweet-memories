@@ -9,8 +9,18 @@ SERVICE_USER=sweet-memories
 SERVICE_GROUP=sweet-memories-media
 NODE_PATH=/usr/local/bin/node
 HEALTH_URL=http://127.0.0.1:3100/api/health
+LOCK_FILE=/run/lock/sweet-memories-api-release.lock
 
 activation_staging=''
+activation_archive_workspace=''
+activation_private_archive=''
+activation_phase='idle'
+activation_release=''
+activation_original_current=''
+activation_original_previous=''
+activation_marker=''
+manager_lock_held=0
+owned_temp_links=('')
 
 die() {
   printf 'api release error: %s\n' "$1" >&2
@@ -19,6 +29,25 @@ die() {
 
 require_root() {
   [[ "$(id -u)" -eq 0 ]] || die 'must run as root'
+}
+
+acquire_manager_lock() {
+  local lock_parent
+
+  [[ "$LOCK_FILE" == /* && ! -L "$LOCK_FILE" ]] || die 'release lock path is unsafe'
+  lock_parent="$(dirname "$LOCK_FILE")"
+  [[ -d "$lock_parent" && ! -L "$lock_parent" ]] || die 'release lock directory is unsafe'
+  (
+    cd "$lock_parent"
+    [[ "$(pwd -P)" == "$lock_parent" ]]
+  ) || die 'release lock directory resolves outside its fixed path'
+
+  umask 077
+  exec 9>>"$LOCK_FILE"
+  chown root:root "$LOCK_FILE"
+  chmod 0600 "$LOCK_FILE"
+  flock -x 9 || die 'could not acquire release manager lock'
+  manager_lock_held=1
 }
 
 validate_sha() {
@@ -51,11 +80,11 @@ ensure_layout() {
   ensure_directory root root 0755 "$API_ROOT"
   ensure_directory root root 0755 "$API_ROOT/releases"
   ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0750 "$DATA_ROOT"
-  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0750 "$DATA_ROOT/database"
-  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0750 "$DATA_ROOT/media"
-  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0750 "$DATA_ROOT/staging"
-  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0750 "$DATA_ROOT/backups"
-  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0750 "$DATA_ROOT/backups/deploy"
+  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0700 "$DATA_ROOT/database"
+  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 2750 "$DATA_ROOT/media"
+  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0700 "$DATA_ROOT/staging"
+  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0700 "$DATA_ROOT/backups"
+  ensure_directory "$SERVICE_USER" "$SERVICE_GROUP" 0700 "$DATA_ROOT/backups/deploy"
 }
 
 validate_archive_path() {
@@ -66,6 +95,46 @@ validate_archive_path() {
     die "release archive must be directly inside $ARCHIVE_ROOT"
   [[ -f "$archive" && ! -L "$archive" ]] ||
     die "release archive is not a regular file: $archive"
+}
+
+file_link_count() {
+  local path="$1"
+
+  if stat -c '%h' "$path" >/dev/null 2>&1; then
+    stat -c '%h' "$path"
+  else
+    stat -f '%l' "$path"
+  fi
+}
+
+copy_archive_to_private_workspace() {
+  local archive="$1"
+  local sha="$2"
+  local previous_umask
+
+  activation_archive_workspace="$(mktemp -d "$API_ROOT/.archive-$sha.XXXXXX")" ||
+    die 'could not create private archive workspace'
+  chown root:root "$activation_archive_workspace"
+  chmod 0700 "$activation_archive_workspace"
+  [[ "$(canonical_dir "$activation_archive_workspace")" == "$activation_archive_workspace" ]] ||
+    die 'private archive workspace is unsafe'
+
+  activation_private_archive="$activation_archive_workspace/release.tar.gz"
+  previous_umask="$(umask)"
+  umask 077
+  exec 7<"$archive" || die 'release archive could not be opened'
+  if ! cat <&7 >"$activation_private_archive"; then
+    exec 7<&-
+    umask "$previous_umask"
+    die 'release archive could not be copied'
+  fi
+  exec 7<&-
+  umask "$previous_umask"
+  chown root:root "$activation_private_archive"
+  chmod 0400 "$activation_private_archive"
+  [[ -f "$activation_private_archive" && ! -L "$activation_private_archive" &&
+    "$(file_link_count "$activation_private_archive")" == '1' ]] ||
+    die 'private release archive is unsafe'
 }
 
 normalize_member() {
@@ -195,15 +264,21 @@ replace_symlink() {
   local destination="$2"
   local temporary="$3"
 
-  [[ -d "$target" && ! -L "$target" ]] || die "invalid link target: $target"
-  if [[ -e "$destination" && ! -L "$destination" ]]; then
-    die "refusing to replace a non-symlink: $destination"
+  if [[ ! -d "$target" || -L "$target" ]]; then
+    printf 'api release error: invalid link target: %s\n' "$target" >&2
+    return 1
   fi
+  if [[ -e "$destination" && ! -L "$destination" ]]; then
+    printf 'api release error: refusing to replace a non-symlink: %s\n' "$destination" >&2
+    return 1
+  fi
+  owned_temp_links+=("$temporary")
   rm -f -- "$temporary"
   ln -s "$target" "$temporary"
   if ! commit_symlink "$temporary" "$destination"; then
     rm -f -- "$temporary"
-    die "could not replace symlink: $destination"
+    printf 'api release error: could not replace symlink: %s\n' "$destination" >&2
+    return 1
   fi
 }
 
@@ -211,7 +286,8 @@ remove_symlink() {
   local path="$1"
 
   if [[ -e "$path" && ! -L "$path" ]]; then
-    die "refusing to remove a non-symlink: $path"
+    printf 'api release error: refusing to remove a non-symlink: %s\n' "$path" >&2
+    return 1
   fi
   rm -f -- "$path"
 }
@@ -274,6 +350,101 @@ restore_link_state() {
   fi
 }
 
+link_matches_release() {
+  local link="$1"
+  local expected="$2"
+  local target
+
+  if [[ -z "$expected" ]]; then
+    [[ ! -e "$link" && ! -L "$link" ]]
+    return
+  fi
+  [[ -L "$link" ]] || return 1
+  target="$(readlink "$link")" || return 1
+  if [[ "$target" != /* ]]; then
+    target="$(dirname "$link")/$target"
+  fi
+  [[ "$target" == "$expected" ]]
+}
+
+cleanup_owned_state() {
+  local temporary
+
+  cleanup_activation_staging
+  if [[ -n "$activation_archive_workspace" &&
+    "$(dirname "$activation_archive_workspace")" == "$API_ROOT" &&
+    "$(basename "$activation_archive_workspace")" == .archive-* &&
+    -d "$activation_archive_workspace" && ! -L "$activation_archive_workspace" ]]; then
+    rm -rf -- "$activation_archive_workspace"
+  fi
+  for temporary in "${owned_temp_links[@]}"; do
+    [[ -n "$temporary" && "$(dirname "$temporary")" == "$API_ROOT" ]] || continue
+    case "$(basename "$temporary")" in
+      .current-* | .previous-*) rm -f -- "$temporary" ;;
+    esac
+  done
+}
+
+manager_exit_handler() {
+  local status=$?
+  local should_restore=0
+
+  trap - EXIT HUP INT TERM
+  set +e
+  if [[ "$activation_phase" == 'switching' ]] &&
+    link_matches_release "$API_ROOT/current" "$activation_original_current"; then
+    should_restore=1
+  elif [[ "$activation_phase" == 'switched' ]] &&
+    link_matches_release "$API_ROOT/current" "$activation_release"; then
+    should_restore=1
+  fi
+
+  if [[ "$should_restore" -eq 1 ]]; then
+    if restore_link_state \
+      "$activation_original_current" \
+      "$activation_original_previous" \
+      "$activation_marker-exit"; then
+      activation_phase='restored'
+      systemctl restart "$SERVICE_NAME" || true
+    fi
+  fi
+  cleanup_owned_state
+  if [[ "$manager_lock_held" -eq 1 ]]; then
+    flock -u 9 || true
+    exec 9>&-
+    manager_lock_held=0
+  fi
+  exit "$status"
+}
+
+begin_link_switch() {
+  activation_original_current="$1"
+  activation_original_previous="$2"
+  activation_release="$3"
+  activation_marker="$4"
+  activation_phase='switching'
+}
+
+complete_link_switch() {
+  activation_phase='switched'
+}
+
+finish_link_switch() {
+  activation_phase='complete'
+}
+
+restore_after_activation_failure() {
+  local current="$1"
+  local previous="$2"
+  local marker="$3"
+
+  if link_matches_release "$API_ROOT/current" "$activation_release"; then
+    restore_link_state "$current" "$previous" "$marker"
+    activation_phase='restored'
+    systemctl restart "$SERVICE_NAME" || true
+  fi
+}
+
 activate() {
   local sha="$1"
   local archive="$2"
@@ -285,14 +456,13 @@ activate() {
   release="$API_ROOT/releases/$sha"
   staging="$API_ROOT/releases/.incoming-$sha"
   activation_staging="$staging"
-  trap cleanup_activation_staging EXIT
-  trap 'exit 143' HUP INT TERM
 
   if [[ ! -e "$release" ]]; then
-    validate_archive "$archive"
+    copy_archive_to_private_workspace "$archive" "$sha"
+    validate_archive "$activation_private_archive"
     rm -rf -- "$staging"
     mkdir -m 0755 "$staging"
-    if ! tar -xzf "$archive" -C "$staging"; then
+    if ! tar -xzf "$activation_private_archive" -C "$staging"; then
       die 'release archive could not be extracted'
     fi
     validate_release_tree "$staging"
@@ -328,29 +498,30 @@ activate() {
     die 'database migration failed'
   fi
 
+  begin_link_switch "$current" "$previous" "$release" "$sha"
   if [[ -n "$current" ]]; then
-    replace_symlink "$current" "$API_ROOT/previous" "$API_ROOT/.previous-next-$sha-$$"
+    if ! replace_symlink "$current" "$API_ROOT/previous" "$API_ROOT/.previous-next-$sha-$$"; then
+      die 'release previous-link switch failed'
+    fi
   else
-    remove_symlink "$API_ROOT/previous"
+    remove_symlink "$API_ROOT/previous" || die 'release previous-link removal failed'
   fi
-  if ! (replace_symlink "$release" "$API_ROOT/current" "$API_ROOT/.current-next-$sha-$$"); then
+  if ! replace_symlink "$release" "$API_ROOT/current" "$API_ROOT/.current-next-$sha-$$"; then
     restore_link_state "$current" "$previous" "$sha"
+    activation_phase='restored'
     die 'release link switch failed; restored previous release'
   fi
+  complete_link_switch
   if ! systemctl restart "$SERVICE_NAME"; then
-    restore_link_state "$current" "$previous" "$sha"
-    systemctl restart "$SERVICE_NAME" || true
+    restore_after_activation_failure "$current" "$previous" "$sha"
     die 'service restart failed; restored previous release'
   fi
   if ! health_check; then
-    if [[ -L "$API_ROOT/current" &&
-      "$(resolve_release_link "$API_ROOT/current")" == "$release" ]]; then
-      restore_link_state "$current" "$previous" "$sha"
-      systemctl restart "$SERVICE_NAME" || true
-    fi
+    restore_after_activation_failure "$current" "$previous" "$sha"
     die 'health check failed; restored previous release'
   fi
 
+  finish_link_switch
   rm -f -- "$archive"
   printf 'activated API release: %s\n' "$sha"
 }
@@ -369,21 +540,24 @@ rollback_if_current() {
   previous="$(resolve_release_link "$API_ROOT/previous")"
   [[ "$current" != "$previous" ]] || die 'previous release must differ from current release'
 
-  replace_symlink "$current" "$API_ROOT/previous" "$API_ROOT/.previous-rollback-$sha-$$"
-  if ! (replace_symlink "$previous" "$API_ROOT/current" "$API_ROOT/.current-rollback-$sha-$$"); then
+  begin_link_switch "$current" "$previous" "$previous" "$sha-rollback"
+  replace_symlink "$current" "$API_ROOT/previous" "$API_ROOT/.previous-rollback-$sha-$$" ||
+    die 'rollback previous-link switch failed'
+  if ! replace_symlink "$previous" "$API_ROOT/current" "$API_ROOT/.current-rollback-$sha-$$"; then
     restore_link_state "$current" "$previous" "$sha"
+    activation_phase='restored'
     die 'rollback link switch failed; restored original release'
   fi
+  complete_link_switch
   if ! systemctl restart "$SERVICE_NAME"; then
-    restore_link_state "$current" "$previous" "$sha"
-    systemctl restart "$SERVICE_NAME" || true
+    restore_after_activation_failure "$current" "$previous" "$sha"
     die 'rollback service restart failed; restored original release'
   fi
   if ! health_check; then
-    restore_link_state "$current" "$previous" "$sha"
-    systemctl restart "$SERVICE_NAME" || true
+    restore_after_activation_failure "$current" "$previous" "$sha"
     die 'rolled-back release failed its health check'
   fi
+  finish_link_switch
   printf 'rolled back API release: %s\n' "$(basename "$previous")"
 }
 
@@ -402,7 +576,7 @@ cleanup() {
   local current='' previous='' candidate mtime newest i j swap kept_protected=0 kept_other=0
   local releases=() mtimes=()
 
-  [[ "$keep" =~ ^[1-9][0-9]*$ ]] || die 'keep count must be a positive integer'
+  [[ "$keep" == '5' ]] || die 'cleanup count must be exactly 5'
   ensure_layout
   if [[ -L "$API_ROOT/current" ]]; then
     current="$(resolve_release_link "$API_ROOT/current")"
@@ -468,6 +642,12 @@ run_current_cli() {
 
 manage_api_release() {
   local mode="${1:-}"
+
+  acquire_manager_lock
+  trap manager_exit_handler EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   case "$mode" in
     activate)
