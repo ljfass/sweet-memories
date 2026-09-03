@@ -3,6 +3,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
 
@@ -49,6 +50,70 @@ function stepIndex(steps: WorkflowStep[], id: string): number {
   const index = steps.findIndex((step) => step.id === id)
   expect(index, `workflow step "${id}" must exist`).toBeGreaterThanOrEqual(0)
   return index
+}
+
+type StepOutcome = 'success' | 'failure' | 'cancelled' | 'skipped'
+
+interface ConditionState {
+  cancelled?: boolean
+  failure?: boolean
+  mode?: 'static' | 'api'
+  outcomes?: Record<string, StepOutcome>
+}
+
+const conditionStepIds = [
+  'activate-api',
+  'read-album-mode',
+  'prepare-photo-mode',
+  'activate-legacy',
+  'upload-frontend',
+  'activate-frontend',
+  'health-check',
+  'enable-uploads',
+  'rollback-frontend',
+  'rollback-api',
+  'upload-api',
+] as const
+
+function evaluateCondition(condition: string | undefined, state: ConditionState): boolean {
+  expect(condition, 'step condition must exist').toBeDefined()
+  const outcomes = Object.fromEntries(
+    conditionStepIds.map((id) => [id, { outcome: 'skipped', outputs: {} }]),
+  ) as Record<string, { outcome: StepOutcome; outputs: Record<string, string> }>
+  for (const [id, outcome] of Object.entries(state.outcomes ?? {})) {
+    expect(outcomes[id], `condition fixture uses known step "${id}"`).toBeDefined()
+    outcomes[id].outcome = outcome
+  }
+  outcomes['read-album-mode'].outputs.mode = state.mode ?? 'api'
+
+  const source = (condition as string)
+    .replace(/^\s*\$\{\{\s*/u, '')
+    .replace(/\s*\}\}\s*$/u, '')
+    .replace(/\balways\(\)/gu, 'status.always')
+    .replace(/\bsuccess\(\)/gu, 'status.success')
+    .replace(/\bfailure\(\)/gu, 'status.failure')
+    .replace(/\bcancelled\(\)/gu, 'status.cancelled')
+    .replace(
+      /steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)/gu,
+      'steps["$1"].outputs["$2"]',
+    )
+    .replace(
+      /steps\.([A-Za-z0-9_-]+)\.outcome/gu,
+      'steps["$1"].outcome',
+    )
+  const failure = state.failure ?? false
+  const cancelled = state.cancelled ?? false
+  const result = runInNewContext(source, {
+    status: {
+      always: true,
+      cancelled,
+      failure,
+      success: !failure && !cancelled,
+    },
+    steps: outcomes,
+  }) as unknown
+  expect(typeof result, 'condition must evaluate to a boolean').toBe('boolean')
+  return result as boolean
 }
 
 describe('production deployment workflow', () => {
@@ -176,26 +241,70 @@ describe('production deployment workflow', () => {
     expect(command).toContain('>> "$GITHUB_OUTPUT"')
   })
 
-  it('keeps uploads disabled in static mode and activates legacy photos in API mode', () => {
+  it('disables uploads in both modes before readiness, migration, or frontend activation', () => {
     const steps = loadWorkflow().jobs.deploy.steps
     const prepare = stepById(steps, 'prepare-photo-mode')
     const activateLegacy = stepById(steps, 'activate-legacy')
-
-    expect(prepare.env?.ALBUM_MODE).toBe('${{ steps.read-album-mode.outputs.mode }}')
-    expect(prepare.run).toContain('static)')
-    expect(prepare.run).toContain(
-      'sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disable',
-    )
-    expect(prepare.run).toContain('api)')
-    expect(prepare.run).toContain(
+    const command = prepare.run ?? ''
+    const disableCommand =
+      'sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disable'
+    const disableIndex = command.indexOf(disableCommand)
+    const caseIndex = command.indexOf('case "$ALBUM_MODE" in')
+    const readinessIndex = command.indexOf(
       'sudo /usr/local/sbin/manage-sweet-memories-api cli migration check-ready',
     )
+
+    expect(prepare.env?.ALBUM_MODE).toBe('${{ steps.read-album-mode.outputs.mode }}')
+    expect(command.match(/cli uploads disable/gu)).toHaveLength(1)
+    expect(disableIndex).toBeGreaterThanOrEqual(0)
+    expect(disableIndex).toBeLessThan(caseIndex)
+    expect(command).toContain('static)')
+    expect(command).toContain('api)')
+    expect(readinessIndex).toBeGreaterThan(caseIndex)
+    expect(readinessIndex).toBeGreaterThan(disableIndex)
     expect(activateLegacy.if).toContain("steps.read-album-mode.outputs.mode == 'api'")
     expect(activateLegacy.run).toContain(
       'sudo /usr/local/sbin/manage-sweet-memories-api cli migration activate',
     )
     expect(stepIndex(steps, 'prepare-photo-mode')).toBeLessThan(stepIndex(steps, 'activate-legacy'))
     expect(stepIndex(steps, 'activate-legacy')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
+  })
+
+  it('enables uploads only after every API activation gate explicitly succeeds', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const enable = stepById(steps, 'enable-uploads')
+    const criticalSteps = [
+      'activate-api',
+      'prepare-photo-mode',
+      'activate-legacy',
+      'activate-frontend',
+      'health-check',
+    ]
+    const allGreen = Object.fromEntries(
+      criticalSteps.map((id) => [id, 'success']),
+    ) as Record<string, StepOutcome>
+
+    expect(evaluateCondition(enable.if, { mode: 'api', outcomes: allGreen })).toBe(true)
+    expect(evaluateCondition(enable.if, {
+      failure: true,
+      mode: 'api',
+      outcomes: allGreen,
+    })).toBe(false)
+    expect(evaluateCondition(enable.if, {
+      cancelled: true,
+      mode: 'api',
+      outcomes: allGreen,
+    })).toBe(false)
+    expect(evaluateCondition(enable.if, { mode: 'static', outcomes: allGreen })).toBe(false)
+    for (const id of criticalSteps) {
+      expect(enable.if).toContain(`steps.${id}.outcome == 'success'`)
+      for (const outcome of ['failure', 'cancelled'] as const) {
+        expect(evaluateCondition(enable.if, {
+          mode: 'api',
+          outcomes: { ...allGreen, [id]: outcome },
+        }), `${id}=${outcome} must not enable uploads`).toBe(false)
+      }
+    }
   })
 
   it('checks HTTPS, public order, five legacy IDs, and first media before uploads', () => {
@@ -254,6 +363,77 @@ describe('production deployment workflow', () => {
     expect(api.run).toContain('readlink -f -- /opt/sweet-memories-api/current')
   })
 
+  it('runs fail-closed compensation on cancellation and preserves API ordering', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const disable = stepById(steps, 'disable-uploads')
+    const frontend = stepById(steps, 'rollback-frontend')
+    const api = stepById(steps, 'rollback-api')
+    const report = stepById(steps, 'fail-deployment')
+    const activationStarted = {
+      'activate-api': 'success',
+      'activate-frontend': 'skipped',
+      'rollback-frontend': 'skipped',
+    } satisfies Record<string, StepOutcome>
+
+    for (const cleanup of [disable, frontend, api]) {
+      expect(cleanup.if).toContain('cancelled()')
+      expect(cleanup.if).toContain("== 'cancelled'")
+    }
+    expect(evaluateCondition(disable.if, {
+      cancelled: true,
+      outcomes: activationStarted,
+    })).toBe(true)
+    expect(evaluateCondition(api.if, {
+      cancelled: true,
+      outcomes: activationStarted,
+    })).toBe(true)
+    expect(evaluateCondition(frontend.if, {
+      cancelled: true,
+      outcomes: {
+        ...activationStarted,
+        'activate-frontend': 'success',
+      },
+    })).toBe(true)
+    expect(evaluateCondition(disable.if, {
+      outcomes: {
+        ...activationStarted,
+        'activate-api': 'cancelled',
+      },
+    })).toBe(true)
+
+    const frontendActivated = {
+      'activate-api': 'success',
+      'activate-frontend': 'success',
+    } satisfies Record<string, StepOutcome>
+    expect(evaluateCondition(api.if, {
+      failure: true,
+      outcomes: {
+        ...frontendActivated,
+        'rollback-frontend': 'success',
+      },
+    })).toBe(true)
+    for (const outcome of ['failure', 'cancelled', 'skipped'] as const) {
+      expect(evaluateCondition(api.if, {
+        failure: true,
+        outcomes: {
+          ...frontendActivated,
+          'rollback-frontend': outcome,
+        },
+      }), `API rollback must wait when frontend rollback is ${outcome}`).toBe(false)
+    }
+    expect(evaluateCondition(report.if, {
+      failure: true,
+      outcomes: {
+        ...frontendActivated,
+        'rollback-frontend': 'failure',
+      },
+    })).toBe(true)
+    expect(report.env?.FRONTEND_ROLLBACK_OUTCOME).toBe(
+      '${{ steps.rollback-frontend.outcome }}',
+    )
+    expect(report.run).toContain('前端回退未确认，API 保持当前版本')
+  })
+
   it('always removes exact archives and only cleans five releases on success', () => {
     const steps = loadWorkflow().jobs.deploy.steps
     const frontendArchive = stepById(steps, 'archive-cleanup-frontend')
@@ -275,6 +455,14 @@ describe('production deployment workflow', () => {
     expect(apiArchive.run).toBe(
       'timeout 30s ssh production rm -f -- "$REMOTE_API_ARCHIVE"',
     )
+    expect(evaluateCondition(frontendArchive.if, {
+      cancelled: true,
+      outcomes: { 'upload-frontend': 'success' },
+    })).toBe(true)
+    expect(evaluateCondition(apiArchive.if, {
+      cancelled: true,
+      outcomes: { 'upload-api': 'success' },
+    })).toBe(true)
     expect(frontendCleanup.if).toContain("steps.health-check.outcome == 'success'")
     expect(frontendCleanup.run).toContain('bash -s -- cleanup "$SITE_ROOT" 5')
     expect(apiCleanup.if).toContain("steps.health-check.outcome == 'success'")
@@ -304,7 +492,7 @@ describe('production deployment workflow', () => {
       ['build-api', 5], ['package-api', 5], ['package-frontend', 2],
       ['validate-config', 1], ['configure-ssh', 1], ['validate-live', 3],
       ['upload-api', 5], ['activate-api', 5], ['read-album-mode', 1],
-      ['prepare-photo-mode', 3], ['activate-legacy', 3], ['upload-frontend', 5],
+      ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 5],
       ['activate-frontend', 5], ['health-check', 8], ['enable-uploads', 3],
       ['disable-uploads', 3], ['rollback-frontend', 5], ['rollback-api', 11],
       ['archive-cleanup-frontend', 2], ['archive-cleanup-api', 2],

@@ -293,15 +293,15 @@ jobs:
       - name: 准备相册模式
         id: prepare-photo-mode
         if: ${{ steps.activate-api.outcome == 'success' }}
-        timeout-minutes: 3
+        timeout-minutes: 5
         shell: bash
         env:
           ALBUM_MODE: ${{ steps.read-album-mode.outputs.mode }}
         run: |
           set -euo pipefail
+          timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disable
           case "$ALBUM_MODE" in
             static)
-              timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disable
               ;;
             api)
               timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli migration check-ready
@@ -455,8 +455,13 @@ jobs:
       - name: 公网检查后启用上传
         id: enable-uploads
         if: >-
-          ${{ steps.health-check.outcome == 'success' &&
-          steps.read-album-mode.outputs.mode == 'api' }}
+          ${{ success() && !cancelled() &&
+          steps.read-album-mode.outputs.mode == 'api' &&
+          steps.activate-api.outcome == 'success' &&
+          steps.prepare-photo-mode.outcome == 'success' &&
+          steps.activate-legacy.outcome == 'success' &&
+          steps.activate-frontend.outcome == 'success' &&
+          steps.health-check.outcome == 'success' }}
         timeout-minutes: 3
         shell: bash
         run: |
@@ -467,13 +472,23 @@ jobs:
         id: disable-uploads
         if: >-
           ${{ always() && steps.activate-api.outcome != 'skipped' &&
-          (failure() ||
+          (failure() || cancelled() ||
           steps.activate-api.outcome == 'failure' ||
+          steps.activate-api.outcome == 'cancelled' ||
+          steps.read-album-mode.outcome == 'failure' ||
+          steps.read-album-mode.outcome == 'cancelled' ||
           steps.prepare-photo-mode.outcome == 'failure' ||
+          steps.prepare-photo-mode.outcome == 'cancelled' ||
           steps.activate-legacy.outcome == 'failure' ||
+          steps.activate-legacy.outcome == 'cancelled' ||
+          steps.upload-frontend.outcome == 'failure' ||
+          steps.upload-frontend.outcome == 'cancelled' ||
           steps.activate-frontend.outcome == 'failure' ||
+          steps.activate-frontend.outcome == 'cancelled' ||
           steps.health-check.outcome == 'failure' ||
-          steps.enable-uploads.outcome == 'failure') }}
+          steps.health-check.outcome == 'cancelled' ||
+          steps.enable-uploads.outcome == 'failure' ||
+          steps.enable-uploads.outcome == 'cancelled') }}
         continue-on-error: true
         timeout-minutes: 3
         shell: bash
@@ -485,10 +500,13 @@ jobs:
         id: rollback-frontend
         if: >-
           ${{ always() && steps.activate-frontend.outcome != 'skipped' &&
-          (failure() ||
+          (failure() || cancelled() ||
           steps.activate-frontend.outcome == 'failure' ||
+          steps.activate-frontend.outcome == 'cancelled' ||
           steps.health-check.outcome == 'failure' ||
-          steps.enable-uploads.outcome == 'failure') }}
+          steps.health-check.outcome == 'cancelled' ||
+          steps.enable-uploads.outcome == 'failure' ||
+          steps.enable-uploads.outcome == 'cancelled') }}
         timeout-minutes: 5
         shell: bash
         run: |
@@ -520,13 +538,25 @@ jobs:
         id: rollback-api
         if: >-
           ${{ always() && steps.activate-api.outcome != 'skipped' &&
-          (failure() ||
+          (failure() || cancelled() ||
           steps.activate-api.outcome == 'failure' ||
+          steps.activate-api.outcome == 'cancelled' ||
+          steps.read-album-mode.outcome == 'failure' ||
+          steps.read-album-mode.outcome == 'cancelled' ||
           steps.prepare-photo-mode.outcome == 'failure' ||
+          steps.prepare-photo-mode.outcome == 'cancelled' ||
           steps.activate-legacy.outcome == 'failure' ||
+          steps.activate-legacy.outcome == 'cancelled' ||
+          steps.upload-frontend.outcome == 'failure' ||
+          steps.upload-frontend.outcome == 'cancelled' ||
           steps.activate-frontend.outcome == 'failure' ||
+          steps.activate-frontend.outcome == 'cancelled' ||
           steps.health-check.outcome == 'failure' ||
-          steps.enable-uploads.outcome == 'failure') }}
+          steps.health-check.outcome == 'cancelled' ||
+          steps.enable-uploads.outcome == 'failure' ||
+          steps.enable-uploads.outcome == 'cancelled') &&
+          (steps.activate-frontend.outcome == 'skipped' ||
+          steps.rollback-frontend.outcome == 'success') }}
         timeout-minutes: 11
         shell: bash
         run: |
@@ -599,10 +629,36 @@ jobs:
       - name: 报告不确定的激活失败
         id: fail-deployment
         if: >-
-          ${{ always() && (steps.activate-api.outcome == 'failure' ||
-          steps.activate-frontend.outcome == 'failure') }}
+          ${{ always() && steps.activate-api.outcome != 'skipped' &&
+          (failure() || cancelled() ||
+          steps.activate-api.outcome == 'failure' ||
+          steps.activate-api.outcome == 'cancelled' ||
+          steps.read-album-mode.outcome == 'failure' ||
+          steps.read-album-mode.outcome == 'cancelled' ||
+          steps.prepare-photo-mode.outcome == 'failure' ||
+          steps.prepare-photo-mode.outcome == 'cancelled' ||
+          steps.activate-legacy.outcome == 'failure' ||
+          steps.activate-legacy.outcome == 'cancelled' ||
+          steps.upload-frontend.outcome == 'failure' ||
+          steps.upload-frontend.outcome == 'cancelled' ||
+          steps.activate-frontend.outcome == 'failure' ||
+          steps.activate-frontend.outcome == 'cancelled' ||
+          steps.health-check.outcome == 'failure' ||
+          steps.health-check.outcome == 'cancelled' ||
+          steps.enable-uploads.outcome == 'failure' ||
+          steps.enable-uploads.outcome == 'cancelled' ||
+          steps.rollback-frontend.outcome == 'failure' ||
+          steps.rollback-frontend.outcome == 'cancelled' ||
+          steps.rollback-api.outcome == 'failure' ||
+          steps.rollback-api.outcome == 'cancelled') }}
         timeout-minutes: 1
         shell: bash
+        env:
+          FRONTEND_ROLLBACK_OUTCOME: ${{ steps.rollback-frontend.outcome }}
         run: |
+          if [[ "$FRONTEND_ROLLBACK_OUTCOME" == 'failure' ||
+            "$FRONTEND_ROLLBACK_OUTCOME" == 'cancelled' ]]; then
+            echo '前端回退未确认，API 保持当前版本且上传保持关闭；需要人工检查前端和 API 指针。' >&2
+          fi
           echo '发布激活命令失败，补偿步骤已执行。' >&2
           exit 1
