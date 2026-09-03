@@ -62,6 +62,7 @@ describe('loadConfig', () => {
       expect(relative(dataRoot, path)).not.toMatch(/^\.\.(?:\/|$)/);
     }
     expect(isAbsolute(config.migrationsRoot)).toBe(true);
+    expect(config.backupRoot).toBe(join(dataRoot, 'backups'));
   });
 
   it('accepts strict explicit overrides', () => {

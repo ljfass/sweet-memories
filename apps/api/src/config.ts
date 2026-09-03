@@ -117,7 +117,7 @@ export function loadConfig(env: Environment = process.env): Readonly<ApiConfig> 
   );
   const backupRoot = dataPath(
     'SWEET_MEMORIES_BACKUP_ROOT',
-    env.SWEET_MEMORIES_BACKUP_ROOT ?? join(dataRoot, 'backup'),
+    env.SWEET_MEMORIES_BACKUP_ROOT ?? join(dataRoot, 'backups'),
     dataRoot,
   );
 
