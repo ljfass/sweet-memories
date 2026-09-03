@@ -323,6 +323,36 @@ describe('MaintenanceService', () => {
     await expect(readFile(join(target, 'entry.bin'), 'utf8')).resolves.toBe('replacement residue');
   });
 
+  it('rejects a deleting tree modified immediately before recovery rename', async () => {
+    const id = uuid(66);
+    const source = join(mediaRoot, id);
+    const target = join(deletingRoot, `${id}-${uuid(67)}`);
+    seedPhoto(id);
+    await directory(target, stale, 'original residue');
+    let renames = 0;
+    const service = createMaintenanceService({
+      db,
+      mediaRoot,
+      stagingRoot,
+      now: () => now,
+      rename: async (from, to) => {
+        renames += 1;
+        if (renames === 1) {
+          await rm(join(from, 'entry.bin'));
+          await writeFile(join(from, 'entry.bin'), 'replacement residue');
+          await utimes(from, fresh, fresh);
+        }
+        await rename(from, to);
+      },
+    });
+
+    const summary = await service.run();
+
+    expect(summary).toMatchObject({ removedDeleting: 0, failures: 1 });
+    await expect(stat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(target, 'entry.bin'), 'utf8')).resolves.toBe('replacement residue');
+  });
+
   it('retains a deleting tree containing a special file without following or removing it', async () => {
     const id = uuid(64);
     const target = join(deletingRoot, `${id}-${uuid(65)}`);

@@ -74,8 +74,10 @@ interface SafeRoot {
 }
 
 interface FileIdentity {
-  readonly device: number;
-  readonly inode: number;
+  readonly device: bigint;
+  readonly inode: bigint;
+  readonly modificationTimeNanoseconds: bigint;
+  readonly birthTimeNanoseconds: bigint;
 }
 
 function nodeError(error: unknown): error is NodeJS.ErrnoException {
@@ -150,14 +152,19 @@ async function assertSafeTree(
 ): Promise<FileIdentity> {
   let rootInformation;
   try {
-    rootInformation = await lstat(root);
+    rootInformation = await lstat(root, { bigint: true });
   } catch {
     throw new MaintenanceSafetyError();
   }
   if (rootInformation.isSymbolicLink() || !rootInformation.isDirectory()) {
     throw new MaintenanceSafetyError();
   }
-  const identity = { device: rootInformation.dev, inode: rootInformation.ino };
+  const identity = {
+    device: rootInformation.dev,
+    inode: rootInformation.ino,
+    modificationTimeNanoseconds: rootInformation.mtimeNs,
+    birthTimeNanoseconds: rootInformation.birthtimeNs,
+  };
   const pending = [root];
   let inspected = 0;
 
@@ -203,11 +210,13 @@ async function assertSafeTree(
 
 async function identityStillMatches(path: string, identity: FileIdentity): Promise<boolean> {
   try {
-    const information = await lstat(path);
+    const information = await lstat(path, { bigint: true });
     return information.isDirectory()
       && !information.isSymbolicLink()
       && information.dev === identity.device
-      && information.ino === identity.inode;
+      && information.ino === identity.inode
+      && information.mtimeNs === identity.modificationTimeNanoseconds
+      && information.birthtimeNs === identity.birthTimeNanoseconds;
   } catch {
     return false;
   }
