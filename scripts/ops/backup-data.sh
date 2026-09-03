@@ -6,6 +6,7 @@ SERVICE_NAME=sweet-memories-api.service
 HEALTH_URL=http://127.0.0.1:3100/api/health
 LOCK_FILE=/run/lock/sweet-memories-api-release.lock
 RESERVE_BYTES=1073741824
+SCHEMA_FINGERPRINT_001=f2492449ec523816a42e63bbfe87a023d10d1361096ebba7d718f4402297e14c
 
 backup_workspace=''
 backup_workspace_identity=''
@@ -51,6 +52,10 @@ file_identity() {
   stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1"
 }
 
+file_inode() {
+  stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1"
+}
+
 file_link_count() {
   stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1"
 }
@@ -61,6 +66,32 @@ sha256_file() {
   else
     shasum -a 256 "$1" | awk '{print $1}'
   fi
+}
+
+sha256_open_file() {
+  local path="$1"
+  local identity="$2"
+  local descriptor_inode digest
+
+  exec 7<"$path" || return 1
+  descriptor_inode="$(file_inode /dev/fd/7)" || {
+    exec 7<&-
+    return 1
+  }
+  [[ "$descriptor_inode" == "${identity#*:}" &&
+    "$(file_identity "$path")" == "$identity" ]] || {
+    exec 7<&-
+    return 1
+  }
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum <&7 | awk '{print $1}')"
+  else
+    digest="$(shasum -a 256 <&7 | awk '{print $1}')"
+  fi
+  exec 7<&-
+  [[ "$digest" =~ ^[0-9a-f]{64}$ && -f "$path" && ! -L "$path" &&
+    "$(file_identity "$path")" == "$identity" ]] || return 1
+  printf '%s\n' "$digest"
 }
 
 is_owned_ordinary_file() {
@@ -174,17 +205,6 @@ health_check() {
   return 1
 }
 
-remove_owned_file() {
-  local path="$1"
-  local identity="$2"
-
-  [[ -n "$path" && -n "$identity" ]] || return 0
-  if [[ -f "$path" && ! -L "$path" &&
-    "$(file_identity "$path")" == "$identity" ]]; then
-    rm -f -- "$path"
-  fi
-}
-
 cleanup_backup_workspace() {
   [[ -n "$backup_workspace" && -n "$backup_workspace_identity" ]] || return 0
   case "$backup_workspace" in
@@ -206,13 +226,20 @@ backup_exit_handler() {
   [[ "$backup_trap_active" == '1' ]] || return "$status"
   backup_trap_active=0
   trap - EXIT INT TERM
-  cleanup_backup_workspace
   if [[ "$backup_completed" != '1' ]]; then
-    remove_owned_file "$backup_temporary_archive" "$backup_archive_identity"
-    remove_owned_file "$backup_temporary_sidecar" "$backup_sidecar_identity"
-    remove_owned_file "$backup_published_sidecar" "$backup_sidecar_identity"
-    remove_owned_file "$backup_published_archive" "$backup_archive_identity"
+    if [[ -n "$backup_published_archive" &&
+      ( -e "$backup_published_archive" || -L "$backup_published_archive" ) ]]; then
+      if [[ -n "$backup_published_sidecar" &&
+        ( -e "$backup_published_sidecar" || -L "$backup_published_sidecar" ) ]]; then
+        printf 'data backup error: incomplete backup transaction retained for manual recovery: %s\n' \
+          "$backup_published_archive" >&2
+      else
+        printf 'data backup error: incomplete archive retained for manual recovery: %s\n' \
+          "$backup_published_archive" >&2
+      fi
+    fi
   fi
+  cleanup_backup_workspace
   if ! systemctl start "$SERVICE_NAME"; then
     printf 'data backup error: could not start API service\n' >&2
     recovery_status=1
@@ -259,9 +286,24 @@ sqlite_integrity_check() {
   [[ "$result" == 'ok' ]]
 }
 
+sqlite_schema_fingerprint() {
+  local database="$1"
+  local query
+
+  query="SELECT type || '|' || hex(name) || '|' || hex(tbl_name) || '|' || hex(sql)
+    FROM sqlite_schema
+    WHERE type IN ('table','index','view','trigger') AND name NOT GLOB 'sqlite_*'
+    ORDER BY type,name,tbl_name;"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sqlite3 -batch -noheader "$database" "$query" | sha256sum | awk '{print $1}'
+  else
+    sqlite3 -batch -noheader "$database" "$query" | shasum -a 256 | awk '{print $1}'
+  fi
+}
+
 validate_sqlite_schema_contract() {
   local database="$1"
-  local migration version applied_at extra objects columns setting
+  local migration version applied_at extra objects columns setting fingerprint
 
   migration="$(sqlite3 -batch -noheader -separator $'\t' "$database" \
     'SELECT version, applied_at FROM schema_migrations ORDER BY version;')" || return 1
@@ -269,6 +311,8 @@ validate_sqlite_schema_contract() {
   [[ -z "${extra:-}" && "$version" == '001' &&
     "$applied_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ &&
     "$(printf '%s\n' "$migration" | wc -l | tr -d ' ')" == '1' ]] || return 1
+  fingerprint="$(sqlite_schema_fingerprint "$database")" || return 1
+  [[ "$fingerprint" == "$SCHEMA_FINGERPRINT_001" ]] || return 1
 
   objects="$(sqlite3 -batch -noheader "$database" \
     "SELECT type || ':' || name FROM sqlite_schema
@@ -317,8 +361,10 @@ validate_sqlite_and_media() {
   result="$(sqlite3 -batch -noheader "$database" 'PRAGMA foreign_key_check;')" ||
     backup_die 'copied database failed SQLite foreign key check'
   [[ -z "$result" ]] || backup_die 'copied database failed SQLite foreign key check'
-  validate_sqlite_schema_contract "$database" ||
-    backup_die 'copied database failed schema contract'
+  if ! validate_sqlite_schema_contract "$database"; then
+    printf 'data backup error: copied database failed schema contract\n' >&2
+    backup_die 'copied database schema fingerprint is unsupported'
+  fi
 
   sqlite3 -batch -noheader "$database" 'SELECT id FROM photos ORDER BY id;' >"$photo_ids" ||
     backup_die 'could not read copied database photo IDs'
@@ -450,23 +496,37 @@ write_manifests() {
   chmod 0600 "$tree/SHA256SUMS" "$tree/MANIFEST.txt"
 }
 
-publish_no_clobber() {
-  local temporary="$1"
+linked_backup_pair_is_owned() {
+  local private="$1"
+  local public="$2"
+  local identity="$3"
+
+  [[ -f "$private" && ! -L "$private" && -f "$public" && ! -L "$public" &&
+    "$(file_identity "$private")" == "$identity" &&
+    "$(file_identity "$public")" == "$identity" &&
+    "$(file_link_count "$private")" == '2' &&
+    "$(file_link_count "$public")" == '2' ]]
+}
+
+publish_link_no_clobber() {
+  local private="$1"
   local destination="$2"
   local identity="$3"
 
+  is_owned_ordinary_file "$private" "$identity" ||
+    backup_die 'private backup output identity is invalid'
   [[ ! -e "$destination" && ! -L "$destination" ]] || backup_die 'backup output already exists'
-  ln "$temporary" "$destination" || backup_die 'backup output could not be published'
-  [[ -f "$destination" && ! -L "$destination" &&
-    "$(file_identity "$destination")" == "$identity" ]] ||
+  ln "$private" "$destination" || backup_die 'backup output could not be published'
+  linked_backup_pair_is_owned "$private" "$destination" "$identity" ||
     backup_die 'published backup identity is invalid'
-  rm -f -- "$temporary"
-  [[ "$(file_link_count "$destination")" == '1' ]] ||
-    backup_die 'published backup has an unsafe link count'
+}
+
+backup_before_sidecar_commit() {
+  :
 }
 
 backup_data() {
-  local target timestamp archive sidecar target_identity tree database source_snapshot
+  local target timestamp archive sidecar target_identity tree database source_snapshot digest
 
   [[ "$#" -eq 1 ]] || backup_die 'usage: backup-data.sh /var/lib/sweet-memories/backups/manual'
   require_root
@@ -517,31 +577,81 @@ backup_data() {
   validate_sqlite_and_media "$tree"
   write_manifests "$tree"
 
-  backup_temporary_archive="$(mktemp "$target/.sweet-memories-data.XXXXXX")" ||
+  backup_temporary_archive="$backup_workspace/archive.tar.gz"
+  [[ ! -e "$backup_temporary_archive" && ! -L "$backup_temporary_archive" ]] ||
+    backup_die 'private archive path already exists'
+  set -o noclobber
+  if ! { exec 8>"$backup_temporary_archive"; } 2>/dev/null; then
+    set +o noclobber
     backup_die 'could not create private archive file'
+  fi
+  set +o noclobber
   chmod 0600 "$backup_temporary_archive"
   chown root:root "$backup_temporary_archive"
   backup_archive_identity="$(file_identity "$backup_temporary_archive")"
-  tar -czf "$backup_temporary_archive" -C "$tree" \
-    database media SHA256SUMS MANIFEST.txt || backup_die 'archive creation failed'
+  [[ "$(file_inode /dev/fd/8)" == "${backup_archive_identity#*:}" ]] ||
+    backup_die 'private archive descriptor identity changed'
+  if ! tar -czf - -C "$tree" database media SHA256SUMS MANIFEST.txt >&8; then
+    exec 8>&-
+    backup_die 'archive creation failed'
+  fi
+  exec 8>&-
   is_owned_ordinary_file "$backup_temporary_archive" "$backup_archive_identity" ||
     backup_die 'temporary archive identity changed'
+  digest="$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity")" ||
+    backup_die 'could not hash private archive'
   backup_published_archive="$archive"
-  publish_no_clobber "$backup_temporary_archive" "$archive" "$backup_archive_identity"
-  backup_temporary_archive=''
+  publish_link_no_clobber "$backup_temporary_archive" "$archive" "$backup_archive_identity"
+  [[ "$(file_identity "$target")" == "$target_identity" ]] ||
+    backup_die 'backup target identity changed during archive publication'
 
-  backup_temporary_sidecar="$(mktemp "$target/.sweet-memories-sidecar.XXXXXX")" ||
+  backup_before_sidecar_commit "$archive"
+  linked_backup_pair_is_owned "$backup_temporary_archive" "$archive" "$backup_archive_identity" ||
+    backup_die 'published archive identity changed before commit'
+  [[ "$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity")" == "$digest" &&
+    "$(file_identity "$target")" == "$target_identity" ]] ||
+    backup_die 'published archive content changed before commit'
+
+  backup_temporary_sidecar="$backup_workspace/archive.tar.gz.sha256"
+  [[ ! -e "$backup_temporary_sidecar" && ! -L "$backup_temporary_sidecar" ]] ||
+    backup_die 'private checksum sidecar path already exists'
+  set -o noclobber
+  if ! { exec 8>"$backup_temporary_sidecar"; } 2>/dev/null; then
+    set +o noclobber
     backup_die 'could not create private checksum sidecar'
+  fi
+  set +o noclobber
   chmod 0600 "$backup_temporary_sidecar"
   chown root:root "$backup_temporary_sidecar"
   backup_sidecar_identity="$(file_identity "$backup_temporary_sidecar")"
-  printf '%s  %s\n' "$(sha256_file "$archive")" "$(basename "$archive")" \
-    >"$backup_temporary_sidecar"
+  [[ "$(file_inode /dev/fd/8)" == "${backup_sidecar_identity#*:}" ]] ||
+    backup_die 'private sidecar descriptor identity changed'
+  printf '%s  %s\n' "$digest" "$(basename "$archive")" >&8 || {
+    exec 8>&-
+    backup_die 'could not write private checksum sidecar'
+  }
+  exec 8>&-
   is_owned_ordinary_file "$backup_temporary_sidecar" "$backup_sidecar_identity" ||
     backup_die 'temporary sidecar identity changed'
   backup_published_sidecar="$sidecar"
-  publish_no_clobber "$backup_temporary_sidecar" "$sidecar" "$backup_sidecar_identity"
+  publish_link_no_clobber "$backup_temporary_sidecar" "$sidecar" "$backup_sidecar_identity"
+  linked_backup_pair_is_owned "$backup_temporary_archive" "$archive" "$backup_archive_identity" &&
+    linked_backup_pair_is_owned "$backup_temporary_sidecar" "$sidecar" "$backup_sidecar_identity" &&
+    [[ "$(sha256_open_file "$backup_temporary_archive" "$backup_archive_identity")" == "$digest" &&
+      "$(cat "$backup_temporary_sidecar")" == "$digest  $(basename "$archive")" &&
+      "$(file_identity "$target")" == "$target_identity" ]] ||
+    backup_die 'published backup transaction failed identity validation'
+
+  rm -f -- "$backup_temporary_archive" "$backup_temporary_sidecar" ||
+    backup_die 'could not finalize private backup links'
+  backup_temporary_archive=''
   backup_temporary_sidecar=''
+  [[ -f "$archive" && ! -L "$archive" && -f "$sidecar" && ! -L "$sidecar" &&
+    "$(file_identity "$archive")" == "$backup_archive_identity" &&
+    "$(file_identity "$sidecar")" == "$backup_sidecar_identity" &&
+    "$(file_link_count "$archive")" == '1' && "$(file_link_count "$sidecar")" == '1' &&
+    "$(sha256_file "$archive")" == "$digest" ]] ||
+    backup_die 'finalized backup transaction is invalid'
 
   cleanup_backup_workspace
   backup_completed=1

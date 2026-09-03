@@ -12,6 +12,7 @@ RESERVE_BYTES=1073741824
 MAX_ARCHIVE_BYTES=68719476736
 MAX_ARCHIVE_MEMBERS=200000
 MAX_EXPANDED_BYTES=274877906944
+SCHEMA_FINGERPRINT_001=f2492449ec523816a42e63bbfe87a023d10d1361096ebba7d718f4402297e14c
 
 restore_workspace=''
 restore_workspace_identity=''
@@ -176,26 +177,97 @@ journal_directory_owned() {
     directory_is_owned "$RESTORE_JOURNAL" "$restore_journal_identity"
 }
 
-journal_entry_content_valid() {
+journal_entry_content_valid_for() {
   local entry="$1"
+  local journal_identity="$2"
   local name value
 
   name="$(basename "$entry")"
   ordinary_single_link "$entry" || return 1
   if [[ "$name" == 'metadata' ]]; then
     [[ "$(wc -l <"$entry" | tr -d ' ')" == '7' &&
-      "$(sed -n 's/^journal_identity=//p' "$entry")" == "$restore_journal_identity" ]] ||
-      return 1
-    [[ -z "$restore_journal_metadata_identity" ||
-      "$(file_identity "$entry")" == "$restore_journal_metadata_identity" ]]
+      "$(sed -n 's/^journal_identity=//p' "$entry")" == "$journal_identity" ]]
     return
   fi
   value="$(cat "$entry")"
-  [[ "$value" == "$name"$'\t'"$restore_journal_identity" ]]
+  [[ "$value" == "$name"$'\t'"$journal_identity" ]]
+}
+
+journal_entry_content_valid() {
+  local entry="$1"
+
+  journal_entry_content_valid_for "$entry" "$restore_journal_identity" || return 1
+  [[ "$(basename "$entry")" != 'metadata' ||
+    -z "$restore_journal_metadata_identity" ||
+    "$(file_identity "$entry")" == "$restore_journal_metadata_identity" ]]
+}
+
+validate_journal_directory() {
+  local journal="$1"
+  local identity="$2"
+  local entry entries=0 metadata=0
+
+  directory_is_owned "$journal" "$identity" || return 1
+  while IFS= read -r entry; do
+    entries=$((entries + 1))
+    valid_journal_entry_name "$(basename "$entry")" || return 1
+    journal_entry_content_valid_for "$entry" "$identity" || return 1
+    [[ "$(basename "$entry")" != 'metadata' ]] || metadata=1
+  done < <(find "$journal" -mindepth 1 -maxdepth 1 -print)
+  [[ "$entries" == '0' || "$metadata" == '1' ]]
+}
+
+cleanup_retired_journal() {
+  local journal="$1"
+  local identity="$2"
+  local metadata="$journal/metadata"
+  local workspace_name workspace_identity parent workspace stage
+
+  validate_journal_directory "$journal" "$identity" || return 1
+  if [[ -e "$metadata" ]]; then
+    workspace_name="$(sed -n 's/^workspace=//p' "$metadata")"
+    workspace_identity="$(sed -n 's/^workspace_identity=//p' "$metadata")"
+    [[ "$workspace_name" == .sweet-memories-restore.* &&
+      "$workspace_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+    parent="$(dirname "$DATA_ROOT")"
+    workspace="$parent/$workspace_name"
+    if directory_is_owned "$workspace" "$workspace_identity"; then
+      rm -rf -- "$workspace" || return 1
+    fi
+  fi
+  for stage in committed healthy new-installed old-moved service-stopped prepared metadata; do
+    if [[ -e "$journal/$stage" || -L "$journal/$stage" ]]; then
+      directory_is_owned "$journal" "$identity" &&
+        journal_entry_content_valid_for "$journal/$stage" "$identity" || return 1
+      rm -f -- "$journal/$stage" || return 1
+    fi
+  done
+  directory_is_owned "$journal" "$identity" || return 1
+  rmdir "$journal" || return 1
+}
+
+cleanup_retired_journals() {
+  local parent entry name component identity
+
+  parent="$(dirname "$DATA_ROOT")"
+  [[ "$(canonical_directory "$parent")" == "$parent" ]] ||
+    restore_die 'data parent is not a safe ordinary directory'
+  while IFS= read -r entry; do
+    name="$(basename "$entry")"
+    component="${name#.sweet-memories-restore.retired.}"
+    [[ "$component" =~ ^[0-9]+-[0-9]+$ ]] ||
+      restore_die 'retired restore journal name is unsafe'
+    identity="${component/-/:}"
+    directory_is_owned "$entry" "$identity" ||
+      restore_die 'retired restore journal identity is unsafe'
+    cleanup_retired_journal "$entry" "$identity" ||
+      restore_die 'retired restore journal is unsafe; manual recovery required'
+  done < <(find "$parent" -mindepth 1 -maxdepth 1 -type d \
+    -name '.sweet-memories-restore.retired.*' -print)
 }
 
 remove_owned_journal() {
-  local entry identity
+  local entry retired identity_component
 
   [[ -n "$restore_journal_identity" ]] || return 0
   journal_directory_owned || return 1
@@ -203,14 +275,12 @@ remove_owned_journal() {
     valid_journal_entry_name "$(basename "$entry")" || return 1
     journal_entry_content_valid "$entry" || return 1
   done < <(find "$RESTORE_JOURNAL" -mindepth 1 -maxdepth 1 -print)
-  while IFS= read -r entry; do
-    identity="$(file_identity "$entry")"
-    journal_directory_owned && journal_entry_content_valid "$entry" &&
-      [[ "$(file_identity "$entry")" == "$identity" ]] || return 1
-    rm -f -- "$entry" || return 1
-  done < <(find "$RESTORE_JOURNAL" -mindepth 1 -maxdepth 1 -type f -print)
-  journal_directory_owned || return 1
-  rmdir "$RESTORE_JOURNAL" || return 1
+  identity_component="${restore_journal_identity/:/-}"
+  retired="$RESTORE_JOURNAL.retired.$identity_component"
+  [[ ! -e "$retired" && ! -L "$retired" ]] || return 1
+  mv "$RESTORE_JOURNAL" "$retired" || return 1
+  directory_is_owned "$retired" "$restore_journal_identity" || return 1
+  cleanup_retired_journal "$retired" "$restore_journal_identity" || return 1
   restore_journal_identity=''
   restore_journal_metadata_identity=''
 }
@@ -488,7 +558,7 @@ extract_and_validate_tree() {
 
 validate_sqlite_schema_contract() {
   local database="$1"
-  local migration version applied_at extra objects columns setting
+  local migration version applied_at extra objects columns setting fingerprint
 
   migration="$(sqlite3 -batch -noheader -separator $'\t' "$database" \
     'SELECT version, applied_at FROM schema_migrations ORDER BY version;')" || return 1
@@ -496,6 +566,8 @@ validate_sqlite_schema_contract() {
   [[ -z "${extra:-}" && "$version" == '001' &&
     "$applied_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ &&
     "$(printf '%s\n' "$migration" | wc -l | tr -d ' ')" == '1' ]] || return 1
+  fingerprint="$(sqlite_schema_fingerprint "$database")" || return 1
+  [[ "$fingerprint" == "$SCHEMA_FINGERPRINT_001" ]] || return 1
   objects="$(sqlite3 -batch -noheader "$database" \
     "SELECT type || ':' || name FROM sqlite_schema
      WHERE (type='table' AND name IN
@@ -523,6 +595,21 @@ SCHEMA_COLUMNS
   [[ -z "${extra:-}" && ( "$version" == 'true' || "$version" == 'false' ) &&
     "$applied_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ &&
     "$(printf '%s\n' "$setting" | wc -l | tr -d ' ')" == '1' ]]
+}
+
+sqlite_schema_fingerprint() {
+  local database="$1"
+  local query
+
+  query="SELECT type || '|' || hex(name) || '|' || hex(tbl_name) || '|' || hex(sql)
+    FROM sqlite_schema
+    WHERE type IN ('table','index','view','trigger') AND name NOT GLOB 'sqlite_*'
+    ORDER BY type,name,tbl_name;"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sqlite3 -batch -noheader "$database" "$query" | sha256sum | awk '{print $1}'
+  else
+    sqlite3 -batch -noheader "$database" "$query" | shasum -a 256 | awk '{print $1}'
+  fi
 }
 
 validate_manifests() {
@@ -595,8 +682,10 @@ validate_sqlite_and_media() {
   result="$(sqlite3 -batch -noheader "$database_uri" 'PRAGMA foreign_key_check;')" ||
     restore_die 'SQLite foreign key check failed'
   [[ -z "$result" ]] || restore_die 'SQLite foreign key check failed'
-  validate_sqlite_schema_contract "$database_uri" ||
-    restore_die 'SQLite schema contract failed'
+  if ! validate_sqlite_schema_contract "$database_uri"; then
+    printf 'data restore error: SQLite schema contract failed\n' >&2
+    restore_die 'SQLite schema fingerprint is unsupported'
+  fi
 
   sqlite3 -batch -noheader "$database_uri" 'SELECT id FROM photos ORDER BY id;' >"$photo_ids" ||
     restore_die 'could not read database photo IDs'
@@ -832,10 +921,12 @@ load_journal() {
   [[ -d "$RESTORE_JOURNAL" && ! -L "$RESTORE_JOURNAL" ]] ||
     restore_die 'restore journal is unsafe'
   restore_journal_identity="$(file_identity "$RESTORE_JOURNAL")"
-  ordinary_single_link "$RESTORE_JOURNAL/metadata" || restore_die 'restore journal metadata is unsafe'
+  [[ -f "$RESTORE_JOURNAL/metadata" && ! -L "$RESTORE_JOURNAL/metadata" &&
+    ( "$(file_link_count "$RESTORE_JOURNAL/metadata")" == '1' ||
+      "$(file_link_count "$RESTORE_JOURNAL/metadata")" == '2' ) ]] ||
+    restore_die 'restore journal metadata is unsafe'
   [[ "$(wc -l <"$RESTORE_JOURNAL/metadata" | tr -d ' ')" == '7' ]] ||
     restore_die 'restore journal metadata is invalid'
-  restore_journal_metadata_identity="$(file_identity "$RESTORE_JOURNAL/metadata")"
   journal_identity="$(journal_value journal_identity)"
   recovery_name="$(journal_value recovery)"
   workspace_name="$(journal_value workspace)"
@@ -864,6 +955,13 @@ load_journal() {
     restore_workspace=''
     restore_workspace_identity=''
   fi
+  if [[ "$(file_link_count "$RESTORE_JOURNAL/metadata")" == '2' ]]; then
+    repair_interrupted_journal_link "$RESTORE_JOURNAL/metadata" metadata ||
+      restore_die 'restore journal metadata has an unknown extra link'
+  fi
+  ordinary_single_link "$RESTORE_JOURNAL/metadata" ||
+    restore_die 'restore journal metadata is unsafe'
+  restore_journal_metadata_identity="$(file_identity "$RESTORE_JOURNAL/metadata")"
   while IFS= read -r entry; do
     name="$(basename "$entry")"
     valid_journal_entry_name "$name" || restore_die 'restore journal contains an unexpected entry'
@@ -1074,6 +1172,7 @@ restore_data() {
   validate_tools
   if [[ "$action" == 'apply' ]]; then
     acquire_restore_lock
+    cleanup_retired_journals
     recover_interrupted_restore
   fi
   prepare_restore "$action" "$archive"

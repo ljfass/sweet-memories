@@ -27,6 +27,7 @@ REAL_MV="$(command -v mv)"
 REAL_CP="$(command -v cp)"
 REAL_LN="$(command -v ln)"
 REAL_CAT="$(command -v cat)"
+REAL_RM="$(command -v rm)"
 REAL_SLEEP="$(command -v sleep)"
 MOCK_BIN="$TEST_ROOT/bin"
 EVENT_LOG="$TEST_ROOT/events.log"
@@ -38,6 +39,8 @@ CP_HOOK_MARKER="$TEST_ROOT/cp-hook-fired"
 CAT_HOOK_MARKER="$TEST_ROOT/cat-hook-fired"
 STOP_HOOK_MARKER="$TEST_ROOT/stop-hook-fired"
 JOURNAL_HOOK_MARKER="$TEST_ROOT/journal-hook-fired"
+RM_HOOK_MARKER="$TEST_ROOT/rm-hook-fired"
+BACKUP_HOOK_MARKER="$TEST_ROOT/backup-hook-fired"
 mkdir -p "$MOCK_BIN"
 mkdir -p "$TEST_ROOT/tmp"
 : >"$EVENT_LOG"
@@ -199,6 +202,9 @@ MOCK
 cat >"$MOCK_BIN/tar" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ " ${1:-} " == ' -czf ' ]]; then
+  printf 'tar:create:%s\n' "$*" >>"$EVENT_LOG"
+fi
 case " ${1:-} " in
   ' -xzf ') printf 'tar:extract\n' >>"$EVENT_LOG" ;;
 esac
@@ -218,6 +224,22 @@ if [[ "${FAKE_TAR_CREATE_FAIL:-0}" == '1' && " $* " == *' -czf '* ]]; then
   exit 1
 fi
 exec "$REAL_TAR" "$@"
+MOCK
+
+cat >"$MOCK_BIN/rm" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+target=''
+for argument in "$@"; do
+  [[ "$argument" == -* ]] || target="$argument"
+done
+"$REAL_RM" "$@"
+if [[ -n "${FAKE_KILL_AFTER_REMOVE_BASENAME:-}" && -n "$target" &&
+  "$(basename "$target")" == "$FAKE_KILL_AFTER_REMOVE_BASENAME" &&
+  "$target" == *'.sweet-memories-restore'* && ! -e "$RM_HOOK_MARKER" ]]; then
+  : >"$RM_HOOK_MARKER"
+  kill -KILL "$PPID"
+fi
 MOCK
 
 cat >"$MOCK_BIN/mv" <<'MOCK'
@@ -248,9 +270,10 @@ fi
 MOCK
 
 chmod +x "$MOCK_BIN"/*
-export REAL_DF REAL_DATE REAL_TAR REAL_MV REAL_CP REAL_LN REAL_CAT REAL_SLEEP
+export REAL_DF REAL_DATE REAL_TAR REAL_MV REAL_CP REAL_LN REAL_CAT REAL_RM REAL_SLEEP
 export EVENT_LOG SYSTEMCTL_STATE CURL_COUNT LOCK_DIR MV_HOOK_MARKER CP_HOOK_MARKER
-export CAT_HOOK_MARKER STOP_HOOK_MARKER JOURNAL_HOOK_MARKER
+export CAT_HOOK_MARKER STOP_HOOK_MARKER JOURNAL_HOOK_MARKER RM_HOOK_MARKER
+export BACKUP_HOOK_MARKER
 
 reset_fakes() {
   : >"$EVENT_LOG"
@@ -258,7 +281,8 @@ reset_fakes() {
   printf '0\n' >"$CURL_COUNT"
   rmdir "$LOCK_DIR" 2>/dev/null || true
   rm -f "$MV_HOOK_MARKER" "$CP_HOOK_MARKER" "$CAT_HOOK_MARKER" \
-    "$STOP_HOOK_MARKER" "$JOURNAL_HOOK_MARKER"
+    "$STOP_HOOK_MARKER" "$JOURNAL_HOOK_MARKER" "$RM_HOOK_MARKER" \
+    "$BACKUP_HOOK_MARKER"
   unset FAKE_DF_AVAILABLE_KB FAKE_STOP_FAIL FAKE_STOP_STUCK FAKE_START_FAIL
   unset FAKE_HEALTH_FAILURES FAKE_TAR_CREATE_FAIL FAKE_KILL_AFTER_MOVE_TO
   unset FAKE_TERM_AFTER_MOVE_TO FAKE_REPLACE_AFTER_MOVE_TO FAKE_THIRD_PARTY_SENTINEL
@@ -268,6 +292,7 @@ reset_fakes() {
   unset FAKE_KILL_AFTER_STOP FAKE_TAR_LIST_MODE TEST_MAX_ARCHIVE_BYTES
   unset TEST_MAX_ARCHIVE_MEMBERS TEST_MAX_EXPANDED_BYTES
   unset TEST_JOURNAL_COLLISION_STAGE
+  unset FAKE_KILL_AFTER_REMOVE_BASENAME TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE
   FAKE_UTC_TIMESTAMP='20260903T020304Z'
   export FAKE_UTC_TIMESTAMP
 }
@@ -287,10 +312,20 @@ invoke_backup() {
     FAKE_START_FAIL="${FAKE_START_FAIL:-0}" \
     FAKE_HEALTH_FAILURES="${FAKE_HEALTH_FAILURES:-0}" \
     FAKE_TAR_CREATE_FAIL="${FAKE_TAR_CREATE_FAIL:-0}" \
+    TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE="${TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE:-0}" \
+    BACKUP_HOOK_MARKER="$BACKUP_HOOK_MARKER" \
     bash -c '
       source "$1"
       DATA_ROOT="$2"
       LOCK_FILE="$3"
+      if [[ "$TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE" == '1' ]]; then
+        backup_before_sidecar_commit() {
+          local public_archive="$1"
+          : >"$BACKUP_HOOK_MARKER"
+          mv "$public_archive" "$public_archive.attacker-owned"
+          printf "third-party-public\n" >"$public_archive"
+        }
+      fi
       backup_data "$4"
     ' _ "$BACKUP_SCRIPT" "$data_root" "$TEST_ROOT/shared.lock" "$target"
 }
@@ -545,7 +580,7 @@ copy_valid_archive() {
 }
 
 test_backup_publish_term() {
-  local case_root case_archive case_status
+  local case_root case_archive case_status case_output
 
   reset_fakes
   case_root="$TEST_ROOT/var/lib/backup-term-publish"
@@ -554,13 +589,15 @@ test_backup_publish_term() {
   FAKE_TERM_AFTER_LINK_TO="$case_archive"
   export FAKE_TERM_AFTER_LINK_TO
   set +e
-  invoke_backup "$case_root" "$case_root/backups/manual" >/dev/null 2>&1
+  case_output="$(invoke_backup "$case_root" "$case_root/backups/manual" 2>&1)"
   case_status=$?
   set -e
   [[ "$case_status" -eq 143 && -e "$MV_HOOK_MARKER" ]] ||
     fail "backup publish TERM returned $case_status without executing the hook"
-  [[ ! -e "$case_archive" && ! -L "$case_archive" ]] ||
-    fail 'backup publish TERM retained the partially published archive'
+  [[ -f "$case_archive" && ! -L "$case_archive" && ! -e "$case_archive.sha256" ]] ||
+    fail 'backup publish TERM did not retain exactly the incomplete archive'
+  [[ "$case_output" == *'incomplete archive retained for manual recovery'* ]] ||
+    fail 'backup publish TERM did not report the retained incomplete archive'
   [[ -z "$(find "$case_root/backups/manual" -maxdepth 1 \
     -name '.sweet-memories-*' -print -quit)" ]] ||
     fail 'backup publish TERM retained an owned temporary file'
@@ -594,6 +631,58 @@ INSERT INTO photos(id) VALUES('$photo_id');
 INSERT INTO photo_assets(photo_id, relative_path)
 VALUES('$photo_id', '$photo_id/master.jpg');
 SQL
+}
+
+mutate_schema_contract() {
+  local database="$1"
+  local variant="$2"
+
+  case "$variant" in
+    unconstrained)
+      sqlite3 "$database" <<'SQL'
+PRAGMA writable_schema=ON;
+UPDATE sqlite_schema
+SET sql=replace(
+  sql,
+  'title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 120)',
+  'title TEXT'
+)
+WHERE type='table' AND name='photos';
+PRAGMA writable_schema=OFF;
+SQL
+      [[ "$(sqlite3 -batch -noheader "$database" \
+        "SELECT instr(sql, 'title TEXT NOT NULL CHECK') FROM sqlite_schema WHERE name='photos';")" == '0' ]] ||
+        fail 'unconstrained schema mutation did not apply'
+      ;;
+    wrong-index)
+      sqlite3 "$database" <<'SQL'
+DROP INDEX photos_public_order_idx;
+CREATE INDEX photos_public_order_idx ON photos(id);
+SQL
+      ;;
+    extra-table)
+      sqlite3 "$database" 'CREATE TABLE unexpected_restore_data(value TEXT);'
+      ;;
+    *) fail "unknown schema mutation: $variant" ;;
+  esac
+}
+
+canonical_schema_fingerprint() {
+  local database="$1"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sqlite3 -batch -noheader "$database" \
+      "SELECT type || '|' || hex(name) || '|' || hex(tbl_name) || '|' || hex(sql)
+       FROM sqlite_schema
+       WHERE type IN ('table','index','view','trigger') AND name NOT GLOB 'sqlite_*'
+       ORDER BY type,name,tbl_name;" | sha256sum | awk '{print $1}'
+  else
+    sqlite3 -batch -noheader "$database" \
+      "SELECT type || '|' || hex(name) || '|' || hex(tbl_name) || '|' || hex(sql)
+       FROM sqlite_schema
+       WHERE type IN ('table','index','view','trigger') AND name NOT GLOB 'sqlite_*'
+       ORDER BY type,name,tbl_name;" | shasum -a 256 | awk '{print $1}'
+  fi
 }
 
 test_restore_resource_limits() {
@@ -707,6 +796,44 @@ SQL
     invoke_restore "$minimal_root" verify "$bad_uuid_archive"
 }
 
+test_exact_schema_fingerprint() {
+  local reference_root="$TEST_ROOT/schema-fingerprint-reference/sweet-memories"
+  local variant root tree archive_dir archive timestamp index=0
+  local expected backup_constant restore_constant migration_db
+
+  create_reference_archive schema-fingerprint
+  for variant in unconstrained wrong-index extra-table; do
+    index=$((index + 1))
+    root="$TEST_ROOT/schema-$variant-backup/sweet-memories"
+    create_data_fixture "$root" "schema-$variant"
+    mutate_schema_contract "$root/database/sweet-memories.sqlite3" "$variant"
+    reset_fakes
+    assert_fails "$variant backup schema" 'copied database schema fingerprint is unsupported' \
+      invoke_backup "$root" "$root/backups/manual"
+
+    tree="$TEST_ROOT/schema-$variant-restore-tree"
+    archive_dir="$TEST_ROOT/schema-$variant-restore-archive"
+    timestamp="20260903T03100${index}Z"
+    archive="$archive_dir/sweet-memories-data-$timestamp.tar.gz"
+    mkdir -m 0700 "$tree" "$archive_dir"
+    "$REAL_TAR" -xzf "$TEST_REFERENCE_ARCHIVE" -C "$tree"
+    mutate_schema_contract "$tree/database/sweet-memories.sqlite3" "$variant"
+    regenerate_tree_metadata "$tree"
+    repack_tree "$tree" "$archive"
+    reset_fakes
+    assert_fails "$variant restore schema" 'SQLite schema fingerprint is unsupported' \
+      invoke_restore "$reference_root" verify "$archive"
+  done
+
+  migration_db="$TEST_ROOT/schema-fingerprint.sqlite3"
+  sqlite3 "$migration_db" <"$MIGRATION_SQL"
+  expected="$(canonical_schema_fingerprint "$migration_db")"
+  backup_constant="$(sed -n 's/^SCHEMA_FINGERPRINT_001=//p' "$BACKUP_SCRIPT")"
+  restore_constant="$(sed -n 's/^SCHEMA_FINGERPRINT_001=//p' "$RESTORE_SCRIPT")"
+  [[ "$backup_constant" == "$expected" && "$restore_constant" == "$expected" ]] ||
+    fail '001 schema fingerprint constants do not match the real migration'
+}
+
 test_journal_publish_collision() {
   local live_root="$TEST_ROOT/journal-collision/sweet-memories"
   local journal="$TEST_ROOT/journal-collision/.sweet-memories-restore"
@@ -789,17 +916,123 @@ test_kill_after_stop_before_move() {
     fail 'stage-link KILL recovery did not restore original data and service'
 }
 
+test_journal_atomic_cleanup() {
+  local metadata_root="$TEST_ROOT/metadata-link-kill/sweet-memories"
+  local metadata_journal="$TEST_ROOT/metadata-link-kill/.sweet-memories-restore"
+  local metadata_hash status output retired point index root journal
+
+  create_reference_archive journal-atomic
+  create_data_fixture "$metadata_root" metadata-live
+  metadata_hash="$(sha256_file "$metadata_root/database/sweet-memories.sqlite3")"
+  reset_fakes
+  FAKE_KILL_AFTER_LINK_TO="$metadata_journal/metadata"
+  export FAKE_KILL_AFTER_LINK_TO
+  set +e
+  invoke_restore "$metadata_root" apply "$TEST_REFERENCE_ARCHIVE" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 137 && -e "$MV_HOOK_MARKER" &&
+    "$(file_link_count "$metadata_journal/metadata")" == '2' ]] ||
+    fail 'metadata hard-link KILL fixture did not hit the double-link window'
+  ! grep -Fq 'systemctl:stop' "$EVENT_LOG" ||
+    fail 'metadata hard-link KILL occurred after service stop'
+  unset FAKE_KILL_AFTER_LINK_TO
+  rmdir "$LOCK_DIR" || fail 'metadata hard-link KILL did not leave the fixture lock'
+  : >"$EVENT_LOG"
+  assert_fails 'metadata hard-link KILL recovery' 'recovered interrupted restore; rerun apply' \
+    invoke_restore "$metadata_root" apply "$TEST_REFERENCE_ARCHIVE"
+  [[ ! -e "$metadata_journal" && "$(cat "$SYSTEMCTL_STATE")" == 'active' &&
+    "$(sha256_file "$metadata_root/database/sweet-memories.sqlite3")" == "$metadata_hash" ]] ||
+    fail 'metadata hard-link KILL recovery did not preserve original state'
+
+  index=0
+  for point in committed healthy new-installed old-moved service-stopped prepared metadata; do
+    index=$((index + 1))
+    root="$TEST_ROOT/cleanup-kill-$point/sweet-memories"
+    journal="$(dirname "$root")/.sweet-memories-restore"
+    create_data_fixture "$root" "cleanup-$point"
+    reset_fakes
+    FAKE_KILL_AFTER_REMOVE_BASENAME="$point"
+    export FAKE_KILL_AFTER_REMOVE_BASENAME
+    set +e
+    invoke_restore "$root" apply "$TEST_REFERENCE_ARCHIVE" >/dev/null 2>&1
+    status=$?
+    set -e
+    [[ "$status" -eq 137 && -e "$RM_HOOK_MARKER" ]] ||
+      fail "journal cleanup KILL did not hit $point"
+    [[ ! -e "$journal" ]] ||
+      fail "journal cleanup KILL left the fixed journal visible after $point"
+    retired="$(find "$(dirname "$root")" -mindepth 1 -maxdepth 1 -type d \
+      -name '.sweet-memories-restore.retired.*' -print -quit)"
+    [[ -n "$retired" ]] || fail "journal cleanup KILL did not retain a retired transaction after $point"
+    unset FAKE_KILL_AFTER_REMOVE_BASENAME
+    rmdir "$LOCK_DIR" || fail "journal cleanup KILL did not leave the fixture lock after $point"
+    : >"$EVENT_LOG"
+    FAKE_UTC_TIMESTAMP="20260903T04$(printf '%02d' "$index")00Z"
+    export FAKE_UTC_TIMESTAMP
+    output="$(invoke_restore "$root" apply "$TEST_REFERENCE_ARCHIVE" 2>&1)" ||
+      fail "journal cleanup orphan recovery failed after $point: $output"
+    [[ -z "$(find "$(dirname "$root")" -mindepth 1 -maxdepth 1 -type d \
+      -name '.sweet-memories-restore.retired.*' -print -quit)" ]] ||
+      fail "journal cleanup orphan remained after $point"
+  done
+}
+
+test_backup_transaction_races() {
+  local replace_root="$TEST_ROOT/backup-public-replace/sweet-memories"
+  local archive output status success_root create_event
+
+  reset_fakes
+  archive="$replace_root/backups/manual/sweet-memories-data-$FAKE_UTC_TIMESTAMP.tar.gz"
+  create_data_fixture "$replace_root" backup-public-replace
+  TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE=1
+  export TEST_BACKUP_REPLACE_PUBLIC_ARCHIVE
+  set +e
+  output="$(invoke_backup "$replace_root" "$replace_root/backups/manual" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 && -e "$BACKUP_HOOK_MARKER" ]] ||
+    fail "public archive replacement hook did not fail backup (status $status): $output"
+  [[ -f "$archive" && "$(cat "$archive")" == 'third-party-public' &&
+    ! -e "$archive.sha256" ]] ||
+    fail 'public archive replacement was overwritten or received a commit sidecar'
+  [[ "$output" != *'backup archive:'* ]] || fail 'replaced public archive was reported as successful'
+  [[ "$(cat "$SYSTEMCTL_STATE")" == 'active' ]] ||
+    fail 'public archive replacement did not restore service health'
+
+  reset_fakes
+  success_root="$TEST_ROOT/backup-private-transaction/sweet-memories"
+  create_data_fixture "$success_root" backup-private-transaction
+  invoke_backup "$success_root" "$success_root/backups/manual" >/dev/null
+  create_event="$(grep '^tar:create:' "$EVENT_LOG" | tail -1)"
+  [[ "$create_event" == *':-czf - '* && "$create_event" == *'/.sweet-memories-backup.'* ]] ||
+    fail "backup archive was not streamed into its owned workspace: $create_event"
+  [[ -z "$(find "$success_root/backups/manual" -mindepth 1 -maxdepth 1 \
+    -name '.sweet-memories-*' -print -quit)" ]] ||
+    fail 'successful backup retained a public temporary path'
+
+  if [[ "${TASK20_TEST_CASE:-all}" != 'all' ]]; then
+    test_backup_publish_term
+  fi
+}
+
 case "${TASK20_TEST_CASE:-all}" in
   backup-publish-term) test_backup_publish_term ;;
   restore-limits) test_restore_resource_limits ;;
   schema-contract) test_complete_schema_and_uuid ;;
+  schema-fingerprint) test_exact_schema_fingerprint ;;
   journal-collision) test_journal_publish_collision ;;
   kill-before-move) test_kill_after_stop_before_move ;;
+  journal-atomic) test_journal_atomic_cleanup ;;
+  backup-transaction) test_backup_transaction_races ;;
   all)
     test_restore_resource_limits
     test_complete_schema_and_uuid
     test_journal_publish_collision
     test_kill_after_stop_before_move
+    test_exact_schema_fingerprint
+    test_journal_atomic_cleanup
+    test_backup_transaction_races
     ;;
   *) fail "unknown TASK20_TEST_CASE: ${TASK20_TEST_CASE:-}" ;;
 esac
