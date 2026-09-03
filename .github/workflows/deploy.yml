@@ -16,14 +16,15 @@ concurrency:
 jobs:
   deploy:
     name: 检查并部署
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
     environment:
       name: production
       url: ${{ vars.PRODUCTION_URL }}
     env:
       SITE_ROOT: /var/www/huangjianfen.cn
-      REMOTE_ARCHIVE: /tmp/sweet-memories-${{ github.sha }}.tar.gz
+      REMOTE_FRONTEND_ARCHIVE: /tmp/sweet-memories-${{ github.sha }}.tar.gz
+      REMOTE_API_ARCHIVE: /tmp/sweet-memories-api-${{ github.sha }}.tar.gz
     steps:
       - name: 检出 Tag 对应代码
         id: checkout
@@ -54,9 +55,22 @@ jobs:
       - name: 安装项目指定的 pnpm
         id: install-pnpm
         timeout-minutes: 3
+        shell: bash
         run: |
+          set -euo pipefail
           npm install --global pnpm@8.6.1
           test "$(pnpm --version)" = '8.6.1'
+
+      - name: 安装 HEIF 工具
+        id: install-heif
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libheif-examples
+          heif-info --help >/dev/null
+          heif-convert --help >/dev/null
 
       - name: 安装依赖
         id: install-dependencies
@@ -65,31 +79,52 @@ jobs:
 
       - name: 类型检查
         id: typecheck
-        timeout-minutes: 3
+        timeout-minutes: 5
         run: pnpm typecheck
 
       - name: 代码检查
         id: lint
-        timeout-minutes: 3
+        timeout-minutes: 5
         run: pnpm lint
 
-      - name: 单元测试
+      - name: 全量单元测试
         id: test
-        timeout-minutes: 5
+        timeout-minutes: 7
         run: pnpm test
+
+      - name: API 和发布包测试
+        id: test-api
+        timeout-minutes: 8
+        run: pnpm test:api
 
       - name: 部署脚本测试
         id: test-deploy
-        timeout-minutes: 3
+        timeout-minutes: 5
         run: pnpm test:deploy
 
-      - name: 生产构建
-        id: build
+      - name: 巡检脚本测试
+        id: test-monitor
         timeout-minutes: 5
-        run: pnpm build
+        run: pnpm test:monitor
 
-      - name: 打包构建产物
-        id: package
+      - name: 构建前端
+        id: build-frontend
+        timeout-minutes: 5
+        run: pnpm build:frontend
+
+      - name: 构建 API
+        id: build-api
+        timeout-minutes: 5
+        run: pnpm build:api
+
+      - name: 打包 API
+        id: package-api
+        timeout-minutes: 5
+        shell: bash
+        run: bash scripts/deploy/package-api.sh "$RUNNER_TEMP/api-release.tar.gz"
+
+      - name: 打包前端
+        id: package-frontend
         timeout-minutes: 2
         shell: bash
         run: tar -C dist -czf "$RUNNER_TEMP/release.tar.gz" .
@@ -125,8 +160,8 @@ jobs:
             echo 'ALIYUN_SSH_PORT 必须在 1 到 65535 之间。' >&2
             exit 1
           fi
-          if [[ ! "$PRODUCTION_URL" =~ ^https?://[^[:space:]]+$ ]]; then
-            echo 'PRODUCTION_URL 必须是 http(s) URL。' >&2
+          if [[ ! "$PRODUCTION_URL" =~ ^https://[^[:space:]]+$ ]]; then
+            echo 'PRODUCTION_URL 必须是 HTTPS URL。' >&2
             exit 1
           fi
 
@@ -164,7 +199,7 @@ jobs:
             ServerAliveCountMax 3
           CONFIG
 
-      - name: 防止线上版本倒退
+      - name: 防止线上前端版本倒退
         id: validate-live
         timeout-minutes: 3
         shell: bash
@@ -215,113 +250,359 @@ jobs:
             exit 1
           fi
 
-      - name: 上传发布产物
-        id: upload
+      - name: 上传 API 发布包
+        id: upload-api
         timeout-minutes: 5
-        run: scp "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_ARCHIVE"
+        run: timeout 240s scp "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"
 
-      - name: 原子启用新版本
-        id: activate
+      - name: 原子启用 API
+        id: activate-api
         continue-on-error: true
         timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
-          ssh production bash -s -- activate "$SITE_ROOT" "$GITHUB_SHA" "$REMOTE_ARCHIVE" \
-            < scripts/deploy/manage-release.sh
+          timeout 240s ssh production sudo /usr/local/sbin/manage-sweet-memories-api activate "$GITHUB_SHA" "$REMOTE_API_ARCHIVE"
 
-      - name: 公网健康检查并在失败时回退
-        id: health-check
-        if: ${{ always() && steps.activate.outcome != 'skipped' }}
-        timeout-minutes: 5
+      - name: 读取相册数据源
+        id: read-album-mode
+        if: ${{ steps.activate-api.outcome == 'success' }}
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          album_mode="$(
+            node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          const config = JSON.parse(readFileSync('src/config/album-source.json', 'utf8'));
+          if (
+            config === null
+            || typeof config !== 'object'
+            || Array.isArray(config)
+            || Object.keys(config).join('\0') !== 'mode'
+            || (config.mode !== 'static' && config.mode !== 'api')
+          ) {
+            throw new Error('album source must be exact static or api JSON');
+          }
+          process.stdout.write(config.mode);
+          NODE
+          )"
+          printf 'mode=%s\n' "$album_mode" >> "$GITHUB_OUTPUT"
+
+      - name: 准备相册模式
+        id: prepare-photo-mode
+        if: ${{ steps.activate-api.outcome == 'success' }}
+        timeout-minutes: 3
         shell: bash
         env:
+          ALBUM_MODE: ${{ steps.read-album-mode.outputs.mode }}
+        run: |
+          set -euo pipefail
+          case "$ALBUM_MODE" in
+            static)
+              timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disable
+              ;;
+            api)
+              timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli migration check-ready
+              ;;
+            *)
+              echo '相册数据源无效。' >&2
+              exit 1
+              ;;
+          esac
+
+      - name: 激活五张旧照片
+        id: activate-legacy
+        if: >-
+          ${{ steps.activate-api.outcome == 'success' &&
+          steps.prepare-photo-mode.outcome == 'success' &&
+          steps.read-album-mode.outputs.mode == 'api' }}
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli migration activate
+
+      - name: 上传前端发布包
+        id: upload-frontend
+        if: >-
+          ${{ steps.activate-api.outcome == 'success' &&
+          steps.prepare-photo-mode.outcome == 'success' &&
+          (steps.read-album-mode.outputs.mode == 'static' ||
+          steps.activate-legacy.outcome == 'success') }}
+        timeout-minutes: 5
+        run: timeout 240s scp "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_FRONTEND_ARCHIVE"
+
+      - name: 原子启用前端
+        id: activate-frontend
+        if: ${{ steps.upload-frontend.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 240s ssh production bash -s -- activate "$SITE_ROOT" "$GITHUB_SHA" "$REMOTE_FRONTEND_ARCHIVE" < scripts/deploy/manage-release.sh
+
+      - name: 公网健康检查
+        id: health-check
+        if: ${{ always() && steps.activate-frontend.outcome != 'skipped' }}
+        timeout-minutes: 8
+        shell: bash
+        env:
+          ALBUM_MODE: ${{ steps.read-album-mode.outputs.mode }}
           PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
         run: |
           set -euo pipefail
           expected_release="$SITE_ROOT/releases/$GITHUB_SHA"
-
-          read_live_release() {
-            local attempt candidate
-            for attempt in 1 2 3; do
-              if candidate="$(
-                timeout 15s ssh production readlink -f -- "$SITE_ROOT/html"
-              )"; then
-                active_release="$candidate"
-                return 0
-              fi
-              if ((attempt < 3)); then
-                echo "读取线上版本失败，第 $attempt 次重试。" >&2
-                sleep 2
-              fi
-            done
-            return 1
-          }
-
-          rollback_if_current() {
-            local attempt observed_release
-            for attempt in 1 2 3; do
-              if ! timeout 15s ssh production bash -s -- rollback-if-current "$SITE_ROOT" "$GITHUB_SHA" \
-                < scripts/deploy/manage-release.sh; then
-                echo "安全回退第 $attempt 次命令未确认成功。" >&2
-              fi
-
-              if observed_release="$(
-                timeout 15s ssh production readlink -f -- "$SITE_ROOT/html"
-              )"; then
-                if [[ "$observed_release" != "$expected_release" ]]; then
-                  echo "已确认本次版本不再在线：$observed_release" >&2
-                  return 0
-                fi
-                echo "本次版本仍在线，准备第 $attempt 次重试。" >&2
-              else
-                echo "安全回退后无法确认线上版本，第 $attempt 次重试。" >&2
-              fi
-              if ((attempt < 3)); then
-                sleep 2
-              fi
-            done
-            echo '三次安全回退后仍无法确认本次版本已下线。' >&2
-            return 1
-          }
-
           active_release=''
-          if ! read_live_release; then
-            echo '激活后连续三次无法读取线上版本，尝试安全回退。' >&2
-            if ! rollback_if_current; then
-              echo '无法确认安全回退结果，需要人工检查线上 html 链接。' >&2
+          for attempt in 1 2 3; do
+            if active_release="$(
+              timeout 15s ssh production readlink -f -- "$SITE_ROOT/html"
+            )"; then
+              break
             fi
-            exit 1
-          fi
+            if ((attempt < 3)); then
+              echo "读取线上前端失败，第 $attempt 次重试。" >&2
+              sleep 2
+            fi
+          done
           if [[ "$active_release" != "$expected_release" ]]; then
-            echo '线上版本不是本次部署提交，拒绝继续部署。' >&2
+            echo '线上前端不是本次部署提交。' >&2
             exit 1
           fi
-          if timeout 120s curl --fail --silent --show-error \
-            --connect-timeout 10 --max-time 30 \
-            --retry 5 --retry-delay 2 --retry-max-time 120 \
-            --retry-all-errors \
-            "$PRODUCTION_URL" >/dev/null; then
+
+          site_origin="${PRODUCTION_URL%/}"
+          timeout 120s curl --fail --silent --show-error --connect-timeout 10 --max-time 30 --retry 5 --retry-delay 2 --retry-max-time 120 --retry-all-errors "$site_origin/" >/dev/null
+          if [[ "$ALBUM_MODE" == 'static' ]]; then
             exit 0
           fi
-          echo '公网健康检查失败，开始回退。' >&2
-          if ! rollback_if_current; then
-            echo '无法确认安全回退结果，需要人工检查线上 html 链接。' >&2
+          if [[ "$ALBUM_MODE" != 'api' ]]; then
+            echo '相册数据源无效。' >&2
+            exit 1
           fi
-          exit 1
 
-      - name: 清理远程发布包
-        id: archive-cleanup
-        if: ${{ always() && steps.upload.outcome != 'skipped' }}
+          photos_file="$RUNNER_TEMP/public-photos.json"
+          timeout 120s curl --fail --silent --show-error --connect-timeout 10 --max-time 30 --retry 5 --retry-delay 2 --retry-max-time 120 --retry-all-errors "$site_origin/api/photos" > "$photos_file"
+          media_url="$(
+            node --input-type=module - "$photos_file" "$site_origin" <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          const [photosFile, siteOrigin] = process.argv.slice(2);
+          const photos = JSON.parse(readFileSync(photosFile, 'utf8'));
+          const fixedIds = [
+            '9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1',
+            '58efb95e-2a98-45be-bbe4-acde6c34f7cd',
+            'f83da4e8-d94e-4b8a-a725-36e2d1f931bf',
+            'a15b8021-9842-4ed7-bd0f-9f98518a2d72',
+            'c9608cd6-3480-43fb-84ab-623899262ff9',
+          ];
+          const calendarDate = /^\d{4}-\d{2}-\d{2}$/u;
+          if (!Array.isArray(photos) || photos.length < fixedIds.length) {
+            throw new Error('public API does not contain five photos');
+          }
+          for (let index = 0; index < photos.length; index += 1) {
+            const current = photos[index];
+            if (
+              current === null
+              || typeof current !== 'object'
+              || typeof current.id !== 'string'
+              || typeof current.capturedDate !== 'string'
+              || !calendarDate.test(current.capturedDate)
+            ) {
+              throw new Error('public API photo shape is invalid');
+            }
+            const previous = photos[index - 1];
+            if (previous !== undefined && previous.capturedDate > current.capturedDate) {
+              throw new Error('public API photos are not ordered by captured date');
+            }
+          }
+          const observedLegacyIds = photos
+            .filter((photo) => fixedIds.includes(photo.id))
+            .map((photo) => photo.id);
+          if (JSON.stringify(observedLegacyIds) !== JSON.stringify(fixedIds)) {
+            throw new Error('legacy photo IDs are missing, duplicated, or out of order');
+          }
+          const photo = photos[0];
+          if (
+            photo.sources === null
+            || typeof photo.sources !== 'object'
+            || photo.sources.fallback === null
+            || typeof photo.sources.fallback !== 'object'
+            || typeof photo.sources.fallback.url !== 'string'
+          ) {
+            throw new Error('first photo has no fallback media URL');
+          }
+          const mediaUrl = new URL(photo.sources.fallback.url, siteOrigin);
+          if (
+            mediaUrl.origin !== siteOrigin
+            || !mediaUrl.pathname.startsWith('/media/')
+            || mediaUrl.username !== ''
+            || mediaUrl.password !== ''
+            || mediaUrl.search !== ''
+            || mediaUrl.hash !== ''
+          ) {
+            throw new Error('first media URL is not a safe same-origin media path');
+          }
+          process.stdout.write(mediaUrl.href);
+          NODE
+          )"
+          media_status="$(
+            timeout 120s curl --silent --show-error --connect-timeout 10 --max-time 30 --retry 5 --retry-delay 2 --retry-max-time 120 --retry-all-errors --output /dev/null --write-out '%{http_code}' "$media_url"
+          )"
+          [[ "$media_status" == 2[0-9][0-9] ]]
+
+      - name: 公网检查后启用上传
+        id: enable-uploads
+        if: >-
+          ${{ steps.health-check.outcome == 'success' &&
+          steps.read-album-mode.outputs.mode == 'api' }}
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli uploads enable
+
+      - name: 失败时先关闭上传
+        id: disable-uploads
+        if: >-
+          ${{ always() && steps.activate-api.outcome != 'skipped' &&
+          (failure() ||
+          steps.activate-api.outcome == 'failure' ||
+          steps.prepare-photo-mode.outcome == 'failure' ||
+          steps.activate-legacy.outcome == 'failure' ||
+          steps.activate-frontend.outcome == 'failure' ||
+          steps.health-check.outcome == 'failure' ||
+          steps.enable-uploads.outcome == 'failure') }}
         continue-on-error: true
-        timeout-minutes: 2
-        run: ssh production rm -f -- "$REMOTE_ARCHIVE"
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disable
 
-      - name: 清理旧版本
-        id: cleanup
+      - name: 有条件回退前端
+        id: rollback-frontend
+        if: >-
+          ${{ always() && steps.activate-frontend.outcome != 'skipped' &&
+          (failure() ||
+          steps.activate-frontend.outcome == 'failure' ||
+          steps.health-check.outcome == 'failure' ||
+          steps.enable-uploads.outcome == 'failure') }}
         timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
-          ssh production bash -s -- cleanup "$SITE_ROOT" 5 \
-            < scripts/deploy/manage-release.sh
+          expected_release="$SITE_ROOT/releases/$GITHUB_SHA"
+          for attempt in 1 2 3; do
+            observed_release=''
+            if observed_release="$(
+              timeout 15s ssh production readlink -f -- "$SITE_ROOT/html"
+            )" && [[ "$observed_release" != "$expected_release" ]]; then
+              echo "已确认本次前端版本不再在线：$observed_release" >&2
+              exit 0
+            fi
+            if ! timeout 30s ssh production bash -s -- rollback-if-current "$SITE_ROOT" "$GITHUB_SHA" < scripts/deploy/manage-release.sh; then
+              echo "前端安全回退第 $attempt 次命令未确认成功。" >&2
+            fi
+            if observed_release="$(
+              timeout 15s ssh production readlink -f -- "$SITE_ROOT/html"
+            )" && [[ "$observed_release" != "$expected_release" ]]; then
+              echo "已确认本次前端版本不再在线：$observed_release" >&2
+              exit 0
+            fi
+            if ((attempt < 3)); then sleep 2; fi
+          done
+          echo '三次安全回退后仍无法确认本次前端版本已下线。' >&2
+          exit 1
+
+      - name: 有条件回退 API
+        id: rollback-api
+        if: >-
+          ${{ always() && steps.activate-api.outcome != 'skipped' &&
+          (failure() ||
+          steps.activate-api.outcome == 'failure' ||
+          steps.prepare-photo-mode.outcome == 'failure' ||
+          steps.activate-legacy.outcome == 'failure' ||
+          steps.activate-frontend.outcome == 'failure' ||
+          steps.health-check.outcome == 'failure' ||
+          steps.enable-uploads.outcome == 'failure') }}
+        timeout-minutes: 11
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_release="/opt/sweet-memories-api/releases/$GITHUB_SHA"
+          for attempt in 1 2 3; do
+            observed_release=''
+            if observed_release="$(
+              timeout 15s ssh production readlink -f -- /opt/sweet-memories-api/current
+            )" && [[ "$observed_release" != "$expected_release" ]]; then
+              echo "已确认本次 API 版本不再在线：$observed_release" >&2
+              exit 0
+            fi
+            if ! timeout 180s ssh production sudo /usr/local/sbin/manage-sweet-memories-api rollback-if-current "$GITHUB_SHA"; then
+              echo "API 安全回退第 $attempt 次命令未确认成功。" >&2
+            fi
+            if observed_release="$(
+              timeout 15s ssh production readlink -f -- /opt/sweet-memories-api/current
+            )" && [[ "$observed_release" != "$expected_release" ]]; then
+              echo "已确认本次 API 版本不再在线：$observed_release" >&2
+              exit 0
+            fi
+            if ((attempt < 3)); then sleep 2; fi
+          done
+          echo '三次安全回退后仍无法确认本次 API 版本已下线。' >&2
+          exit 1
+
+      - name: 清理远程前端发布包
+        id: archive-cleanup-frontend
+        if: ${{ always() && steps.upload-frontend.outcome != 'skipped' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        run: timeout 30s ssh production rm -f -- "$REMOTE_FRONTEND_ARCHIVE"
+
+      - name: 清理远程 API 发布包
+        id: archive-cleanup-api
+        if: ${{ always() && steps.upload-api.outcome != 'skipped' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        run: timeout 30s ssh production rm -f -- "$REMOTE_API_ARCHIVE"
+
+      - name: 清理旧前端版本
+        id: cleanup-frontend
+        if: >-
+          ${{ always() && steps.health-check.outcome == 'success' &&
+          (steps.read-album-mode.outputs.mode == 'static' ||
+          steps.enable-uploads.outcome == 'success') &&
+          steps.activate-api.outcome == 'success' &&
+          steps.activate-frontend.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s ssh production bash -s -- cleanup "$SITE_ROOT" 5 < scripts/deploy/manage-release.sh
+
+      - name: 清理旧 API 版本
+        id: cleanup-api
+        if: >-
+          ${{ always() && steps.health-check.outcome == 'success' &&
+          (steps.read-album-mode.outputs.mode == 'static' ||
+          steps.enable-uploads.outcome == 'success') &&
+          steps.activate-api.outcome == 'success' &&
+          steps.activate-frontend.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cleanup 5
+
+      - name: 报告不确定的激活失败
+        id: fail-deployment
+        if: >-
+          ${{ always() && (steps.activate-api.outcome == 'failure' ||
+          steps.activate-frontend.outcome == 'failure') }}
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          echo '发布激活命令失败，补偿步骤已执行。' >&2
+          exit 1

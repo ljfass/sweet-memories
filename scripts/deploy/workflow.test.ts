@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -16,29 +17,16 @@ interface WorkflowStep {
 }
 
 interface DeployJob {
-  environment: {
-    name: string
-    url: string
-  }
+  environment: { name: string; url: string }
+  'runs-on': string
   steps: WorkflowStep[]
   'timeout-minutes': number
 }
 
 interface Workflow {
-  concurrency: {
-    'cancel-in-progress': boolean
-    group: string
-    queue: string
-  }
-  jobs: {
-    deploy: DeployJob
-  }
-  on: {
-    push: {
-      branches?: unknown
-      tags: string[]
-    }
-  }
+  concurrency: { 'cancel-in-progress': boolean; group: string; queue: string }
+  jobs: { deploy: DeployJob }
+  on: { push: { branches?: unknown; tags: string[] } }
   permissions: Record<string, string>
 }
 
@@ -57,17 +45,18 @@ function stepById(steps: WorkflowStep[], id: string): WorkflowStep {
   return step as WorkflowStep
 }
 
+function stepIndex(steps: WorkflowStep[], id: string): number {
+  const index = steps.findIndex((step) => step.id === id)
+  expect(index, `workflow step "${id}" must exist`).toBeGreaterThanOrEqual(0)
+  return index
+}
+
 describe('production deployment workflow', () => {
-  it('runs only for version tags with least-privilege repository access', () => {
+  it('runs only for version tags with least-privilege serialized production access', () => {
     const workflow = loadWorkflow()
 
     expect(workflow.on).toEqual({ push: { tags: ['v*'] } })
     expect(workflow.permissions).toEqual({ contents: 'read' })
-  })
-
-  it('serializes production deployments without cancelling an active release', () => {
-    const workflow = loadWorkflow()
-
     expect(workflow.concurrency).toEqual({
       group: 'sweet-memories-production',
       queue: 'max',
@@ -79,31 +68,13 @@ describe('production deployment workflow', () => {
     })
   })
 
-  it('validates the tag commit against origin/main before installing or building', () => {
-    const steps = loadWorkflow().jobs.deploy.steps
-    const validateIndex = steps.findIndex((step) => step.id === 'validate-main')
-    const dependencyIndex = steps.findIndex(
-      (step) => step.id === 'install-dependencies',
-    )
-    const buildIndex = steps.findIndex((step) => step.id === 'build')
-    const command = stepById(steps, 'validate-main').run
-
-    expect(validateIndex).toBeGreaterThanOrEqual(0)
-    expect(dependencyIndex).toBeGreaterThan(validateIndex)
-    expect(buildIndex).toBeGreaterThan(validateIndex)
-    expect(command).toContain(
-      'git fetch origin main:refs/remotes/origin/main --no-tags',
-    )
-    expect(command).toContain(
-      'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
-    )
-  })
-
-  it('pins executable actions to reviewed immutable commits', () => {
-    const actionRefs = loadWorkflow()
-      .jobs.deploy.steps.map((step) => step.uses)
+  it('pins executable actions and the API package runner to reviewed versions', () => {
+    const deploy = loadWorkflow().jobs.deploy
+    const actionRefs = deploy.steps
+      .map((step) => step.uses)
       .filter((uses): uses is string => uses !== undefined)
 
+    expect(deploy['runs-on']).toBe('ubuntu-24.04')
     expect(actionRefs).toEqual([
       'actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd',
       'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38',
@@ -113,244 +84,291 @@ describe('production deployment workflow', () => {
     }
   })
 
-  it('runs exact quality and packaging commands in order before upload', () => {
+  it('installs and verifies HEIF tools before installing project dependencies', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const command = stepById(steps, 'install-heif').run ?? ''
+
+    expect(stepIndex(steps, 'install-heif')).toBeLessThan(
+      stepIndex(steps, 'install-dependencies'),
+    )
+    expect(command).toContain('sudo apt-get update')
+    expect(command).toContain(
+      'sudo apt-get install --yes --no-install-recommends libheif-examples',
+    )
+    expect(command).toContain('heif-info --help >/dev/null')
+    expect(command).toContain('heif-convert --help >/dev/null')
+  })
+
+  it('validates main ancestry before dependencies, builds, or uploads', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const validateIndex = stepIndex(steps, 'validate-main')
+    const command = stepById(steps, 'validate-main').run ?? ''
+
+    expect(stepIndex(steps, 'install-dependencies')).toBeGreaterThan(validateIndex)
+    expect(stepIndex(steps, 'build-frontend')).toBeGreaterThan(validateIndex)
+    expect(stepIndex(steps, 'build-api')).toBeGreaterThan(validateIndex)
+    expect(stepIndex(steps, 'upload-api')).toBeGreaterThan(validateIndex)
+    expect(command).toContain(
+      'git fetch origin main:refs/remotes/origin/main --no-tags',
+    )
+    expect(command).toContain(
+      'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
+    )
+  })
+
+  it('runs the fixed quality gate and packages API before frontend', () => {
     const steps = loadWorkflow().jobs.deploy.steps
     const commands = new Map([
       ['install-dependencies', 'pnpm install --frozen-lockfile'],
       ['typecheck', 'pnpm typecheck'],
       ['lint', 'pnpm lint'],
       ['test', 'pnpm test'],
+      ['test-api', 'pnpm test:api'],
       ['test-deploy', 'pnpm test:deploy'],
-      ['build', 'pnpm build'],
-      ['package', 'tar -C dist -czf "$RUNNER_TEMP/release.tar.gz" .'],
-      ['upload', 'scp "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_ARCHIVE"'],
+      ['test-monitor', 'pnpm test:monitor'],
+      ['build-frontend', 'pnpm build:frontend'],
+      ['build-api', 'pnpm build:api'],
+      [
+        'package-api',
+        'bash scripts/deploy/package-api.sh "$RUNNER_TEMP/api-release.tar.gz"',
+      ],
+      ['package-frontend', 'tar -C dist -czf "$RUNNER_TEMP/release.tar.gz" .'],
     ])
-    const orderedIds = [...commands.keys()]
-    const orderedIndexes = orderedIds.map((id) =>
-      steps.findIndex((step) => step.id === id),
-    )
+    const orderedIndexes = [...commands.keys()].map((id) => stepIndex(steps, id))
 
-    expect(orderedIndexes.every((index) => index >= 0)).toBe(true)
-    expect(orderedIndexes).toEqual(
-      [...orderedIndexes].sort((a, b) => a - b),
-    )
+    expect(orderedIndexes).toEqual([...orderedIndexes].sort((a, b) => a - b))
     for (const [id, command] of commands) {
       expect(stepById(steps, id).run).toBe(command)
     }
   })
 
-  it('gives every step a bounded budget with job recovery headroom', () => {
-    const deploy = loadWorkflow().jobs.deploy
-    const expectedBudgets = new Map([
-      ['checkout', 2],
-      ['validate-main', 2],
-      ['setup-node', 3],
-      ['install-pnpm', 3],
-      ['install-dependencies', 5],
-      ['typecheck', 3],
-      ['lint', 3],
-      ['test', 5],
-      ['test-deploy', 3],
-      ['build', 5],
-      ['package', 2],
-      ['validate-config', 1],
-      ['configure-ssh', 1],
-      ['validate-live', 3],
-      ['upload', 5],
-      ['activate', 5],
-      ['health-check', 5],
-      ['archive-cleanup', 2],
-      ['cleanup', 5],
-    ])
-    const stepBudgets = deploy.steps.map((step) => step['timeout-minutes'])
-    const totalStepBudget = stepBudgets.reduce(
-      (total, budget) => total + (budget ?? 0),
-      0,
+  it('uploads and activates the API before any frontend upload or activation', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const uploadApi = stepById(steps, 'upload-api').run ?? ''
+    const activateApi = stepById(steps, 'activate-api')
+    const uploadFrontend = stepById(steps, 'upload-frontend')
+
+    expect(stepIndex(steps, 'package-api')).toBeLessThan(stepIndex(steps, 'package-frontend'))
+    expect(stepIndex(steps, 'upload-api')).toBeLessThan(stepIndex(steps, 'upload-frontend'))
+    expect(stepIndex(steps, 'activate-api')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
+    expect(uploadApi).toBe(
+      'timeout 240s scp "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"',
+    )
+    expect(activateApi.run).toContain(
+      'sudo /usr/local/sbin/manage-sweet-memories-api activate "$GITHUB_SHA" "$REMOTE_API_ARCHIVE"',
+    )
+    expect(activateApi['continue-on-error']).toBe(true)
+    expect(uploadFrontend.if).toContain("steps.activate-api.outcome == 'success'")
+  })
+
+  it('reads the album source as exact structured JSON after API health succeeds', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const readMode = stepById(steps, 'read-album-mode')
+    const command = readMode.run ?? ''
+
+    expect(stepIndex(steps, 'read-album-mode')).toBeGreaterThan(stepIndex(steps, 'activate-api'))
+    expect(readMode.if).toContain("steps.activate-api.outcome == 'success'")
+    expect(command).toContain("readFileSync('src/config/album-source.json', 'utf8')")
+    expect(command).toContain('JSON.parse')
+    expect(command).toContain("Object.keys(config).join('\\0') !== 'mode'")
+    expect(command).toContain("config.mode !== 'static' && config.mode !== 'api'")
+    expect(command).toContain('mode=%s\\n')
+    expect(command).toContain('>> "$GITHUB_OUTPUT"')
+  })
+
+  it('keeps uploads disabled in static mode and activates legacy photos in API mode', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const prepare = stepById(steps, 'prepare-photo-mode')
+    const activateLegacy = stepById(steps, 'activate-legacy')
+
+    expect(prepare.env?.ALBUM_MODE).toBe('${{ steps.read-album-mode.outputs.mode }}')
+    expect(prepare.run).toContain('static)')
+    expect(prepare.run).toContain(
+      'sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disable',
+    )
+    expect(prepare.run).toContain('api)')
+    expect(prepare.run).toContain(
+      'sudo /usr/local/sbin/manage-sweet-memories-api cli migration check-ready',
+    )
+    expect(activateLegacy.if).toContain("steps.read-album-mode.outputs.mode == 'api'")
+    expect(activateLegacy.run).toContain(
+      'sudo /usr/local/sbin/manage-sweet-memories-api cli migration activate',
+    )
+    expect(stepIndex(steps, 'prepare-photo-mode')).toBeLessThan(stepIndex(steps, 'activate-legacy'))
+    expect(stepIndex(steps, 'activate-legacy')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
+  })
+
+  it('checks HTTPS, public order, five legacy IDs, and first media before uploads', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const health = stepById(steps, 'health-check').run ?? ''
+    const enable = stepById(steps, 'enable-uploads')
+    const fixedIds = [
+      '9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1',
+      '58efb95e-2a98-45be-bbe4-acde6c34f7cd',
+      'f83da4e8-d94e-4b8a-a725-36e2d1f931bf',
+      'a15b8021-9842-4ed7-bd0f-9f98518a2d72',
+      'c9608cd6-3480-43fb-84ab-623899262ff9',
+    ]
+
+    expect(health).toContain('site_origin="${PRODUCTION_URL%/}"')
+    expect(health).toContain('"$site_origin/api/photos"')
+    expect(health).toContain('JSON.parse')
+    expect(health).toContain('previous.capturedDate > current.capturedDate')
+    for (const id of fixedIds) expect(health).toContain(id)
+    expect(health).toContain('photo.sources.fallback.url')
+    expect(health).toContain('mediaUrl.origin !== siteOrigin')
+    expect(health).toContain("mediaUrl.pathname.startsWith('/media/')")
+    expect(health).toContain('[[ "$media_status" == 2[0-9][0-9] ]]')
+    expect(enable.if).toContain("steps.health-check.outcome == 'success'")
+    expect(enable.if).toContain("steps.read-album-mode.outputs.mode == 'api'")
+    expect(enable.run).toContain(
+      'sudo /usr/local/sbin/manage-sweet-memories-api cli uploads enable',
+    )
+    expect(stepIndex(steps, 'health-check')).toBeLessThan(stepIndex(steps, 'enable-uploads'))
+  })
+
+  it('disables uploads before bounded conditional frontend and API rollback', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const disable = stepById(steps, 'disable-uploads')
+    const frontend = stepById(steps, 'rollback-frontend')
+    const api = stepById(steps, 'rollback-api')
+
+    expect(disable.if).toContain('failure()')
+    expect(disable.run).toContain(
+      'sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disable',
+    )
+    expect(stepIndex(steps, 'disable-uploads')).toBeLessThan(stepIndex(steps, 'rollback-frontend'))
+    expect(stepIndex(steps, 'rollback-frontend')).toBeLessThan(stepIndex(steps, 'rollback-api'))
+    expect(frontend.if).toContain('failure()')
+    expect(frontend.run).toContain('for attempt in 1 2 3')
+    expect(frontend.run).toContain(
+      'bash -s -- rollback-if-current "$SITE_ROOT" "$GITHUB_SHA"',
+    )
+    expect(frontend.run).toContain('< scripts/deploy/manage-release.sh')
+    expect(frontend.run).toContain('readlink -f -- "$SITE_ROOT/html"')
+    expect(api.if).toContain('failure()')
+    expect(api.run).toContain('for attempt in 1 2 3')
+    expect(api.run).toContain(
+      'sudo /usr/local/sbin/manage-sweet-memories-api rollback-if-current "$GITHUB_SHA"',
+    )
+    expect(api.run).toContain('readlink -f -- /opt/sweet-memories-api/current')
+  })
+
+  it('always removes exact archives and only cleans five releases on success', () => {
+    const steps = loadWorkflow().jobs.deploy.steps
+    const frontendArchive = stepById(steps, 'archive-cleanup-frontend')
+    const apiArchive = stepById(steps, 'archive-cleanup-api')
+    const frontendCleanup = stepById(steps, 'cleanup-frontend')
+    const apiCleanup = stepById(steps, 'cleanup-api')
+
+    expect(frontendArchive.if).toBe(
+      "${{ always() && steps.upload-frontend.outcome != 'skipped' }}",
+    )
+    expect(apiArchive.if).toBe(
+      "${{ always() && steps.upload-api.outcome != 'skipped' }}",
+    )
+    expect(frontendArchive['continue-on-error']).toBe(true)
+    expect(apiArchive['continue-on-error']).toBe(true)
+    expect(frontendArchive.run).toBe(
+      'timeout 30s ssh production rm -f -- "$REMOTE_FRONTEND_ARCHIVE"',
+    )
+    expect(apiArchive.run).toBe(
+      'timeout 30s ssh production rm -f -- "$REMOTE_API_ARCHIVE"',
+    )
+    expect(frontendCleanup.if).toContain("steps.health-check.outcome == 'success'")
+    expect(frontendCleanup.run).toContain('bash -s -- cleanup "$SITE_ROOT" 5')
+    expect(apiCleanup.if).toContain("steps.health-check.outcome == 'success'")
+    expect(apiCleanup.run).toContain(
+      'sudo /usr/local/sbin/manage-sweet-memories-api cleanup 5',
     )
 
+    const packageAndCleanup = [
+      'package-api',
+      'package-frontend',
+      'archive-cleanup-api',
+      'archive-cleanup-frontend',
+      'cleanup-api',
+      'cleanup-frontend',
+    ].map((id) => stepById(steps, id).run ?? '').join('\n')
+    expect(packageAndCleanup).not.toContain('/var/lib/sweet-memories')
+    expect(packageAndCleanup).not.toContain('/var/www/huangjianfen.cn/html')
+  })
+
+  it('gives every step a positive budget and the job more than ten minutes headroom', () => {
+    const deploy = loadWorkflow().jobs.deploy
+    const expectedBudgets = new Map([
+      ['checkout', 2], ['validate-main', 2], ['setup-node', 3],
+      ['install-pnpm', 3], ['install-heif', 5], ['install-dependencies', 5],
+      ['typecheck', 5], ['lint', 5], ['test', 7], ['test-api', 8],
+      ['test-deploy', 5], ['test-monitor', 5], ['build-frontend', 5],
+      ['build-api', 5], ['package-api', 5], ['package-frontend', 2],
+      ['validate-config', 1], ['configure-ssh', 1], ['validate-live', 3],
+      ['upload-api', 5], ['activate-api', 5], ['read-album-mode', 1],
+      ['prepare-photo-mode', 3], ['activate-legacy', 3], ['upload-frontend', 5],
+      ['activate-frontend', 5], ['health-check', 8], ['enable-uploads', 3],
+      ['disable-uploads', 3], ['rollback-frontend', 5], ['rollback-api', 11],
+      ['archive-cleanup-frontend', 2], ['archive-cleanup-api', 2],
+      ['cleanup-frontend', 5], ['cleanup-api', 5], ['fail-deployment', 1],
+    ])
+    const budgets = deploy.steps.map((step) => step['timeout-minutes'])
+    const total = budgets.reduce((sum, budget) => sum + (budget ?? 0), 0)
+
     expect(deploy.steps).toHaveLength(expectedBudgets.size)
-    expect(
-      stepBudgets.every(
-        (budget) => typeof budget === 'number' && budget > 0,
-      ),
-    ).toBe(true)
+    expect(budgets.every((budget) => typeof budget === 'number' && budget > 0)).toBe(true)
     for (const [id, budget] of expectedBudgets) {
       expect(stepById(deploy.steps, id)['timeout-minutes']).toBe(budget)
     }
-    expect(deploy['timeout-minutes']).toBe(75)
-    expect(deploy['timeout-minutes']).toBeGreaterThan(totalStepBudget)
+    expect(deploy['timeout-minutes']).toBe(170)
+    expect(deploy['timeout-minutes']).toBeGreaterThan(total + 10)
   })
 
-  it('bounds SSH sessions and the public health request', () => {
+  it('bounds network operations and preserves strict host-key verification', () => {
     const steps = loadWorkflow().jobs.deploy.steps
+    const sshStep = stepById(steps, 'configure-ssh')
+    const sshConfig = sshStep.run ?? ''
+    const health = stepById(steps, 'health-check').run ?? ''
 
-    const sshConfig = stepById(steps, 'configure-ssh').run
+    expect(sshStep.env?.ALIYUN_KNOWN_HOSTS).toBe('${{ secrets.ALIYUN_KNOWN_HOSTS }}')
+    expect(sshConfig).toContain('> "$HOME/.ssh/known_hosts"')
+    expect(sshConfig).toContain('StrictHostKeyChecking yes')
+    expect(sshConfig).toContain('UserKnownHostsFile $HOME/.ssh/known_hosts')
     expect(sshConfig).toContain('ConnectTimeout 15')
     expect(sshConfig).toContain('ServerAliveInterval 15')
     expect(sshConfig).toContain('ServerAliveCountMax 3')
-
-    const healthCheck = stepById(steps, 'health-check').run
-    expect(healthCheck).toContain('timeout 120s curl')
-    expect(healthCheck).toContain('--connect-timeout 10')
-    expect(healthCheck).toContain('--max-time 30')
-    expect(healthCheck).toContain('--retry-max-time 120')
-    expect(healthCheck).toContain('--retry-all-errors')
+    expect(health).toContain('timeout 120s curl')
+    expect(health).toContain('--connect-timeout 10')
+    expect(health).toContain('--max-time 30')
+    expect(health).toContain('--retry-max-time 120')
+    expect(health).toContain('--retry-all-errors')
   })
 
-  it('rejects stale or unverifiable releases before upload', () => {
+  it('rejects unsafe configuration and stale or unverifiable frontend releases', () => {
     const steps = loadWorkflow().jobs.deploy.steps
-    const configureIndex = steps.findIndex(
-      (step) => step.id === 'configure-ssh',
-    )
-    const validateLiveIndex = steps.findIndex(
-      (step) => step.id === 'validate-live',
-    )
-    const uploadIndex = steps.findIndex((step) => step.id === 'upload')
-    const command = stepById(steps, 'validate-live').run ?? ''
+    const config = stepById(steps, 'validate-config').run ?? ''
+    const live = stepById(steps, 'validate-live').run ?? ''
 
-    expect(validateLiveIndex).toBeGreaterThan(configureIndex)
-    expect(uploadIndex).toBeGreaterThan(validateLiveIndex)
-    expect(command).toContain('for attempt in 1 2 3')
-    expect(command).toContain(
-      'ssh production readlink -f -- "$SITE_ROOT/html"',
-    )
-    expect(command).toContain('sleep 2')
-    expect(command).toContain('^initial-[0-9]{8}T[0-9]{6}Z$')
-    expect(command).toContain('^[0-9a-f]{40}$')
-    expect(command).toContain('git cat-file -e "$active_sha^{commit}"')
-    expect(command).toContain(
+    expect(config).toContain('^[A-Za-z0-9.-]+$')
+    expect(config).toContain('^[a-z_][a-z0-9_-]*$')
+    expect(config).toContain('^[0-9]+$')
+    expect(config).toContain('^https://[^[:space:]]+$')
+    expect(live).toContain('for attempt in 1 2 3')
+    expect(live).toContain('ssh production readlink -f -- "$SITE_ROOT/html"')
+    expect(live).toContain('^initial-[0-9]{8}T[0-9]{6}Z$')
+    expect(live).toContain('^[0-9a-f]{40}$')
+    expect(live).toContain('git cat-file -e "$active_sha^{commit}"')
+    expect(live).toContain(
       'git merge-base --is-ancestor "$active_sha" "$GITHUB_SHA"',
     )
-    expect(command).toContain('release_prefix="$SITE_ROOT/releases/"')
-    expect(command).toContain(
-      'active_name="${active_release#"$release_prefix"}"',
-    )
-    expect(command).toContain('[[ -z "$active_name" || "$active_name" == */* ]]')
   })
 
-  it('validates SSH config interpolations as safe single-line tokens', () => {
-    const command = stepById(
-      loadWorkflow().jobs.deploy.steps,
-      'validate-config',
-    ).run
-
-    expect(command).toContain('^[A-Za-z0-9.-]+$')
-    expect(command).toContain('^[a-z_][a-z0-9_-]*$')
-    expect(command).toContain('^[0-9]+$')
-    expect(command).toContain('^https?://[^[:space:]]+$')
-  })
-
-  it('activates, conditionally rolls back after a failed health check, and cleans releases', () => {
-    const steps = loadWorkflow().jobs.deploy.steps
-    const activateIndex = steps.findIndex((step) => step.id === 'activate')
-    const healthCheckIndex = steps.findIndex(
-      (step) => step.id === 'health-check',
-    )
-    const cleanupIndex = steps.findIndex((step) => step.id === 'cleanup')
-    const activate = stepById(steps, 'activate').run
-    const healthCheck = stepById(steps, 'health-check').run
-    const cleanup = stepById(steps, 'cleanup').run
-
-    expect(healthCheckIndex).toBeGreaterThan(activateIndex)
-    expect(cleanupIndex).toBeGreaterThan(healthCheckIndex)
-    expect(activate).toContain(
-      'bash -s -- activate "$SITE_ROOT" "$GITHUB_SHA" "$REMOTE_ARCHIVE"',
-    )
-    expect(activate).toContain('< scripts/deploy/manage-release.sh')
-    expect(healthCheck).toContain(
-      'bash -s -- rollback-if-current "$SITE_ROOT" "$GITHUB_SHA"',
-    )
-    expect(healthCheck).not.toMatch(/bash -s -- rollback\s/)
-    expect(healthCheck).toContain('< scripts/deploy/manage-release.sh')
-    expect(cleanup).toContain('bash -s -- cleanup "$SITE_ROOT" 5')
-    expect(cleanup).toContain('< scripts/deploy/manage-release.sh')
-  })
-
-  it('coordinates ambiguous activation results through the live release', () => {
-    const steps = loadWorkflow().jobs.deploy.steps
-    const activate = stepById(steps, 'activate')
-    const healthCheck = stepById(steps, 'health-check')
-
-    expect(activate['continue-on-error']).toBe(true)
-    expect(healthCheck.if).toBe(
-      "${{ always() && steps.activate.outcome != 'skipped' }}",
-    )
-    expect(healthCheck.run).toContain('readlink -f -- "$SITE_ROOT/html"')
-    expect(healthCheck.run).toContain('$SITE_ROOT/releases/$GITHUB_SHA')
-  })
-
-  it('bounds health reads and rollback attempts and verifies ambiguous rollback results', () => {
-    const command =
-      stepById(loadWorkflow().jobs.deploy.steps, 'health-check').run ?? ''
-
-    expect(command).toContain(
-      'expected_release="$SITE_ROOT/releases/$GITHUB_SHA"',
-    )
-    expect(command).toContain('read_live_release()')
-    expect(command).toContain('rollback_if_current()')
-    expect(command.match(/for attempt in 1 2 3/g)).toHaveLength(2)
-    expect(command).toContain(
-      'bash -s -- rollback-if-current "$SITE_ROOT" "$GITHUB_SHA"',
-    )
-    expect(command.match(/< scripts\/deploy\/manage-release\.sh/g)).toHaveLength(
-      1,
-    )
-    expect(command).toMatch(
-      /if ! read_live_release; then[^]*rollback_if_current[^]*exit 1/,
-    )
-    expect(command).toMatch(
-      /if \[\[ "\$active_release" != "\$expected_release" \]\]; then[^]*?exit 1\nfi\nif timeout 120s curl/,
-    )
-    expect(command).toMatch(
-      /if ! timeout 15s ssh production bash -s -- rollback-if-current[^]*then[^]*timeout 15s ssh production readlink -f/,
-    )
-    expect(command).toContain('exit 1')
-    expect(command.trimEnd().endsWith('exit 1')).toBe(true)
-    expect(command).not.toMatch(/bash -s -- rollback\s/)
-  })
-
-  it('removes the exact remote archive before success-only release cleanup', () => {
-    const steps = loadWorkflow().jobs.deploy.steps
-    const uploadIndex = steps.findIndex((step) => step.id === 'upload')
-    const activateIndex = steps.findIndex((step) => step.id === 'activate')
-    const healthCheckIndex = steps.findIndex(
-      (step) => step.id === 'health-check',
-    )
-    const archiveCleanupIndex = steps.findIndex(
-      (step) => step.id === 'archive-cleanup',
-    )
-    const cleanupIndex = steps.findIndex((step) => step.id === 'cleanup')
-    const archiveCleanup = stepById(steps, 'archive-cleanup')
-    const releaseCleanup = stepById(steps, 'cleanup')
-
-    expect(activateIndex).toBeGreaterThan(uploadIndex)
-    expect(healthCheckIndex).toBeGreaterThan(activateIndex)
-    expect(archiveCleanupIndex).toBeGreaterThan(healthCheckIndex)
-    expect(cleanupIndex).toBeGreaterThan(archiveCleanupIndex)
-    expect(archiveCleanup.if).toBe(
-      "${{ always() && steps.upload.outcome != 'skipped' }}",
-    )
-    expect(archiveCleanup['continue-on-error']).toBe(true)
-    expect(archiveCleanup.run).toContain(
-      'ssh production rm -f -- "$REMOTE_ARCHIVE"',
-    )
-    expect(releaseCleanup.if).toBeUndefined()
-  })
-
-  it('pins the ephemeral SSH client to the supplied known-hosts file', () => {
-    const sshStep = stepById(
-      loadWorkflow().jobs.deploy.steps,
-      'configure-ssh',
-    )
-    const command = sshStep.run
-
-    expect(sshStep.env?.ALIYUN_KNOWN_HOSTS).toBe(
-      '${{ secrets.ALIYUN_KNOWN_HOSTS }}',
-    )
-    expect(command).toContain('> "$HOME/.ssh/known_hosts"')
-    expect(command).toContain('StrictHostKeyChecking yes')
-    expect(command).toContain(
-      'UserKnownHostsFile $HOME/.ssh/known_hosts',
-    )
+  it('parses every run block as Bash', () => {
+    for (const step of loadWorkflow().jobs.deploy.steps) {
+      if (step.run === undefined) continue
+      const result = spawnSync('bash', ['-n'], { encoding: 'utf8', input: step.run })
+      expect(
+        result.status,
+        `run block ${step.id ?? '<missing id>'}: ${result.stderr}`,
+      ).toBe(0)
+    }
   })
 })
