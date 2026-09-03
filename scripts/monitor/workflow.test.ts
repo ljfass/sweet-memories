@@ -42,6 +42,7 @@ interface MonitorWorkflow {
 const workflowPath = fileURLToPath(
   new URL('../../.github/workflows/monitor.yml', import.meta.url),
 )
+const packagePath = fileURLToPath(new URL('../../package.json', import.meta.url))
 
 function loadWorkflow(): MonitorWorkflow {
   expect(existsSync(workflowPath), 'monitor workflow must exist').toBe(true)
@@ -140,20 +141,38 @@ describe('production site monitoring workflow', () => {
     const monitorSite = stepById(steps, 'monitor-site')
 
     expect(validateConfig.shell).toBe('bash')
-    expect(validateConfig.run?.trim().split('\n')).toEqual([
-      'set -euo pipefail',
-      ': "${MONITOR_URL:?缺少仓库变量 MONITOR_URL}"',
+    expect(validateConfig.run).toContain(': "${MONITOR_URL:?缺少仓库变量 MONITOR_URL}"')
+    expect(validateConfig.run).toContain(
+      "readFileSync('src/config/album-source.json', 'utf8')",
+    )
+    expect(validateConfig.run).toContain("['static', 'api'].includes(config.mode)")
+    expect(validateConfig.run).toContain("Object.keys(config).length === 1")
+    expect(validateConfig.run).toContain("printf 'ALBUM_MODE=%s\\n' \"$ALBUM_MODE\" >> \"$GITHUB_ENV\"")
+    expect(validateConfig.run).toContain(
       'python3 scripts/monitor/extract-assets.py --validate-url "$MONITOR_URL"',
-    ])
+    )
     expect(syntax.shell).toBe('bash')
     expect(syntax.run?.trim().split('\n')).toEqual([
       'set -euo pipefail',
       'bash -n scripts/monitor/check-site.sh',
+      'node --check scripts/monitor/check-photo-api.mjs',
       `python3 -c 'compile(open("scripts/monitor/extract-assets.py", encoding="utf-8").read(), "scripts/monitor/extract-assets.py", "exec")'`,
     ])
     expect(monitorSite.shell).toBe('bash')
-    expect(monitorSite.run).toBe(
+    expect(monitorSite.run?.trim().split('\n')).toEqual([
+      'set -euo pipefail',
       'bash scripts/monitor/check-site.sh "$MONITOR_URL"',
+      'node scripts/monitor/check-photo-api.mjs "$MONITOR_URL" "$ALBUM_MODE"',
+    ])
+  })
+
+  it('keeps the root monitor command on the exact offline test chain', () => {
+    const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as {
+      scripts: Record<string, string>
+    }
+
+    expect(packageJson.scripts['test:monitor']).toBe(
+      'python3 scripts/monitor/test_extract_assets.py && bash scripts/monitor/check-site.test.sh && vitest run scripts/monitor/check-photo-api.test.ts',
     )
   })
 })

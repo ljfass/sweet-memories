@@ -33,6 +33,8 @@ jobs:
           set -euo pipefail
           : "${MONITOR_URL:?缺少仓库变量 MONITOR_URL}"
           python3 scripts/monitor/extract-assets.py --validate-url "$MONITOR_URL"
+          ALBUM_MODE="$(node -e "const { readFileSync } = require('node:fs'); const config = JSON.parse(readFileSync('src/config/album-source.json', 'utf8')); if (!(Object.keys(config).length === 1 && ['static', 'api'].includes(config.mode))) process.exit(2); process.stdout.write(config.mode)")"
+          printf 'ALBUM_MODE=%s\n' "$ALBUM_MODE" >> "$GITHUB_ENV"
 
       - name: 检查巡检脚本语法
         id: syntax
@@ -41,10 +43,14 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/monitor/check-site.sh
+          node --check scripts/monitor/check-photo-api.mjs
           python3 -c 'compile(open("scripts/monitor/extract-assets.py", encoding="utf-8").read(), "scripts/monitor/extract-assets.py", "exec")'
 
       - name: 执行生产站点巡检
         id: monitor-site
         timeout-minutes: 5
         shell: bash
-        run: bash scripts/monitor/check-site.sh "$MONITOR_URL"
+        run: |
+          set -euo pipefail
+          bash scripts/monitor/check-site.sh "$MONITOR_URL"
+          node scripts/monitor/check-photo-api.mjs "$MONITOR_URL" "$ALBUM_MODE"
