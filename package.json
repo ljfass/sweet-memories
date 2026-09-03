@@ -16,6 +16,7 @@
     "test:api": "pnpm --dir apps/api test && bash scripts/deploy/package-api.test.sh",
     "test:watch": "vitest",
     "test:deploy": "bash scripts/deploy/manage-release.test.sh",
+    "test:data-backup": "bash scripts/ops/data-backup.test.sh",
     "test:monitor": "python3 scripts/monitor/test_extract_assets.py && bash scripts/monitor/check-site.test.sh",
     "test:lighthouse": "vitest run scripts/lighthouse",
     "media:build": "node scripts/optimize-media.mjs",
