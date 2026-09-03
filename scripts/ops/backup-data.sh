@@ -84,6 +84,10 @@ safe_path_segment() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 }
 
+canonical_uuid() {
+  [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+}
+
 validate_data_sources() {
   local database="$DATA_ROOT/database/sweet-memories.sqlite3"
   local unsupported entry relative
@@ -255,12 +259,55 @@ sqlite_integrity_check() {
   [[ "$result" == 'ok' ]]
 }
 
+validate_sqlite_schema_contract() {
+  local database="$1"
+  local migration version applied_at extra objects columns setting
+
+  migration="$(sqlite3 -batch -noheader -separator $'\t' "$database" \
+    'SELECT version, applied_at FROM schema_migrations ORDER BY version;')" || return 1
+  IFS=$'\t' read -r version applied_at extra <<<"$migration"
+  [[ -z "${extra:-}" && "$version" == '001' &&
+    "$applied_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ &&
+    "$(printf '%s\n' "$migration" | wc -l | tr -d ' ')" == '1' ]] || return 1
+
+  objects="$(sqlite3 -batch -noheader "$database" \
+    "SELECT type || ':' || name FROM sqlite_schema
+     WHERE (type='table' AND name IN
+       ('schema_migrations','admins','sessions','login_attempts','settings','photos','photo_assets'))
+        OR (type='index' AND name IN ('sessions_admin_id_idx','photos_public_order_idx'))
+     ORDER BY type, name;")" || return 1
+  [[ "$objects" == $'index:photos_public_order_idx\nindex:sessions_admin_id_idx\ntable:admins\ntable:login_attempts\ntable:photo_assets\ntable:photos\ntable:schema_migrations\ntable:sessions\ntable:settings' ]] || return 1
+
+  while IFS='|' read -r table expected; do
+    columns="$(sqlite3 -batch -noheader "$database" \
+      "SELECT group_concat(name, ',') FROM
+       (SELECT name FROM pragma_table_info('$table') ORDER BY cid);")" || return 1
+    [[ "$columns" == "$expected" ]] || return 1
+  done <<'SCHEMA_COLUMNS'
+schema_migrations|version,applied_at
+admins|id,username,password_hash,created_at,updated_at
+sessions|token_hash,admin_id,csrf_hash,created_at,last_activity_at,absolute_expires_at
+login_attempts|ip,failure_count,blocked_until,updated_at
+settings|key,value,updated_at
+photos|id,title,description,captured_date,status,rotation,offset_x,offset_y,request_id,version,created_at,updated_at
+photo_assets|photo_id,kind,format,width,height,relative_path
+SCHEMA_COLUMNS
+
+  setting="$(sqlite3 -batch -noheader -separator $'\t' "$database" \
+    "SELECT value, updated_at FROM settings WHERE key='uploads_enabled';")" || return 1
+  IFS=$'\t' read -r version applied_at extra <<<"$setting"
+  [[ -z "${extra:-}" && ( "$version" == 'true' || "$version" == 'false' ) &&
+    "$applied_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ &&
+    "$(printf '%s\n' "$setting" | wc -l | tr -d ' ')" == '1' ]]
+}
+
 validate_sqlite_and_media() {
   local tree="$1"
   local database="$tree/database/sweet-memories.sqlite3"
-  local result schema_count photo_id relative asset_name
+  local result photo_id relative asset_name
   local database_refs="$tree/.database-media"
   local actual_refs="$tree/.actual-media"
+  local photo_ids="$tree/.photo-ids"
 
   result="$(sqlite3 -batch -noheader "$database" 'PRAGMA quick_check;')" ||
     backup_die 'copied database failed SQLite quick check'
@@ -270,14 +317,14 @@ validate_sqlite_and_media() {
   result="$(sqlite3 -batch -noheader "$database" 'PRAGMA foreign_key_check;')" ||
     backup_die 'copied database failed SQLite foreign key check'
   [[ -z "$result" ]] || backup_die 'copied database failed SQLite foreign key check'
-  schema_count="$(sqlite3 -batch -noheader "$database" \
-    "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('photos','photo_assets');")" ||
-    backup_die 'copied database failed schema check'
-  [[ "$schema_count" == '2' ]] || backup_die 'copied database failed schema check'
-  schema_count="$(sqlite3 -batch -noheader "$database" \
-    "SELECT count(*) FROM pragma_table_info('photo_assets') WHERE name IN ('photo_id','relative_path');")" ||
-    backup_die 'copied database failed schema check'
-  [[ "$schema_count" == '2' ]] || backup_die 'copied database failed schema check'
+  validate_sqlite_schema_contract "$database" ||
+    backup_die 'copied database failed schema contract'
+
+  sqlite3 -batch -noheader "$database" 'SELECT id FROM photos ORDER BY id;' >"$photo_ids" ||
+    backup_die 'could not read copied database photo IDs'
+  while IFS= read -r photo_id || [[ -n "$photo_id" ]]; do
+    canonical_uuid "$photo_id" || backup_die 'database photo ID is not a canonical UUID'
+  done <"$photo_ids"
 
   sqlite3 -batch -noheader -separator $'\t' "$database" \
     'SELECT photo_id, relative_path FROM photo_assets ORDER BY relative_path;' >"$database_refs" ||
@@ -291,7 +338,7 @@ validate_sqlite_and_media() {
   LC_ALL=C sort -o "$actual_refs" "$actual_refs"
   while IFS=$'\t' read -r photo_id relative extra || [[ -n "${photo_id:-}" ]]; do
     [[ -z "${extra:-}" && -n "$photo_id" ]] || backup_die 'database media reference is invalid'
-    safe_path_segment "$photo_id" || backup_die 'database media path is unsafe'
+    canonical_uuid "$photo_id" || backup_die 'database photo ID is not a canonical UUID'
     safe_relative_path "$relative" || backup_die 'database media path is unsafe'
     [[ "$relative" == "$photo_id/"* && "$relative" != "$photo_id/" ]] ||
       backup_die 'database media path does not match its photo ID'
@@ -303,7 +350,7 @@ validate_sqlite_and_media() {
   cut -f2 "$database_refs" >"$database_refs.paths"
   cmp -s "$database_refs.paths" "$actual_refs" ||
     backup_die 'database and media file sets do not match'
-  rm -f -- "$database_refs" "$database_refs.paths" "$actual_refs"
+  rm -f -- "$database_refs" "$database_refs.paths" "$actual_refs" "$photo_ids"
   clear_sqlite_auxiliary "$database"
 }
 
