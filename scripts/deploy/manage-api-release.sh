@@ -391,9 +391,11 @@ manager_exit_handler() {
 
   trap - EXIT HUP INT TERM
   set +e
-  if [[ "$activation_phase" == 'switching' ]] &&
-    link_matches_release "$API_ROOT/current" "$activation_original_current"; then
-    should_restore=1
+  if [[ "$activation_phase" == 'switching' ]]; then
+    if link_matches_release "$API_ROOT/current" "$activation_original_current" ||
+      link_matches_release "$API_ROOT/current" "$activation_release"; then
+      should_restore=1
+    fi
   elif [[ "$activation_phase" == 'switched' ]] &&
     link_matches_release "$API_ROOT/current" "$activation_release"; then
     should_restore=1

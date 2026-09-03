@@ -124,6 +124,7 @@ NODE
 
 REAL_TAR="$(command -v tar)"
 REAL_SLEEP="$(command -v sleep)"
+REAL_MV="$(command -v mv)"
 MOCK_BIN="$TEST_ROOT/bin"
 EVENT_LOG="$TEST_ROOT/events.log"
 CHOWN_LOG="$TEST_ROOT/chown.log"
@@ -165,6 +166,28 @@ cat >"$MOCK_BIN/chown" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$CHOWN_LOG"
+MOCK
+
+cat >"$MOCK_BIN/mv" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+destination="${!#}"
+"$REAL_MV" "$@"
+if [[ -n "${FAKE_CURRENT_REPLACE_SIGNAL_MARKER:-}" &&
+  "$destination" == */current &&
+  ! -e "$FAKE_CURRENT_REPLACE_SIGNAL_MARKER" ]]; then
+  : >"$FAKE_CURRENT_REPLACE_SIGNAL_MARKER"
+  if [[ -n "${FAKE_CURRENT_REPLACE_THIRD_PARTY:-}" ]]; then
+    third_party_temporary="$destination.third-party-$PPID"
+    ln -s "$FAKE_CURRENT_REPLACE_THIRD_PARTY" "$third_party_temporary"
+    if "$REAL_MV" --help 2>&1 | grep -q -- '-T,'; then
+      "$REAL_MV" -Tf "$third_party_temporary" "$destination"
+    else
+      "$REAL_MV" -hf "$third_party_temporary" "$destination"
+    fi
+  fi
+  kill -TERM "$PPID"
+fi
 MOCK
 
 cat >"$MOCK_BIN/systemctl" <<'MOCK'
@@ -308,7 +331,7 @@ esac
 MOCK
 
 chmod +x "$MOCK_BIN"/*
-export REAL_TAR REAL_SLEEP EVENT_LOG CHOWN_LOG CURL_LOG INSTALL_LOG LOCK_LOG TAR_LOG
+export REAL_TAR REAL_SLEEP REAL_MV EVENT_LOG CHOWN_LOG CURL_LOG INSTALL_LOG LOCK_LOG TAR_LOG
 
 API_ROOT="$TEST_ROOT/opt/sweet-memories-api"
 DATA_ROOT="$TEST_ROOT/var/lib/sweet-memories"
@@ -321,6 +344,7 @@ invoke_manager_at() {
   env PATH="$MOCK_BIN:$PATH" \
     REAL_TAR="$REAL_TAR" \
     REAL_SLEEP="$REAL_SLEEP" \
+    REAL_MV="$REAL_MV" \
     EVENT_LOG="$EVENT_LOG" \
     CHOWN_LOG="$CHOWN_LOG" \
     CURL_LOG="$CURL_LOG" \
@@ -336,6 +360,8 @@ invoke_manager_at() {
     FAKE_MIGRATE_BARRIER="${FAKE_MIGRATE_BARRIER:-}" \
     FAKE_RESTART_FAIL="${FAKE_RESTART_FAIL:-0}" \
     FAKE_RESTART_BARRIER="${FAKE_RESTART_BARRIER:-}" \
+    FAKE_CURRENT_REPLACE_SIGNAL_MARKER="${FAKE_CURRENT_REPLACE_SIGNAL_MARKER:-}" \
+    FAKE_CURRENT_REPLACE_THIRD_PARTY="${FAKE_CURRENT_REPLACE_THIRD_PARTY:-}" \
     FAKE_TAR_TERM="${FAKE_TAR_TERM:-0}" \
     bash -c '
       source "$1"
@@ -588,6 +614,84 @@ probe_global_serialization() {
     fail "all manager commands were not covered by one balanced lock: acquire=$acquire_count release=$release_count"
 }
 
+probe_activate_current_replace_signal_window() {
+  local api_root="$TEST_ROOT/review-signal-window-activate/opt/sweet-memories-api"
+  local data_root="$TEST_ROOT/review-signal-window-activate/var/lib/sweet-memories"
+  local base_sha='7171717171717171717171717171717171717171'
+  local target_sha='7272727272727272727272727272727272727272'
+  local base_archive="$TEST_ROOT/review-signal-window-activate-base.tar.gz"
+  local target_archive="$TEST_ROOT/review-signal-window-activate-target.tar.gz"
+  local marker="$TEST_ROOT/review-signal-window-activate.marker"
+  local status current_target restart_count leftovers
+
+  reset_fixture_logs
+  make_archive "$base_archive" 'signal-window-activate-base'
+  invoke_manager_at "$api_root" "$data_root" activate "$base_sha" "$base_archive"
+  reset_fixture_logs
+  make_archive "$target_archive" 'signal-window-activate-target'
+  set +e
+  FAKE_CURRENT_REPLACE_SIGNAL_MARKER="$marker" \
+    invoke_manager_at "$api_root" "$data_root" activate "$target_sha" "$target_archive" \
+    >"$TEST_ROOT/review-signal-window-activate.log" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 143 ]] ||
+    fail "activate atomic-current TERM returned $status instead of 143"
+  current_target="$(readlink "$api_root/current" 2>/dev/null || true)"
+  [[ "$current_target" == "$api_root/releases/$base_sha" ]] ||
+    fail "activate atomic-current TERM status=$status left current incorrectly at $current_target"
+  [[ ! -e "$api_root/previous" && ! -L "$api_root/previous" ]] ||
+    fail 'activate atomic-current TERM did not restore the original previous-link state'
+  restart_count="$(grep -c '^systemctl:restart:' "$EVENT_LOG" || true)"
+  [[ "$restart_count" -eq 1 ]] ||
+    fail "activate atomic-current TERM restarted the old service $restart_count times instead of once"
+  leftovers="$(find "$api_root" -maxdepth 2 \
+    \( -name '.archive-*' -o -name '.incoming-*' -o -name '.current-*' -o -name '.previous-*' \) \
+    -print -quit)"
+  [[ -z "$leftovers" ]] || fail "activate atomic-current TERM left owned state: $leftovers"
+}
+
+probe_rollback_current_replace_signal_window() {
+  local api_root="$TEST_ROOT/review-signal-window-rollback/opt/sweet-memories-api"
+  local data_root="$TEST_ROOT/review-signal-window-rollback/var/lib/sweet-memories"
+  local previous_sha='7373737373737373737373737373737373737373'
+  local current_sha='7474747474747474747474747474747474747474'
+  local previous_archive="$TEST_ROOT/review-signal-window-rollback-previous.tar.gz"
+  local current_archive="$TEST_ROOT/review-signal-window-rollback-current.tar.gz"
+  local marker="$TEST_ROOT/review-signal-window-rollback.marker"
+  local status current_target previous_target restart_count leftovers
+
+  reset_fixture_logs
+  make_archive "$previous_archive" 'signal-window-rollback-previous'
+  invoke_manager_at "$api_root" "$data_root" activate "$previous_sha" "$previous_archive"
+  make_archive "$current_archive" 'signal-window-rollback-current'
+  invoke_manager_at "$api_root" "$data_root" activate "$current_sha" "$current_archive"
+  reset_fixture_logs
+  set +e
+  FAKE_CURRENT_REPLACE_SIGNAL_MARKER="$marker" \
+    invoke_manager_at "$api_root" "$data_root" rollback-if-current "$current_sha" \
+    >"$TEST_ROOT/review-signal-window-rollback.log" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -eq 143 ]] ||
+    fail "rollback atomic-current TERM returned $status instead of 143"
+  current_target="$(readlink "$api_root/current" 2>/dev/null || true)"
+  [[ "$current_target" == "$api_root/releases/$current_sha" ]] ||
+    fail "rollback atomic-current TERM status=$status left current incorrectly at $current_target"
+  previous_target="$(readlink "$api_root/previous" 2>/dev/null || true)"
+  [[ "$previous_target" == "$api_root/releases/$previous_sha" ]] ||
+    fail "rollback atomic-current TERM did not restore previous: $previous_target"
+  restart_count="$(grep -c '^systemctl:restart:' "$EVENT_LOG" || true)"
+  [[ "$restart_count" -eq 1 ]] ||
+    fail "rollback atomic-current TERM restarted the old service $restart_count times instead of once"
+  leftovers="$(find "$api_root" -maxdepth 2 \
+    \( -name '.archive-*' -o -name '.incoming-*' -o -name '.current-*' -o -name '.previous-*' \) \
+    -print -quit)"
+  [[ -z "$leftovers" ]] || fail "rollback atomic-current TERM left owned state: $leftovers"
+}
+
 probe_signal_recovery() {
   local api_root="$TEST_ROOT/review-signal/opt/sweet-memories-api"
   local data_root="$TEST_ROOT/review-signal/var/lib/sweet-memories"
@@ -632,27 +736,27 @@ probe_signal_does_not_overwrite_newer_current() {
   local newer_sha='7070707070707070707070707070707070707070'
   local base_archive="$TEST_ROOT/review-signal-newer-base.tar.gz"
   local target_archive="$TEST_ROOT/review-signal-newer-target.tar.gz"
-  local barrier="$TEST_ROOT/review-signal-newer-barrier"
-  local wrapper_pid manager_pid status
+  local marker="$TEST_ROOT/review-signal-newer.marker"
+  local status restart_count
 
   reset_fixture_logs
   make_archive "$base_archive" 'signal-newer-base'
   invoke_manager_at "$api_root" "$data_root" activate "$base_sha" "$base_archive"
+  reset_fixture_logs
   make_archive "$target_archive" 'signal-newer-target'
-  FAKE_RESTART_BARRIER="$barrier" \
-    invoke_manager_at "$api_root" "$data_root" activate "$target_sha" "$target_archive" \
-    >"$TEST_ROOT/review-signal-newer.log" 2>&1 &
-  wrapper_pid=$!
-  wait_for_path "$barrier/manager-pid" 'newer-current signal manager PID'
   mkdir -p "$api_root/releases/$newer_sha"
-  ln -s "$api_root/releases/$newer_sha" "$api_root/.external-current"
-  mv -hf "$api_root/.external-current" "$api_root/current"
-  manager_pid="$(cat "$barrier/manager-pid")"
-  kill -TERM "$manager_pid"
-  : >"$barrier/release"
-  wait_for_process "$wrapper_pid" status
-  [[ "$status" -ne 0 ]] || fail 'newer-current TERM activation unexpectedly succeeded'
+  set +e
+  FAKE_CURRENT_REPLACE_SIGNAL_MARKER="$marker" \
+  FAKE_CURRENT_REPLACE_THIRD_PARTY="$api_root/releases/$newer_sha" \
+    invoke_manager_at "$api_root" "$data_root" activate "$target_sha" "$target_archive" \
+    >"$TEST_ROOT/review-signal-newer.log" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 143 ]] || fail "newer-current TERM returned $status instead of 143"
   assert_link "$api_root/current" "$api_root/releases/$newer_sha"
+  restart_count="$(grep -c '^systemctl:restart:' "$EVENT_LOG" || true)"
+  [[ "$restart_count" -eq 0 ]] ||
+    fail 'newer-current switching window restarted the old service'
 }
 
 probe_hardened_database_backup() {
@@ -834,6 +938,8 @@ for review_probe in \
   probe_persistent_permissions \
   probe_private_archive_copy \
   probe_global_serialization \
+  probe_activate_current_replace_signal_window \
+  probe_rollback_current_replace_signal_window \
   probe_signal_recovery \
   probe_signal_does_not_overwrite_newer_current \
   probe_hardened_database_backup \
