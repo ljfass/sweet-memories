@@ -63,6 +63,8 @@ esac
 
 WORK_ROOT="$(mktemp -d "$RUNNER_TEMP/sweet-memories-api-package.XXXXXX")"
 DEPLOY_ROOT="$WORK_ROOT/deploy"
+DEPLOY_WORKSPACE="$WORK_ROOT/workspace"
+DEPLOY_PACKAGE="$DEPLOY_WORKSPACE/apps/api"
 SEED_ROOT="$WORK_ROOT/legacy-seed"
 ISOLATED_DIST="$WORK_ROOT/dist"
 OUTPUT_WORK_ROOT=''
@@ -88,7 +90,39 @@ PRIVATE_ARCHIVE="$OUTPUT_WORK_ROOT/package.tar.gz"
 pnpm --dir apps/api exec tsc -p tsconfig.json --outDir "$ISOLATED_DIST"
 [[ -d "$ISOLATED_DIST" && ! -L "$ISOLATED_DIST" ]] ||
   die 'API build did not create isolated dist'
-pnpm --filter @sweet-memories/api deploy --prod "$DEPLOY_ROOT"
+mkdir -p "$DEPLOY_PACKAGE"
+for source in package.json pnpm-lock.yaml pnpm-workspace.yaml apps/api/package.json; do
+  [[ -f "$REPOSITORY_ROOT/$source" && ! -L "$REPOSITORY_ROOT/$source" ]] ||
+    die "deploy input is missing or unsafe: $source"
+done
+cp "$REPOSITORY_ROOT/pnpm-lock.yaml" "$REPOSITORY_ROOT/pnpm-workspace.yaml" \
+  "$DEPLOY_WORKSPACE/"
+cp "$REPOSITORY_ROOT/apps/api/package.json" "$DEPLOY_PACKAGE/package.json"
+cp -a "$REPOSITORY_ROOT/apps/api/migrations" "$REPOSITORY_ROOT/apps/api/seed" \
+  "$DEPLOY_PACKAGE/"
+cp -a "$ISOLATED_DIST" "$DEPLOY_PACKAGE/dist"
+node --input-type=module - \
+  "$REPOSITORY_ROOT/package.json" "$DEPLOY_WORKSPACE/package.json" <<'NODE'
+import { readFile, writeFile } from 'node:fs/promises';
+
+const sourcePath = process.argv[2];
+const targetPath = process.argv[3];
+const source = JSON.parse(await readFile(sourcePath, 'utf8'));
+if (typeof source.name !== 'string' || typeof source.packageManager !== 'string') {
+  throw new Error('workspace package metadata is invalid');
+}
+const output = {
+  name: source.name,
+  private: true,
+  packageManager: source.packageManager,
+};
+await writeFile(targetPath, `${JSON.stringify(output, null, 2)}\n`, {
+  encoding: 'utf8',
+  flag: 'wx',
+  mode: 0o600,
+});
+NODE
+pnpm --dir "$DEPLOY_WORKSPACE" --filter @sweet-memories/api deploy --prod "$DEPLOY_ROOT"
 if [[ -e "$DEPLOY_ROOT/dist" || -L "$DEPLOY_ROOT/dist" ]]; then
   rm -rf -- "$DEPLOY_ROOT/dist"
 fi

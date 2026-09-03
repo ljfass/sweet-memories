@@ -145,6 +145,39 @@ if [[ " $* " == *' --dir apps/api build '* || " $* " == *' --dir apps/api exec t
   exit 0
 fi
 if [[ " $* " == *' deploy '* ]]; then
+  workspace_root=''
+  previous=''
+  for argument in "$@"; do
+    if [[ "$previous" == '--dir' ]]; then
+      workspace_root="$argument"
+      break
+    fi
+    previous="$argument"
+  done
+  [[ -n "$workspace_root" && -d "$workspace_root" && ! -L "$workspace_root" ]] || {
+    printf 'deploy workspace must be an isolated pruned root\n' >&2
+    exit 1
+  }
+  workspace_root="$(cd "$workspace_root" && pwd -P)"
+  case "$workspace_root" in
+    "$PACKAGE_API_REPOSITORY_ROOT"|"$PACKAGE_API_REPOSITORY_ROOT"/*)
+      printf 'deploy workspace must be outside the repository\n' >&2
+      exit 1
+      ;;
+  esac
+  "$PACKAGE_API_REAL_NODE" --input-type=module - \
+    "$workspace_root/package.json" "$workspace_root/apps/api/package.json" <<'NODE'
+import { readFile } from 'node:fs/promises';
+
+const root = JSON.parse(await readFile(process.argv[2], 'utf8'));
+const api = JSON.parse(await readFile(process.argv[3], 'utf8'));
+if ('dependencies' in root || 'devDependencies' in root) {
+  throw new Error('deploy workspace root must not contain application dependencies');
+}
+if (api.name !== '@sweet-memories/api') {
+  throw new Error('deploy workspace must select the photo API package');
+}
+NODE
   destination="${!#}"
   mkdir -p "$destination/dist" "$destination/migrations" \
     "$destination/seed" "$destination/node_modules/@fastify"
