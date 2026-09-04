@@ -24,7 +24,7 @@ function errorMessage(code: UploadErrorCode | null): string {
 function itemStatus(item: UploadQueueItem): string {
   switch (item.status) {
     case 'queued': return '等待上传'
-    case 'uploading': return item.progress >= 100 ? '正在处理' : `正在上传 ${item.progress}%`
+    case 'uploading': return item.progress >= 100 ? '服务器处理中' : `正在上传 ${item.progress}%`
     case 'succeeded': return '上传完成'
     case 'paused': return '上传已暂停'
     case 'failed': return errorMessage(item.errorCode)
@@ -34,8 +34,17 @@ function itemStatus(item: UploadQueueItem): string {
 function queueSummary(): string {
   if (props.queue.status.value === 'paused-auth') return '登录已过期，上传已暂停'
   if (props.queue.status.value === 'ready-to-resume') return '登录已恢复，上传仍处于暂停状态'
-  const uploading = props.queue.items.value.filter((item) => item.status === 'uploading').length
+  const uploading = props.queue.items.value.filter(
+    (item) => item.status === 'uploading' && item.progress < 100,
+  ).length
+  const processing = props.queue.items.value.filter(
+    (item) => item.status === 'uploading' && item.progress >= 100,
+  ).length
+  if (uploading > 0 && processing > 0) {
+    return `正在上传 ${uploading} 张照片，服务器正在处理 ${processing} 张照片`
+  }
   if (uploading > 0) return `正在上传 ${uploading} 张照片`
+  if (processing > 0) return `服务器正在处理 ${processing} 张照片`
   const queued = props.queue.items.value.filter((item) => item.status === 'queued').length
   if (queued > 0) return `${queued} 张照片等待上传`
   const failed = props.queue.items.value.filter((item) => item.status === 'failed').length
@@ -99,10 +108,12 @@ function queueSummary(): string {
           <progress
             v-if="item.status === 'uploading'"
             max="100"
-            :value="item.progress"
-            :aria-label="`上传 ${item.file.name}`"
+            :value="item.progress < 100 ? item.progress : undefined"
+            :aria-label="item.progress < 100
+              ? `上传 ${item.file.name}`
+              : `服务器处理 ${item.file.name}`"
           >
-            {{ item.progress }}%
+            {{ item.progress < 100 ? `${item.progress}%` : '服务器处理中' }}
           </progress>
           <span :class="{ 'admin-upload-error': item.status === 'failed' }">
             {{ itemStatus(item) }}

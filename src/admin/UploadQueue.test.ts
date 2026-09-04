@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from 'vitest'
 import type { UploadQueueItem, UploadQueueState } from './types'
 import UploadQueue from './UploadQueue.vue'
 
+vi.mock('@lucide/vue', () => ({
+  RotateCcw: { template: '<span />' },
+  X: { template: '<span />' },
+}))
+
 function item(overrides: Partial<UploadQueueItem> = {}): UploadQueueItem {
   return {
     id: 'item-1',
@@ -51,6 +56,17 @@ describe('UploadQueue', () => {
     })
     expect(wrapper.get('[aria-label="移除 family.jpg"]')).toBeDefined()
     expect(wrapper.get('[aria-live="polite"]').text()).toContain('正在上传 1 张照片')
+  })
+
+  it('switches to an indeterminate server-processing stage until the response arrives', () => {
+    const state = queue([item({ progress: 100 })])
+    const wrapper = mount(UploadQueue, { props: { queue: state } })
+
+    const progress = wrapper.get('progress')
+    expect(progress.attributes('value')).toBeUndefined()
+    expect(progress.attributes('aria-label')).toBe('服务器处理 family.jpg')
+    expect(wrapper.text()).toContain('服务器处理中')
+    expect(wrapper.get('[aria-live="polite"]').text()).toContain('服务器正在处理 1 张照片')
   })
 
   it('uses accessible icon actions for one failed item without exposing internal errors', async () => {
