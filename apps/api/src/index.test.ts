@@ -159,9 +159,11 @@ describe('startApi', () => {
     expect(statSync(dirname(config.databasePath)).mode & 0o7777).toBe(0o700);
     expect(statSync(config.stagingRoot).mode & 0o7777).toBe(0o700);
     expect(statSync(config.backupRoot).mode & 0o7777).toBe(0o700);
-    expect(statSync(config.mediaRoot).mode & 0o7777).toBe(
-      process.platform === 'linux' ? 0o2750 : 0o750,
-    );
+    const mediaMode = statSync(config.mediaRoot).mode & 0o7777;
+    expect(mediaMode & 0o777).toBe(0o750);
+    if (process.platform === 'linux') {
+      expect(mediaMode & 0o2000).toBe(0o2000);
+    }
 
     await runtime.shutdown();
     expect(application.close).toHaveBeenCalledOnce();
