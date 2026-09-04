@@ -19,7 +19,9 @@ const draft: PhotoDraft = { title: '满月', description: '', capturedDate: '' }
 describe('PhotoEditor', () => {
   it('edits title, date, and description with an empty-description fallback hint', async () => {
     const wrapper = mount(PhotoEditor, {
-      props: { photo, draft, conflict: false, saving: false, message: '' },
+      props: {
+        photo, draft, conflict: false, saving: false, message: '', messageTone: null,
+      },
     })
 
     expect(wrapper.get('aside').attributes('aria-label')).toBe('照片编辑器')
@@ -33,7 +35,10 @@ describe('PhotoEditor', () => {
 
   it('shows a conflict reload action and uses an accessible Trash icon button', async () => {
     const wrapper = mount(PhotoEditor, {
-      props: { photo, draft, conflict: true, saving: false, message: '照片已在其他页面修改' },
+      props: {
+        photo, draft, conflict: true, saving: false,
+        message: '照片已在其他页面修改', messageTone: 'error',
+      },
     })
 
     expect(wrapper.text()).toContain('照片已在其他页面修改')
@@ -42,5 +47,25 @@ describe('PhotoEditor', () => {
     const remove = wrapper.get('[data-open-delete]')
     expect(remove.attributes()).toMatchObject({ 'aria-label': '永久删除照片', title: '永久删除照片' })
     expect(remove.find('svg').exists()).toBe(true)
+  })
+
+  it('announces save success and errors with distinct visual tones', async () => {
+    const wrapper = mount(PhotoEditor, {
+      props: {
+        photo, draft, conflict: false, saving: false,
+        message: '保存成功', messageTone: 'success',
+      },
+    })
+
+    const message = wrapper.get('.admin-form-message')
+    expect(message.attributes('aria-live')).toBe('polite')
+    expect(message.text()).toBe('保存成功')
+    expect(message.classes()).toContain('is-success')
+    expect(message.classes()).not.toContain('is-error')
+
+    await wrapper.setProps({ message: '暂时无法保存照片，请稍后重试', messageTone: 'error' })
+
+    expect(message.classes()).toContain('is-error')
+    expect(message.classes()).not.toContain('is-success')
   })
 })

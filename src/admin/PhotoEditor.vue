@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowLeft, Trash } from '@lucide/vue'
-import type { AdminPhoto, PhotoDraft } from './types'
+import type { AdminPhoto, PhotoDraft, PhotoMessageTone } from './types'
 
 const props = defineProps<{
   photo: AdminPhoto
@@ -8,6 +8,7 @@ const props = defineProps<{
   conflict: boolean
   saving: boolean
   message: string
+  messageTone: PhotoMessageTone | null
 }>()
 
 const emit = defineEmits<{
@@ -132,6 +133,10 @@ function update(field: keyof PhotoDraft, event: Event): void {
 
       <p
         class="admin-form-message"
+        :class="{
+          'is-success': messageTone === 'success',
+          'is-error': messageTone === 'error',
+        }"
         aria-live="polite"
       >
         {{ message }}

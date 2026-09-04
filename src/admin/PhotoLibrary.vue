@@ -313,6 +313,7 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
           :conflict="library.hasConflict(selectedPhoto.id)"
           :saving="library.isSaving(selectedPhoto.id)"
           :message="library.messageFor(selectedPhoto.id)"
+          :message-tone="library.messageToneFor(selectedPhoto.id)"
           :role="isMobileEditorOpen && !isDeleteDialogOpen ? 'dialog' : undefined"
           :aria-modal="isMobileEditorOpen && !isDeleteDialogOpen ? 'true' : undefined"
           :tabindex="isMobileEditorOpen && !isDeleteDialogOpen ? -1 : undefined"

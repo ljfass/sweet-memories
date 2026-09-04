@@ -162,6 +162,19 @@ describe('PhotoLibrary', () => {
     expect(wrapper.get('.admin-photo-grid').attributes('data-mobile-columns')).toBe('2')
   })
 
+  it('passes the selected photo save tone to the editor message', () => {
+    const state = library({
+      selectedId: ref('photo-1'),
+      messageFor: vi.fn(() => '保存成功'),
+      messageToneFor: vi.fn((): 'success' => 'success'),
+    })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    const message = wrapper.get('.admin-form-message')
+    expect(message.text()).toBe('保存成功')
+    expect(message.classes()).toContain('is-success')
+  })
+
   it('shows migration preparation, disables upload, and keeps refresh available', async () => {
     const state = library({
       isMigrationPending: computed(() => true),

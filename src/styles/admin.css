@@ -117,9 +117,17 @@
 .admin-form-message {
   min-height: 24px;
   margin: 10px 0;
-  color: #a32943;
+  color: #5d646a;
   font-size: 0.9rem;
   line-height: 1.5;
+}
+
+.admin-form-message.is-success {
+  color: #176b45;
+}
+
+.admin-form-message.is-error {
+  color: #a32943;
 }
 
 .admin-primary-button,
