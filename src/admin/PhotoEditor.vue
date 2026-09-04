@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Trash } from '@lucide/vue'
+import { ArrowLeft, CircleCheck, Trash } from '@lucide/vue'
 import type { AdminPhoto, PhotoDraft, PhotoMessageTone } from './types'
 
 const props = defineProps<{
@@ -137,9 +137,17 @@ function update(field: keyof PhotoDraft, event: Event): void {
           'is-success': messageTone === 'success',
           'is-error': messageTone === 'error',
         }"
+        :role="messageTone === 'success' ? 'status' : undefined"
+        :data-save-success="messageTone === 'success' ? '' : undefined"
         aria-live="polite"
       >
-        {{ message }}
+        <CircleCheck
+          v-if="messageTone === 'success'"
+          class="admin-form-message-icon"
+          :size="18"
+          aria-hidden="true"
+        />
+        <span>{{ message }}</span>
       </p>
 
       <button

@@ -128,6 +128,8 @@ describe('AdminApp integration', () => {
       capturedDate: '2026-05-01',
       version: 1,
     }, 'fresh-csrf-token')
+    expect(wrapper.get('.admin-form-message').text()).toBe('保存成功')
+    expect(wrapper.get('.admin-form-message').classes()).toContain('is-success')
     expect(uploads.uploadPhoto).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -251,5 +253,16 @@ describe('AdminApp integration', () => {
 
     expect(toolbarRule).toContain('height: var(--admin-control-size)')
     expect(toolbarRule).toContain('min-height: var(--admin-control-size)')
+  })
+
+  it('styles successful saves as a prominent inline status', () => {
+    const successRule = adminCss.match(
+      /\.admin-form-message\.is-success\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+
+    expect(successRule).toContain('background: #edf7f1')
+    expect(successRule).toContain('border-inline-start: 3px solid #176b45')
+    expect(successRule).toContain('font-weight: 600')
+    expect(successRule).toContain('padding: 8px 10px')
   })
 })

@@ -59,13 +59,19 @@ describe('PhotoEditor', () => {
 
     const message = wrapper.get('.admin-form-message')
     expect(message.attributes('aria-live')).toBe('polite')
+    expect(message.attributes('role')).toBe('status')
+    expect(message.attributes('data-save-success')).toBeDefined()
     expect(message.text()).toBe('保存成功')
     expect(message.classes()).toContain('is-success')
     expect(message.classes()).not.toContain('is-error')
+    expect(message.find('svg').exists()).toBe(true)
 
     await wrapper.setProps({ message: '暂时无法保存照片，请稍后重试', messageTone: 'error' })
 
+    expect(message.attributes('role')).toBeUndefined()
+    expect(message.attributes('data-save-success')).toBeUndefined()
     expect(message.classes()).toContain('is-error')
     expect(message.classes()).not.toContain('is-success')
+    expect(message.find('svg').exists()).toBe(false)
   })
 })

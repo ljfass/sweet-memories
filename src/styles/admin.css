@@ -115,6 +115,9 @@
 }
 
 .admin-form-message {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   min-height: 24px;
   margin: 10px 0;
   color: #5d646a;
@@ -123,11 +126,20 @@
 }
 
 .admin-form-message.is-success {
+  padding: 8px 10px;
+  border-inline-start: 3px solid #176b45;
+  border-radius: 4px;
+  background: #edf7f1;
   color: #176b45;
+  font-weight: 600;
 }
 
 .admin-form-message.is-error {
   color: #a32943;
+}
+
+.admin-form-message-icon {
+  flex: 0 0 auto;
 }
 
 .admin-primary-button,
