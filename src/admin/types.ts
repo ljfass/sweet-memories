@@ -56,6 +56,8 @@ export interface PhotoDraft {
   readonly capturedDate: string
 }
 
+export type PhotoMessageTone = 'success' | 'error'
+
 export interface PhotoUpdateInput {
   readonly title: string
   readonly description: string | null
@@ -134,6 +136,7 @@ export interface PhotoLibraryState {
   hasConflict(id: string): boolean
   isSaving(id: string): boolean
   messageFor(id: string): string
+  messageToneFor(id: string): PhotoMessageTone | null
   save(id: string): Promise<void>
   loadLatest(id: string): Promise<void>
   remove(id: string): Promise<boolean>

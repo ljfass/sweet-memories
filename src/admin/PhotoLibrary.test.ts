@@ -46,6 +46,7 @@ function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState 
     select: vi.fn((id) => { selectedId.value = id }), draftFor: vi.fn(() => draft), updateDraft: vi.fn(),
     isDirty: vi.fn(() => false), hasConflict: vi.fn(() => false),
     isSaving: vi.fn(() => false), messageFor: vi.fn(() => ''),
+    messageToneFor: vi.fn(() => null),
     save: vi.fn(async () => undefined), loadLatest: vi.fn(async () => undefined),
     remove: vi.fn(async () => true), addUploadedPhoto: vi.fn(),
     ...overrides,

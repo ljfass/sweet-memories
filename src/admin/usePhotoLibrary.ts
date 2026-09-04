@@ -5,7 +5,13 @@ import type {
   AdminPhotoApiClient,
   PhotoDraft,
   PhotoLibraryState,
+  PhotoMessageTone,
 } from './types'
+
+interface PhotoMessage {
+  readonly text: string
+  readonly tone: PhotoMessageTone
+}
 
 function draftFrom(photo: AdminPhoto): PhotoDraft {
   return {
@@ -60,13 +66,17 @@ export function usePhotoLibrary(
   const conflicts = reactive(new Set<string>())
   const saving = reactive(new Set<string>())
   const deleting = new Set<string>()
-  const messages = reactive(new Map<string, string>())
+  const messages = reactive(new Map<string, PhotoMessage>())
   const isMigrationPending = computed(() =>
     photos.value.some((photo) => photo.status === 'migration_pending'))
   const uploadsDisabled = computed(() => isMigrationPending.value)
   let loadGeneration = 0
   let uploadRevision = 0
   const localUploads = new Map<string, { readonly photo: AdminPhoto; readonly revision: number }>()
+
+  function setError(id: string, text: string): void {
+    messages.set(id, { text, tone: 'error' })
+  }
 
   function replacePhoto(nextPhoto: AdminPhoto): boolean {
     const current = photos.value.find((photo) => photo.id === nextPhoto.id)
@@ -113,7 +123,7 @@ export function usePhotoLibrary(
         messages.delete(photo.id)
       } else if (dirty.has(photo.id) && draftBaseVersions.get(photo.id) !== photo.version) {
         conflicts.add(photo.id)
-        messages.set(photo.id, '照片已在其他页面修改')
+        setError(photo.id, '照片已在其他页面修改')
       }
     }
     for (const id of drafts.keys()) {
@@ -142,7 +152,7 @@ export function usePhotoLibrary(
     } catch (error) {
       if (generation !== loadGeneration) return
       status.value = 'error'
-      messages.set('library', safeActionMessage(error, 'load'))
+      setError('library', safeActionMessage(error, 'load'))
     }
   }
 
@@ -151,7 +161,15 @@ export function usePhotoLibrary(
   }
 
   function select(id: string | null): void {
+    const previousId = selectedId.value
     selectedId.value = id
+    if (
+      previousId !== null
+      && previousId !== id
+      && messages.get(previousId)?.tone === 'success'
+    ) {
+      messages.delete(previousId)
+    }
     if (id === null) return
     const photo = photos.value.find((candidate) => candidate.id === id)
     if (photo !== undefined && !drafts.has(id)) {
@@ -195,18 +213,18 @@ export function usePhotoLibrary(
     if (photo === undefined) return
     if (conflicts.has(id) || draftBaseVersions.get(id) !== photo.version) {
       conflicts.add(id)
-      messages.set(id, '照片已在其他页面修改')
+      setError(id, '照片已在其他页面修改')
       return
     }
     const token = csrfToken.value
     if (token === null) {
-      messages.set(id, '登录已过期，请重新登录')
+      setError(id, '登录已过期，请重新登录')
       return
     }
     const draft = draftFor(id)
     const validationMessage = validDraft(draft)
     if (validationMessage !== null) {
-      messages.set(id, validationMessage)
+      setError(id, validationMessage)
       return
     }
     saving.add(id)
@@ -220,16 +238,17 @@ export function usePhotoLibrary(
       }, token)
       if (!replacePhoto(updated)) {
         conflicts.add(id)
-        messages.set(id, '照片已在其他页面修改')
+        setError(id, '照片已在其他页面修改')
         return
       }
       drafts.set(id, draftFrom(updated))
       draftBaseVersions.set(id, updated.version)
       dirty.delete(id)
       conflicts.delete(id)
+      messages.set(id, { text: '保存成功', tone: 'success' })
     } catch (error) {
       if (error instanceof AdminApiError && error.kind === 'conflict') conflicts.add(id)
-      messages.set(id, safeActionMessage(error, 'save'))
+      setError(id, safeActionMessage(error, 'save'))
     } finally {
       saving.delete(id)
     }
@@ -244,7 +263,7 @@ export function usePhotoLibrary(
       synchronize(latest, id, uploadsAtRequestStart)
       status.value = 'ready'
     } catch (error) {
-      messages.set(id, safeActionMessage(error, 'load'))
+      setError(id, safeActionMessage(error, 'load'))
     }
   }
 
@@ -253,7 +272,7 @@ export function usePhotoLibrary(
     const photo = photos.value.find((candidate) => candidate.id === id)
     const token = csrfToken.value
     if (photo === undefined || token === null) {
-      messages.set(id, token === null ? '登录已过期，请重新登录' : '照片不存在或已被删除')
+      setError(id, token === null ? '登录已过期，请重新登录' : '照片不存在或已被删除')
       return false
     }
     deleting.add(id)
@@ -273,7 +292,7 @@ export function usePhotoLibrary(
       return true
     } catch (error) {
       if (error instanceof AdminApiError && error.kind === 'conflict') conflicts.add(id)
-      messages.set(id, safeActionMessage(error, 'delete'))
+      setError(id, safeActionMessage(error, 'delete'))
       return false
     } finally {
       deleting.delete(id)
@@ -310,7 +329,8 @@ export function usePhotoLibrary(
     isDirty: (id) => dirty.has(id),
     hasConflict: (id) => conflicts.has(id),
     isSaving: (id) => saving.has(id),
-    messageFor: (id) => messages.get(id) ?? '',
+    messageFor: (id) => messages.get(id)?.text ?? '',
+    messageToneFor: (id) => messages.get(id)?.tone ?? null,
     save, loadLatest, remove, addUploadedPhoto,
   }
 }

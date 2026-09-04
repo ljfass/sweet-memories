@@ -74,6 +74,44 @@ describe('usePhotoLibrary', () => {
     expect(library.isDirty('photo-1')).toBe(false)
   })
 
+  it('reports an accepted save as success and clears it on edit or photo switch', async () => {
+    const second = photo({ id: 'photo-2', title: '第二张照片' })
+    const api = fakeApi([photo(), second])
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    library.select('photo-1')
+    library.updateDraft('photo-1', { title: '已保存标题' })
+
+    await library.save('photo-1')
+
+    expect(library.messageFor('photo-1')).toBe('保存成功')
+    expect(library.messageToneFor('photo-1')).toBe('success')
+
+    library.updateDraft('photo-1', { description: '继续修改' })
+    expect(library.messageFor('photo-1')).toBe('')
+    expect(library.messageToneFor('photo-1')).toBeNull()
+
+    await library.save('photo-1')
+    library.select('photo-2')
+    expect(library.messageFor('photo-1')).toBe('')
+    expect(library.messageToneFor('photo-1')).toBeNull()
+  })
+
+  it('never reports success for failed save responses', async () => {
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    library.updateDraft('photo-1', { title: '待保存标题' })
+    vi.mocked(api.updatePhoto).mockRejectedValueOnce(
+      new AdminApiError('unavailable', 'private'),
+    )
+
+    await library.save('photo-1')
+
+    expect(library.messageToneFor('photo-1')).toBe('error')
+    expect(library.messageFor('photo-1')).toBe('暂时无法保存照片，请稍后重试')
+  })
+
   it('preserves the draft on 409 and only discards it when loading the latest snapshot', async () => {
     const api = fakeApi()
     vi.mocked(api.updatePhoto).mockRejectedValueOnce(
@@ -225,6 +263,7 @@ describe('usePhotoLibrary', () => {
     expect(library.photos.value[0]).toMatchObject({ title: '更新的服务端版本', version: 3 })
     expect(library.draftFor('photo-1').title).toBe('正在保存的草稿')
     expect(library.hasConflict('photo-1')).toBe(true)
+    expect(library.messageToneFor('photo-1')).not.toBe('success')
   })
 
   it('does not let a refresh started before save completion roll the saved version back', async () => {
