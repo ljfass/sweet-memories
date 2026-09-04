@@ -3,8 +3,8 @@ import albumSource from './album-source.json'
 import { parseAlbumSourceConfig } from '../composables/usePublicMemories'
 
 describe('public album source configuration', () => {
-  it('keeps the preparation release on the exact static configuration', () => {
-    expect(albumSource).toEqual({ mode: 'static' })
+  it('uses the exact API configuration for the activation release', () => {
+    expect(albumSource).toEqual({ mode: 'api' })
     expect(Object.keys(albumSource)).toEqual(['mode'])
   })
 
