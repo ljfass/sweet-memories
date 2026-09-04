@@ -152,6 +152,61 @@ describe('AdminApp integration', () => {
     expect(wrapper.find('.admin-library-layout').exists()).toBe(false)
   })
 
+  it('shows the current photo total and updates it after a refresh', async () => {
+    const first = photo({ id: 'photo-1', status: 'published' })
+    const second = photo({ id: 'photo-2', status: 'published' })
+    const photos = photoApi([first, second])
+    vi.mocked(photos.listPhotos)
+      .mockResolvedValueOnce([first, second])
+      .mockResolvedValueOnce([second])
+    const wrapper = mount(AdminApp, {
+      props: { session: session(), photoApi: photos, uploadApi: idleUploadApi() },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-photo-count]').text()).toBe('共 2 张')
+
+    await wrapper.get('[data-refresh]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-photo-count]').text()).toBe('共 1 张')
+  })
+
+  it('updates the photo total after a queued upload and permanent deletion', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:new-photo')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const existing = photo({ id: 'photo-1', status: 'published' })
+    const uploaded = photo({ id: 'photo-2', title: '新上传照片', status: 'published' })
+    const photos = photoApi([existing])
+    const uploads: AdminUploadApiClient = {
+      uploadPhoto: vi.fn(async () => uploaded),
+    }
+    const wrapper = mount(AdminApp, {
+      attachTo: document.body,
+      props: { session: session(), photoApi: photos, uploadApi: uploads },
+    })
+    await flushPromises()
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['photo'], 'new-photo.jpg', { type: 'image/jpeg' })],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(wrapper.get('[data-photo-count]').text()).toBe('共 2 张')
+
+    await wrapper.get('[data-photo-id="photo-2"] button').trigger('click')
+    await wrapper.get('[data-open-delete]').trigger('click')
+    await wrapper.get('[data-confirm-delete]').trigger('click')
+    await flushPromises()
+
+    expect(photos.deletePhoto).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-photo-count]').text()).toBe('共 1 张')
+    wrapper.unmount()
+  })
+
   it('shows independent network and disk-full failures in the real queue, then logs out cleanly', async () => {
     vi.spyOn(URL, 'createObjectURL').mockImplementation((file) => `blob:${(file as File).name}`)
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)

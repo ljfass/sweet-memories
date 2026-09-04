@@ -245,7 +245,19 @@
 }
 
 .admin-library h2 {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
   font-size: 1.2rem;
+}
+
+.admin-photo-count {
+  color: #6a7176;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .admin-library-actions {

@@ -130,7 +130,13 @@ watch(
             :inert="isPhotoModalOpen"
             :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
           >
-            照片库
+            <span>照片库</span>
+            <span
+              class="admin-photo-count"
+              data-photo-count
+            >
+              共 {{ photoLibrary.photos.value.length }} 张
+            </span>
           </h2>
           <slot name="workspace">
             <PhotoLibrary
