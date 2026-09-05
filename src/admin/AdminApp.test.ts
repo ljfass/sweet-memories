@@ -307,4 +307,36 @@ describe('AdminApp integration', () => {
     )
     expect(adminCss).toContain('@media (prefers-reduced-motion: reduce)')
   })
+
+  it('uses the approved journal typography and warm year marker', () => {
+    const markerRule = adminCss.match(
+      /\.admin-photo-year-heading > span\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+    const titleRule = adminCss.match(
+      /\.admin-photo-card-copy strong\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+    const dateRule = adminCss.match(
+      /\.admin-photo-card-copy small\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+
+    expect(markerRule).toContain('width: 28px')
+    expect(markerRule).toContain('height: 3px')
+    expect(markerRule).toContain('background: var(--admin-sun)')
+    expect(titleRule).toContain('font-family: var(--admin-serif)')
+    expect(dateRule).toContain('font-size: 0.875rem')
+    expect(dateRule).toContain('font-variant-numeric: tabular-nums')
+  })
+
+  it('keeps mobile toolbar and editor controls at least 44px', () => {
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-library-actions \.admin-primary-button,[\s\S]*\.admin-library-actions \.admin-secondary-button\s*\{[^}]*min-height:\s*44px/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor \.admin-icon-button,[\s\S]*\.admin-photo-editor \.admin-editor-back\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/,
+    )
+  })
+
+  it('keeps production admin text at 14px or larger', () => {
+    expect(adminCss).not.toMatch(/font-size:\s*0\.(?:[0-7]\d\d|8[0-6])rem/)
+  })
 })

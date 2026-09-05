@@ -24,7 +24,7 @@ describe('PhotoEditor', () => {
       },
     })
 
-    expect(wrapper.get('.admin-photo-editor-kicker').text()).toBe('成长记录')
+    expect(wrapper.get('.admin-photo-editor-kicker').text()).toBe('照片信息')
     expect(wrapper.get('.admin-photo-editor-header h2').text()).toBe('记录这张照片')
     const mountFrame = wrapper.get('.admin-editor-mount')
     const preview = mountFrame.get('img')

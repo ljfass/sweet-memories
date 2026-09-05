@@ -46,7 +46,7 @@ function update(field: keyof PhotoDraft, event: Event): void {
       </button>
       <div>
         <p class="admin-photo-editor-kicker">
-          成长记录
+          照片信息
         </p>
         <h2>记录这张照片</h2>
       </div>
