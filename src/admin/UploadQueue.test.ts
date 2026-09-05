@@ -39,6 +39,27 @@ function queue(
 }
 
 describe('UploadQueue', () => {
+  it('uses a light photo mount while preserving honest two-stage progress', async () => {
+    const state = queue([item({ progress: 46 })])
+    const wrapper = mount(UploadQueue, { props: { queue: state } })
+
+    expect(wrapper.get('.admin-upload-thumbnail img').attributes()).toMatchObject({
+      src: 'blob:family',
+      alt: '',
+      width: '64',
+      height: '64',
+    })
+    expect(wrapper.get('progress').attributes('value')).toBe('46')
+    expect(wrapper.text()).toContain('正在上传 46%')
+
+    state.items.value = [item({ progress: 100 })]
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('progress').attributes('value')).toBeUndefined()
+    expect(wrapper.get('progress').attributes('aria-label')).toBe('服务器处理 family.jpg')
+    expect(wrapper.text()).toContain('服务器处理中')
+  })
+
   it('shows stable thumbnail, file size, progress, and a polite queue summary', () => {
     const state = queue([item()])
     const wrapper = mount(UploadQueue, { props: { queue: state } })

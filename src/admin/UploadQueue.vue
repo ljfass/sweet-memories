@@ -90,12 +90,14 @@ function queueSummary(): string {
         class="admin-upload-item"
         :data-upload-item="item.id"
       >
-        <img
-          :src="item.previewUrl"
-          alt=""
-          width="64"
-          height="64"
-        >
+        <div class="admin-upload-thumbnail">
+          <img
+            :src="item.previewUrl"
+            alt=""
+            width="64"
+            height="64"
+          >
+        </div>
         <div class="admin-upload-detail">
           <strong>{{ item.file.name }}</strong>
           <span>{{ formatBytes(item.file.size) }}</span>
