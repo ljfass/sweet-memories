@@ -265,4 +265,30 @@ describe('AdminApp integration', () => {
     expect(successRule).toContain('font-weight: 600')
     expect(successRule).toContain('padding: 8px 10px')
   })
+
+  it('renders the little-journal brand and growth-album heading', async () => {
+    const wrapper = mount(AdminApp, {
+      props: {
+        session: session(),
+        photoApi: photoApi([photo({ status: 'published' })]),
+        uploadApi: idleUploadApi(),
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('.admin-brand-mark').text()).toBe('忆')
+    expect(wrapper.get('.admin-brand-mark').attributes('aria-hidden')).toBe('true')
+    expect(wrapper.get('.admin-toolbar h1').text()).toBe('相册管理')
+    expect(wrapper.get('#photo-library-title > span:first-child').text()).toBe('成长相册')
+    expect(wrapper.get('[data-photo-count]').text()).toBe('共 1 张')
+  })
+
+  it('defines the approved little-journal color tokens', () => {
+    expect(adminCss).toContain('--admin-canvas: #f7f4f5')
+    expect(adminCss).toContain('--admin-paper: #fffdfd')
+    expect(adminCss).toContain('--admin-berry: #b84061')
+    expect(adminCss).toContain('--admin-teal: #39767a')
+    expect(adminCss).toContain('--admin-sun: #efa95a')
+    expect(adminCss).not.toMatch(/linear-gradient|radial-gradient/)
+  })
 })

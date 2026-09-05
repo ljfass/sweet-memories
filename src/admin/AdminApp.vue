@@ -91,11 +91,19 @@ watch(
           :inert="isPhotoModalOpen"
           :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
         >
-          <div>
-            <p class="admin-eyebrow">
-              甜蜜回忆
-            </p>
-            <h1>相册管理</h1>
+          <div class="admin-brand-lockup">
+            <span
+              class="admin-brand-mark"
+              aria-hidden="true"
+            >
+              忆
+            </span>
+            <div>
+              <p class="admin-eyebrow">
+                甜蜜回忆
+              </p>
+              <h1>相册管理</h1>
+            </div>
           </div>
           <div class="admin-toolbar-actions">
             <span class="admin-username">{{ session.username.value }}</span>
@@ -130,7 +138,7 @@ watch(
             :inert="isPhotoModalOpen"
             :aria-hidden="isPhotoModalOpen ? 'true' : undefined"
           >
-            <span>照片库</span>
+            <span>成长相册</span>
             <span
               class="admin-photo-count"
               data-photo-count
