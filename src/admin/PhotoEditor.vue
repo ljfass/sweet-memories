@@ -45,10 +45,10 @@ function update(field: keyof PhotoDraft, event: Event): void {
         />
       </button>
       <div>
-        <p class="admin-eyebrow">
-          照片信息
+        <p class="admin-photo-editor-kicker">
+          成长记录
         </p>
-        <h2>编辑照片</h2>
+        <h2>记录这张照片</h2>
       </div>
       <button
         class="admin-icon-button admin-delete-button"
@@ -65,15 +65,20 @@ function update(field: keyof PhotoDraft, event: Event): void {
       </button>
     </header>
 
-    <img
-      class="admin-editor-preview"
-      :src="photo.sources.fallback.url"
-      :alt="photo.alt"
-      :width="photo.sources.fallback.width"
-      :height="photo.sources.fallback.height"
-    >
+    <div class="admin-editor-mount">
+      <img
+        class="admin-editor-preview"
+        :src="photo.sources.fallback.url"
+        :alt="photo.alt"
+        :width="photo.sources.fallback.width"
+        :height="photo.sources.fallback.height"
+      >
+    </div>
 
-    <form @submit.prevent="emit('save')">
+    <form
+      class="admin-editor-form"
+      @submit.prevent="emit('save')"
+    >
       <div class="admin-field">
         <label :for="`photo-title-${photo.id}`">标题</label>
         <input

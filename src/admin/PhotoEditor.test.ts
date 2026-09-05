@@ -17,6 +17,25 @@ const photo: AdminPhoto = {
 const draft: PhotoDraft = { title: '满月', description: '', capturedDate: '' }
 
 describe('PhotoEditor', () => {
+  it('presents the editor as a mounted growth-journal record page', () => {
+    const wrapper = mount(PhotoEditor, {
+      props: {
+        photo, draft, conflict: false, saving: false, message: '', messageTone: null,
+      },
+    })
+
+    expect(wrapper.get('.admin-photo-editor-kicker').text()).toBe('成长记录')
+    expect(wrapper.get('.admin-photo-editor-header h2').text()).toBe('记录这张照片')
+    const mountFrame = wrapper.get('.admin-editor-mount')
+    const preview = mountFrame.get('img')
+    expect(preview.attributes()).toMatchObject({
+      alt: photo.alt,
+      src: photo.sources.fallback.url,
+      width: String(photo.sources.fallback.width),
+      height: String(photo.sources.fallback.height),
+    })
+  })
+
   it('edits title, date, and description with an empty-description fallback hint', async () => {
     const wrapper = mount(PhotoEditor, {
       props: {
