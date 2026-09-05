@@ -291,4 +291,20 @@ describe('AdminApp integration', () => {
     expect(adminCss).toContain('--admin-sun: #efa95a')
     expect(adminCss).not.toMatch(/linear-gradient|radial-gradient/)
   })
+
+  it('keeps the approved desktop and mobile layout constraints', () => {
+    expect(adminCss).toMatch(
+      /\.admin-library-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*320px/s,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-photo-section-grid\s*\{[^}]*minmax\(180px,\s*1fr\)/s,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-section-grid\s*\{[^}]*repeat\(2,\s*minmax\(0,\s*1fr\)\)/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor\s*\{[^}]*position:\s*fixed[^}]*height:\s*100dvh/,
+    )
+    expect(adminCss).toContain('@media (prefers-reduced-motion: reduce)')
+  })
 })

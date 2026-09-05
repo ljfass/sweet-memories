@@ -228,6 +228,23 @@
   background: var(--admin-paper);
 }
 
+.admin-primary-button,
+.admin-secondary-button,
+.admin-icon-button,
+.admin-photo-card button {
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease,
+    background-color 180ms ease,
+    transform 180ms ease;
+}
+
+.admin-primary-button:active:not(:disabled),
+.admin-secondary-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 .admin-primary-button:disabled,
 .admin-secondary-button:disabled {
   cursor: wait;
@@ -532,12 +549,11 @@
   overflow: hidden;
   border: 1px solid var(--admin-border);
   border-radius: 6px;
-  color: var(--admin-ink);
+  color: var(--admin-text);
   background: var(--admin-paper);
   box-shadow: 0 8px 20px rgb(74 55 61 / 7%);
   text-align: left;
   cursor: pointer;
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 .admin-photo-card.is-selected button {
@@ -901,8 +917,13 @@
     gap: 10px;
   }
 
+  .admin-photo-card button {
+    padding: 4px;
+  }
+
   .admin-photo-card-copy {
-    padding: 9px 6px 6px;
+    min-height: 58px;
+    padding: 8px 6px 5px;
   }
 
   .admin-photo-card-copy strong {
@@ -931,5 +952,14 @@
 
   .admin-editor-preview {
     height: min(38vh, 300px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-primary-button,
+  .admin-secondary-button,
+  .admin-icon-button,
+  .admin-photo-card button {
+    transition: none;
   }
 }
