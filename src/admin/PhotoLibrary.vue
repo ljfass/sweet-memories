@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RefreshCw, Upload } from '@lucide/vue'
+import { Check, RefreshCw, Upload } from '@lucide/vue'
 import DeletePhotoDialog from './DeletePhotoDialog.vue'
 import PhotoEditor from './PhotoEditor.vue'
 import type { AdminPhoto, PhotoDraft, PhotoLibraryState, UploadQueueState } from './types'
@@ -34,6 +34,37 @@ const isDeleteDialogOpen = computed(() =>
   deleteCandidate.value !== null && props.suspended !== true)
 const isAnyPhotoModalOpen = computed(() => isMobileEditorOpen.value || isDeleteDialogOpen.value)
 
+interface PhotoSection {
+  readonly key: string
+  readonly group: string
+  readonly label: string
+  readonly photos: AdminPhoto[]
+}
+
+const photoSections = computed<PhotoSection[]>(() => {
+  const sections: PhotoSection[] = []
+
+  for (const photo of props.library.photos.value) {
+    const year = photo.capturedDate?.slice(0, 4) ?? null
+    const group = year ?? 'undated'
+    const previous = sections.at(-1)
+
+    if (previous?.group === group) {
+      previous.photos.push(photo)
+      continue
+    }
+
+    sections.push({
+      key: `${group}-${sections.length}`,
+      group,
+      label: year === null ? '待补充日期' : `${year} 年 · 成长片段`,
+      photos: [photo],
+    })
+  }
+
+  return sections
+})
+
 function updateViewport(event: MediaQueryListEvent): void {
   isMobile.value = event.matches
 }
@@ -56,6 +87,10 @@ watch(isAnyPhotoModalOpen, (open) => emit('modal-change', open))
 
 function sourceSet(sources: AdminPhoto['sources']['avif']): string {
   return sources.map((source) => `${source.url} ${source.width}w`).join(', ')
+}
+
+function capturedDateLabel(value: string | null): string {
+  return value === null ? '日期待补充' : value.replaceAll('-', '.')
 }
 
 function openPhotoPicker(): void {
@@ -274,36 +309,62 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
           :inert="isMobileEditorOpen"
           :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
         >
-          <article
-            v-for="photo in library.photos.value"
-            :key="photo.id"
-            class="admin-photo-card"
-            :class="{ 'is-selected': library.selectedId.value === photo.id }"
-            :data-photo-id="photo.id"
+          <section
+            v-for="section in photoSections"
+            :key="section.key"
+            class="admin-photo-year-section"
+            :data-photo-year-section="section.key"
+            :aria-labelledby="`photo-year-${section.key}`"
           >
-            <button
-              type="button"
-              @click="openPhoto(photo.id, $event)"
-            >
-              <picture>
-                <source
-                  type="image/avif"
-                  :srcset="sourceSet(photo.sources.avif)"
+            <header class="admin-photo-year-heading">
+              <span aria-hidden="true" />
+              <h3 :id="`photo-year-${section.key}`">
+                {{ section.label }}
+              </h3>
+            </header>
+            <div class="admin-photo-section-grid">
+              <article
+                v-for="photo in section.photos"
+                :key="photo.id"
+                class="admin-photo-card"
+                :class="{ 'is-selected': library.selectedId.value === photo.id }"
+                :data-photo-id="photo.id"
+              >
+                <button
+                  type="button"
+                  @click="openPhoto(photo.id, $event)"
                 >
-                <source
-                  type="image/webp"
-                  :srcset="sourceSet(photo.sources.webp)"
-                >
-                <img
-                  :src="photo.sources.fallback.url"
-                  :alt="photo.alt"
-                  :width="photo.sources.fallback.width"
-                  :height="photo.sources.fallback.height"
-                >
-              </picture>
-              <span>{{ photo.title }}</span>
-            </button>
-          </article>
+                  <picture>
+                    <source
+                      type="image/avif"
+                      :srcset="sourceSet(photo.sources.avif)"
+                    >
+                    <source
+                      type="image/webp"
+                      :srcset="sourceSet(photo.sources.webp)"
+                    >
+                    <img
+                      :src="photo.sources.fallback.url"
+                      :alt="photo.alt"
+                      :width="photo.sources.fallback.width"
+                      :height="photo.sources.fallback.height"
+                    >
+                  </picture>
+                  <span
+                    v-if="library.selectedId.value === photo.id"
+                    class="admin-photo-selected"
+                    aria-hidden="true"
+                  >
+                    <Check :size="16" />
+                  </span>
+                  <span class="admin-photo-card-copy">
+                    <strong>{{ photo.title }}</strong>
+                    <small data-captured-date>{{ capturedDateLabel(photo.capturedDate) }}</small>
+                  </span>
+                </button>
+              </article>
+            </div>
+          </section>
         </div>
 
         <PhotoEditor

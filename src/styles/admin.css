@@ -472,8 +472,41 @@
 
 .admin-photo-grid {
   display: grid;
+  gap: 30px;
+}
+
+.admin-photo-year-section {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.admin-photo-year-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.admin-photo-year-heading span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--admin-sun);
+  box-shadow: 0 0 0 4px rgb(239 169 90 / 16%);
+}
+
+.admin-photo-year-heading h3 {
+  margin: 0;
+  color: var(--admin-teal);
+  font-family: var(--admin-font-display);
+  font-size: 0.92rem;
+  letter-spacing: 0;
+}
+
+.admin-photo-section-grid {
+  display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 .admin-photo-card {
@@ -481,21 +514,30 @@
 }
 
 .admin-photo-card button {
+  position: relative;
   display: grid;
   width: 100%;
-  padding: 0;
+  padding: 6px;
   overflow: hidden;
-  border: 1px solid #d4d9d4;
+  border: 1px solid var(--admin-border);
   border-radius: 6px;
-  color: #34393d;
-  background: #ffffff;
+  color: var(--admin-ink);
+  background: var(--admin-paper);
+  box-shadow: 0 8px 20px rgb(74 55 61 / 7%);
   text-align: left;
   cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 .admin-photo-card.is-selected button {
-  border-color: #9c4056;
-  box-shadow: 0 0 0 2px rgb(156 64 86 / 14%);
+  border-color: var(--admin-berry);
+  box-shadow: 0 0 0 2px rgb(184 64 97 / 14%), 0 10px 24px rgb(74 55 61 / 10%);
+}
+
+.admin-photo-card button:hover {
+  border-color: rgb(57 118 122 / 54%);
+  box-shadow: 0 12px 28px rgb(74 55 61 / 11%);
+  transform: translateY(-1px);
 }
 
 .admin-photo-card picture {
@@ -513,15 +555,43 @@
   object-fit: cover;
 }
 
-.admin-photo-card span {
-  min-height: 46px;
-  padding: 12px;
+.admin-photo-selected {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--admin-paper);
+  border-radius: 50%;
+  color: #ffffff;
+  background: var(--admin-berry);
+  box-shadow: 0 4px 10px rgb(74 55 61 / 20%);
+  place-items: center;
+}
+
+.admin-photo-card-copy {
+  display: grid;
+  min-height: 58px;
+  padding: 10px 8px 8px;
+  overflow: hidden;
+  gap: 3px;
+}
+
+.admin-photo-card-copy strong {
   overflow: hidden;
   font-size: 0.9rem;
   font-weight: 700;
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.admin-photo-card-copy small {
+  color: var(--admin-muted);
+  font-size: 0.76rem;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .admin-photo-editor,
@@ -787,13 +857,16 @@
     display: block;
   }
 
-  .admin-photo-grid {
+  .admin-photo-section-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
   }
 
-  .admin-photo-card span {
-    padding: 10px;
+  .admin-photo-card-copy {
+    padding: 9px 6px 6px;
+  }
+
+  .admin-photo-card-copy strong {
     font-size: 0.84rem;
   }
 

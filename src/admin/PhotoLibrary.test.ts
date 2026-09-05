@@ -36,6 +36,26 @@ const secondPhoto: AdminPhoto = {
     fallback: { url: '/media/photo-2/320.jpg', width: 320, height: 240 },
   },
 }
+
+function photoRecord(
+  id: string,
+  title: string,
+  capturedDate: string | null,
+): AdminPhoto {
+  return {
+    ...photo,
+    id,
+    title,
+    capturedDate,
+    sources: {
+      avif: [{ url: `/media/${id}/320.avif`, width: 320 }],
+      webp: [{ url: `/media/${id}/320.webp`, width: 320 }],
+      jpeg: [{ url: `/media/${id}/320.jpg`, width: 320 }],
+      fallback: { url: `/media/${id}/320.jpg`, width: 320, height: 240 },
+    },
+  }
+}
+
 function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState {
   const draft: PhotoDraft = { title: photo.title, description: '', capturedDate: '2026-05-01' }
   const selectedId = ref<string | null>(null)
@@ -160,6 +180,35 @@ describe('PhotoLibrary', () => {
     expect(state.select).toHaveBeenCalledWith('photo-1')
     expect(wrapper.get('.admin-library-layout').attributes('data-mobile-editor')).toBe('fullscreen')
     expect(wrapper.get('.admin-photo-grid').attributes('data-mobile-columns')).toBe('2')
+  })
+
+  it('segments adjacent years without reordering photos and labels missing dates', async () => {
+    const photos = [
+      photoRecord('a', '春日', '2026-05-01'),
+      photoRecord('b', '夏日', '2026-06-02'),
+      photoRecord('c', '去年', '2025-12-31'),
+      photoRecord('d', '再次出现的今年', '2026-01-01'),
+      photoRecord('e', '日期待补', null),
+    ]
+    const wrapper = mount(PhotoLibrary, {
+      props: { library: library({ photos: ref(photos) }) },
+    })
+
+    const sections = wrapper.findAll('[data-photo-year-section]')
+    expect(sections.map((section) => section.get('h3').text())).toEqual([
+      '2026 年 · 成长片段',
+      '2025 年 · 成长片段',
+      '2026 年 · 成长片段',
+      '待补充日期',
+    ])
+    expect(sections.map((section) => (
+      section.findAll('[data-photo-id]').map((card) => card.attributes('data-photo-id'))
+    ))).toEqual([['a', 'b'], ['c'], ['d'], ['e']])
+    expect(wrapper.get('[data-photo-id="a"] [data-captured-date]').text()).toBe('2026.05.01')
+    expect(wrapper.get('[data-photo-id="e"] [data-captured-date]').text()).toBe('日期待补充')
+
+    await wrapper.get('[data-photo-id="a"] button').trigger('click')
+    expect(wrapper.get('[data-photo-id="a"] .admin-photo-selected').find('svg').exists()).toBe(true)
   })
 
   it('passes the selected photo save tone to the editor message', () => {
