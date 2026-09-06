@@ -12,8 +12,9 @@
 - 上游地址固定为 `https://huangjianfen.cn`，不从命令行或环境变量接受任意目标。
 - Vite 只代理 `/api` 与 `/media`；其他路径继续由本地前端处理。
 - 发往生产 API 的 `Host` 与 `Origin` 必须改为生产源，以满足服务端同源和 CSRF 校验。
-- 生产会话 Cookie 在代理响应中移除 `Secure` 属性后写入本机回环地址；Cookie 不写入代码、
-  文件、日志或浏览器之外的存储。
+- 生产会话 Cookie 使用 `__Host-` 前缀，代理响应将其改写为独立的本地 HttpOnly Cookie
+  `sweet_memories_dev_session` 并移除 `Secure`；代理请求再把它映射回生产 Cookie 名。
+- 代理不会把其他本地 Cookie 转发到线上；Cookie 不写入代码、文件、日志或浏览器之外的存储。
 - 开发模式的管理后台持续显示醒目的“正在操作线上生产数据”警告，生产构建不显示。
 
 ## 开发服务器
@@ -22,8 +23,10 @@
 - `/api/**` 和 `/media/**` 通过 HTTPS 转发到生产站点。
 - `changeOrigin` 启用，TLS 证书保持严格校验。
 - 代理请求覆盖 `Origin: https://huangjianfen.cn`。
-- 代理响应只对 `Set-Cookie` 移除大小写不敏感的 `Secure` 属性，保留 HttpOnly、SameSite、
-  Path 与过期时间等其他属性。
+- 代理响应只接收生产会话 Cookie，将名称改为 `sweet_memories_dev_session`，移除大小写不敏感
+  的 `Secure` 属性，并保留 HttpOnly、SameSite、Path 与过期时间等其他属性。
+- 代理请求只从本地 Cookie 中读取 `sweet_memories_dev_session`，将其改写为
+  `__Host-sweet_memories_session` 后转发；其他 Cookie 一律不转发。
 - 代理异常使用 Vite 的标准错误路径，不输出 Cookie、请求正文或生产响应正文。
 
 ## 管理后台提示
@@ -36,7 +39,8 @@
 ## 测试与验证
 
 - 配置测试确认开发服务器只监听回环地址、端口固定、两个路径均指向唯一生产源。
-- 代理行为测试确认请求 Origin 被覆盖，Cookie 的 Secure 被移除，其他 Cookie 属性保留。
+- 代理行为测试确认请求 Origin 被覆盖，生产与本地 Cookie 名双向映射，Secure 被移除，
+  其他 Cookie 属性保留，且无关 Cookie 不会发往线上。
 - 管理端测试确认开发模式显示生产数据警告，并且现有会话、草稿、上传和弹窗行为不回退。
 - 运行管理端测试、全仓测试、typecheck、lint 和前端生产构建。
 - 启动 Vite 后实际验证本地 `/api/health`、`/api/photos`、`/media` 代理以及 `/admin` 页面。
