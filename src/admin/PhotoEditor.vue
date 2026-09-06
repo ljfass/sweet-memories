@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ArrowLeft, CircleCheck, Trash } from '@lucide/vue'
+import { onUpdated, ref } from 'vue'
+import ClearFieldButton from './ClearFieldButton.vue'
 import type { AdminPhoto, PhotoDraft, PhotoMessageTone } from './types'
 
 const props = defineProps<{
@@ -19,10 +21,29 @@ const emit = defineEmits<{
   'close': []
 }>()
 
+const titleInput = ref<HTMLInputElement | null>(null)
+const capturedDateInput = ref<HTMLInputElement | null>(null)
+const descriptionInput = ref<HTMLTextAreaElement | null>(null)
+let focusAfterUpdate: HTMLInputElement | HTMLTextAreaElement | null = null
+
+onUpdated(() => {
+  if (!focusAfterUpdate?.isConnected) return
+  focusAfterUpdate.focus()
+  focusAfterUpdate = null
+})
+
 function update(field: keyof PhotoDraft, event: Event): void {
   const target = event.target
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return
   emit('update-draft', { ...props.draft, [field]: target.value })
+}
+
+function clearDraftField(
+  field: keyof PhotoDraft,
+  target: HTMLInputElement | HTMLTextAreaElement | null,
+): void {
+  focusAfterUpdate = target
+  emit('update-draft', { ...props.draft, [field]: '' })
 }
 </script>
 
@@ -81,36 +102,65 @@ function update(field: keyof PhotoDraft, event: Event): void {
     >
       <div class="admin-field">
         <label :for="`photo-title-${photo.id}`">标题</label>
-        <input
-          :id="`photo-title-${photo.id}`"
-          name="title"
-          type="text"
-          :value="draft.title"
-          :disabled="saving"
-          @input="update('title', $event)"
-        >
+        <div class="admin-clearable-field">
+          <input
+            :id="`photo-title-${photo.id}`"
+            ref="titleInput"
+            name="title"
+            type="text"
+            :value="draft.title"
+            :disabled="saving"
+            @input="update('title', $event)"
+          >
+          <ClearFieldButton
+            v-if="draft.title !== ''"
+            label="清空标题"
+            :disabled="saving"
+            @clear="clearDraftField('title', titleInput)"
+          />
+        </div>
       </div>
       <div class="admin-field">
         <label :for="`photo-date-${photo.id}`">拍摄日期</label>
-        <input
-          :id="`photo-date-${photo.id}`"
-          name="capturedDate"
-          type="date"
-          :value="draft.capturedDate"
-          :disabled="saving"
-          @input="update('capturedDate', $event)"
-        >
+        <div class="admin-clearable-field">
+          <input
+            :id="`photo-date-${photo.id}`"
+            ref="capturedDateInput"
+            name="capturedDate"
+            type="date"
+            :value="draft.capturedDate"
+            :disabled="saving"
+            @input="update('capturedDate', $event)"
+          >
+          <ClearFieldButton
+            v-if="draft.capturedDate !== ''"
+            class="is-before-native-action"
+            label="清空拍摄日期"
+            :disabled="saving"
+            @clear="clearDraftField('capturedDate', capturedDateInput)"
+          />
+        </div>
       </div>
       <div class="admin-field">
         <label :for="`photo-description-${photo.id}`">图片描述（可选）</label>
-        <textarea
-          :id="`photo-description-${photo.id}`"
-          name="description"
-          rows="4"
-          :value="draft.description"
-          :disabled="saving"
-          @input="update('description', $event)"
-        />
+        <div class="admin-clearable-field">
+          <textarea
+            :id="`photo-description-${photo.id}`"
+            ref="descriptionInput"
+            name="description"
+            rows="4"
+            :value="draft.description"
+            :disabled="saving"
+            @input="update('description', $event)"
+          />
+          <ClearFieldButton
+            v-if="draft.description !== ''"
+            class="is-textarea"
+            label="清空图片描述"
+            :disabled="saving"
+            @clear="clearDraftField('description', descriptionInput)"
+          />
+        </div>
         <p
           v-if="draft.description.trim() === ''"
           class="admin-field-hint"

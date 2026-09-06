@@ -52,6 +52,59 @@ describe('PhotoEditor', () => {
     expect(wrapper.emitted('update-draft')?.at(-1)?.[0]).toMatchObject({ description: '新的公开说明' })
   })
 
+  it('clears each draft field independently and restores focus after the parent update', async () => {
+    const populatedDraft: PhotoDraft = {
+      title: '满月',
+      capturedDate: '2026-06-01',
+      description: '宝宝满月留念',
+    }
+    const wrapper = mount(PhotoEditor, {
+      attachTo: document.body,
+      props: {
+        photo, draft: populatedDraft, conflict: false, saving: false,
+        message: '', messageTone: null,
+      },
+    })
+    const fields = [
+      { field: 'title', selector: 'input[name="title"]', label: '清空标题' },
+      { field: 'capturedDate', selector: 'input[name="capturedDate"]', label: '清空拍摄日期' },
+      { field: 'description', selector: 'textarea[name="description"]', label: '清空图片描述' },
+    ] as const
+
+    for (const { field, selector, label } of fields) {
+      await wrapper.setProps({ draft: populatedDraft })
+      await wrapper.get(`button[aria-label="${label}"]`).trigger('click')
+      const updatedDraft = wrapper.emitted('update-draft')?.at(-1)?.[0] as PhotoDraft
+      expect(updatedDraft).toMatchObject({ ...populatedDraft, [field]: '' })
+      await wrapper.setProps({ draft: updatedDraft })
+      expect(document.activeElement).toBe(wrapper.get(selector).element)
+    }
+    wrapper.unmount()
+  })
+
+  it('hides clear controls for empty fields and locks them while saving', async () => {
+    const wrapper = mount(PhotoEditor, {
+      props: {
+        photo, draft: { title: '', capturedDate: '', description: '' },
+        conflict: false, saving: false, message: '', messageTone: null,
+      },
+    })
+    const labels = ['清空标题', '清空拍摄日期', '清空图片描述']
+
+    for (const label of labels) {
+      expect(wrapper.find(`button[aria-label="${label}"]`).exists()).toBe(false)
+    }
+
+    await wrapper.setProps({
+      draft: { title: '满月', capturedDate: '2026-06-01', description: '宝宝满月留念' },
+      saving: true,
+    })
+    for (const label of labels) {
+      expect(wrapper.get(`button[aria-label="${label}"]`).attributes())
+        .toHaveProperty('disabled')
+    }
+  })
+
   it('shows a conflict reload action and uses an accessible Trash icon button', async () => {
     const wrapper = mount(PhotoEditor, {
       props: {
