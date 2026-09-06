@@ -127,6 +127,19 @@
   line-height: 1.5;
 }
 
+.admin-clearable-field {
+  position: relative;
+}
+
+.admin-clearable-field > input,
+.admin-clearable-field > textarea {
+  padding-right: 52px;
+}
+
+.admin-clearable-field > input[type="date"] {
+  padding-right: 84px;
+}
+
 .admin-field input:focus-visible,
 .admin-primary-button:focus-visible,
 .admin-secondary-button:focus-visible {

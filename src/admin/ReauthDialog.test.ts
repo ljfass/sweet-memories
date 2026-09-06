@@ -59,6 +59,45 @@ describe('ReauthDialog', () => {
     expect(wrapper.emitted('reauthenticated')).toHaveLength(1)
   })
 
+  it('clears username and password independently and restores field focus', async () => {
+    const wrapper = mount(ReauthDialog, {
+      attachTo: document.body,
+      props: { open: true, username: 'alice', login: vi.fn(), logout: vi.fn() },
+    })
+    await wrapper.get('input[name="password"]').setValue('new-password')
+
+    await wrapper.get('button[aria-label="清空用户名"]').trigger('click')
+    expect((wrapper.get('input[name="username"]').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.get('input[name="password"]').element as HTMLInputElement).value)
+      .toBe('new-password')
+    expect(document.activeElement).toBe(wrapper.get('input[name="username"]').element)
+
+    await wrapper.get('button[aria-label="清空密码"]').trigger('click')
+    expect((wrapper.get('input[name="password"]').element as HTMLInputElement).value).toBe('')
+    expect(document.activeElement).toBe(wrapper.get('input[name="password"]').element)
+    wrapper.unmount()
+  })
+
+  it('locks populated clear controls during a pending reauthentication', async () => {
+    let resolveLogin: (() => void) | undefined
+    const login = vi.fn(() => new Promise<void>((resolve) => {
+      resolveLogin = resolve
+    }))
+    const wrapper = mount(ReauthDialog, {
+      props: { open: true, username: 'alice', login, logout: vi.fn() },
+    })
+    await wrapper.get('input[name="password"]').setValue('new-password')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.get('button[aria-label="清空用户名"]').attributes())
+      .toHaveProperty('disabled')
+    expect(wrapper.get('button[aria-label="清空密码"]').attributes())
+      .toHaveProperty('disabled')
+
+    resolveLogin?.()
+    await flushPromises()
+  })
+
   it('restores the element focused before reauthentication when it remains connected', async () => {
     const returnTarget = document.createElement('button')
     returnTarget.textContent = '编辑照片标题'

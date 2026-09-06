@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onUpdated, ref, watch } from 'vue'
 import { safeLoginErrorMessage, safeLogoutErrorMessage } from './api'
+import ClearFieldButton from './ClearFieldButton.vue'
 
 const props = defineProps<{
   open: boolean
@@ -15,11 +16,13 @@ const emit = defineEmits<{
 
 const dialog = ref<HTMLElement | null>(null)
 const usernameInput = ref<HTMLInputElement | null>(null)
+const passwordInput = ref<HTMLInputElement | null>(null)
 const username = ref(props.username)
 const password = ref('')
 const message = ref('')
 const isSubmitting = ref(false)
 let focusReturnTarget: HTMLElement | null = null
+let focusAfterUpdate: HTMLInputElement | null = null
 
 watch(
   () => props.open,
@@ -49,6 +52,12 @@ watch(
   },
   { immediate: true },
 )
+
+onUpdated(() => {
+  if (!focusAfterUpdate?.isConnected) return
+  focusAfterUpdate.focus()
+  focusAfterUpdate = null
+})
 
 function focusableElements(): HTMLElement[] {
   if (!dialog.value) {
@@ -81,6 +90,16 @@ function handleKeydown(event: KeyboardEvent): void {
     event.preventDefault()
     first.focus()
   }
+}
+
+function clearUsername(): void {
+  focusAfterUpdate = usernameInput.value
+  username.value = ''
+}
+
+function clearPassword(): void {
+  focusAfterUpdate = passwordInput.value
+  password.value = ''
 }
 
 async function submit(): Promise<void> {
@@ -139,30 +158,47 @@ async function handleLogout(): Promise<void> {
       <form @submit.prevent="submit">
         <div class="admin-field">
           <label for="reauth-username">用户名</label>
-          <input
-            id="reauth-username"
-            ref="usernameInput"
-            v-model="username"
-            name="username"
-            type="text"
-            autocomplete="username"
-            maxlength="32"
-            required
-            :disabled="isSubmitting"
-          >
+          <div class="admin-clearable-field">
+            <input
+              id="reauth-username"
+              ref="usernameInput"
+              v-model="username"
+              name="username"
+              type="text"
+              autocomplete="username"
+              maxlength="32"
+              required
+              :disabled="isSubmitting"
+            >
+            <ClearFieldButton
+              v-if="username !== ''"
+              label="清空用户名"
+              :disabled="isSubmitting"
+              @clear="clearUsername"
+            />
+          </div>
         </div>
 
         <div class="admin-field">
           <label for="reauth-password">密码</label>
-          <input
-            id="reauth-password"
-            v-model="password"
-            name="password"
-            type="password"
-            autocomplete="current-password"
-            required
-            :disabled="isSubmitting"
-          >
+          <div class="admin-clearable-field">
+            <input
+              id="reauth-password"
+              ref="passwordInput"
+              v-model="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+              :disabled="isSubmitting"
+            >
+            <ClearFieldButton
+              v-if="password !== ''"
+              label="清空密码"
+              :disabled="isSubmitting"
+              @clear="clearPassword"
+            />
+          </div>
         </div>
 
         <p
