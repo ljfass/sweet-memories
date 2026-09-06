@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Check, RefreshCw, Upload } from '@lucide/vue'
+import { Baby, Camera, Check, Images, RefreshCw, Sparkles, Upload } from '@lucide/vue'
 import DeletePhotoDialog from './DeletePhotoDialog.vue'
 import PhotoEditor from './PhotoEditor.vue'
 import type { AdminPhoto, PhotoDraft, PhotoLibraryState, UploadQueueState } from './types'
@@ -269,13 +269,100 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
         <span>可继续补充拍摄日期、标题和图片描述。</span>
       </div>
 
-      <p
+      <!-- 萌趣治愈的宝宝时光相册加载动效 -->
+      <div
         v-if="library.status.value === 'loading'"
-        class="admin-empty-copy"
+        class="baby-loading-container"
+        role="status"
         aria-live="polite"
       >
-        正在加载照片
-      </p>
+        <div class="baby-loader-card">
+          <!-- 悬浮光芒小点缀 -->
+          <div
+            class="bubble-sparkle sparkle-1"
+            aria-hidden="true"
+          >
+            <Sparkles
+              class="sparkle-svg-icon"
+              :size="18"
+            />
+          </div>
+          <div
+            class="bubble-sparkle sparkle-2"
+            aria-hidden="true"
+          >
+            🍼
+          </div>
+          <div
+            class="bubble-sparkle sparkle-3"
+            aria-hidden="true"
+          >
+            💛
+          </div>
+
+          <!-- 拟物宝宝相机 / 胶卷微动画徽章 -->
+          <div class="baby-camera-badge">
+            <div class="camera-lens">
+              <Camera
+                class="camera-icon"
+                :size="28"
+              />
+              <span class="flash-shimmer" />
+            </div>
+            <div class="baby-badge-pill">
+              <Baby
+                class="baby-pill-icon"
+                :size="14"
+              />
+              <span>Baby Memories</span>
+            </div>
+          </div>
+
+          <!-- 萌趣三色跳跳球进度点 -->
+          <div
+            class="bouncing-bubbles"
+            aria-hidden="true"
+          >
+            <span class="bubble bubble-pink" />
+            <span class="bubble bubble-yellow" />
+            <span class="bubble bubble-teal" />
+          </div>
+
+          <!-- 充满温度的文案设计 -->
+          <h3 class="baby-loading-title">
+            正在翻开宝贝的成长相册
+            <span class="dot-typing">
+              <span>.</span><span>.</span><span>.</span>
+            </span>
+          </h3>
+          <p class="baby-loading-subtitle">
+            正在冲洗满满的回忆胶卷，稍等一下下哦
+          </p>
+        </div>
+
+        <!-- 治愈系相册骨架卡片预览 (Skeleton Grid) -->
+        <div
+          class="baby-skeleton-grid"
+          aria-hidden="true"
+        >
+          <div
+            v-for="i in 4"
+            :key="i"
+            class="skeleton-card"
+          >
+            <div class="skeleton-photo">
+              <Images
+                class="skeleton-placeholder-icon"
+                :size="24"
+              />
+            </div>
+            <div class="skeleton-copy">
+              <div class="skeleton-line skeleton-title" />
+              <div class="skeleton-line skeleton-date" />
+            </div>
+          </div>
+        </div>
+      </div>
       <div
         v-else-if="library.status.value === 'error'"
         class="admin-library-error"
@@ -409,3 +496,337 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
     />
   </div>
 </template>
+
+<style scoped>
+/* ================= 宝宝风格萌趣加载状态 ================= */
+.baby-loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  padding: 12px 0 36px;
+  gap: 28px;
+}
+
+/* 治愈系主加载卡片 */
+.baby-loader-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  width: min(100%, 420px);
+  padding: 28px 24px 22px;
+  border: 1.5px dashed #f5c4d0;
+  border-radius: 20px;
+  background: linear-gradient(145deg, #fffcfd 0%, #fff7f8 50%, #fffbf5 100%);
+  box-shadow: 0 12px 32px rgb(184 64 97 / 8%), 0 2px 6px rgb(0 0 0 / 2%);
+}
+
+/* 漂浮装饰微光 */
+.bubble-sparkle {
+  position: absolute;
+  user-select: none;
+  pointer-events: none;
+  animation: floatSparkle 3s ease-in-out infinite alternate;
+}
+
+.sparkle-1 {
+  top: 14px;
+  right: 28px;
+  animation-delay: -0.5s;
+}
+
+.sparkle-svg-icon {
+  color: var(--admin-sun, #efa95a);
+  filter: drop-shadow(0 2px 4px rgb(239 169 90 / 30%));
+}
+
+.sparkle-2 {
+  top: 22px;
+  left: 28px;
+  font-size: 1.15rem;
+  animation-delay: -1.6s;
+}
+
+.sparkle-3 {
+  bottom: 20px;
+  right: 36px;
+  font-size: 1.05rem;
+  animation-delay: -2.2s;
+}
+
+@keyframes floatSparkle {
+  0% {
+    transform: translateY(0) rotate(0deg) scale(1);
+    opacity: 0.7;
+  }
+  50% {
+    transform: translateY(-8px) rotate(8deg) scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-4px) rotate(-6deg) scale(0.95);
+    opacity: 0.8;
+  }
+}
+
+/* 宝宝相机徽章 */
+.baby-camera-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.camera-lens {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border: 2px solid #fecdd3;
+  border-radius: 18px;
+  background: #ffffff;
+  color: var(--admin-berry, #b84061);
+  box-shadow: 0 8px 18px rgb(184 64 97 / 14%), 0 2px 0 #fbcfe8;
+  animation: cameraWiggle 3.6s ease-in-out infinite;
+}
+
+.flash-shimmer {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--admin-sun, #efa95a);
+  animation: flashPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes cameraWiggle {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  15% {
+    transform: translateY(-4px) rotate(-4deg);
+  }
+  30% {
+    transform: translateY(0) rotate(3deg);
+  }
+  45% {
+    transform: translateY(-2px) rotate(0deg);
+  }
+}
+
+@keyframes flashPulse {
+  0%, 100% {
+    transform: scale(0.8);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 1;
+    box-shadow: 0 0 8px #efa95a;
+  }
+}
+
+.baby-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: #fee2e2;
+  color: #9f1239;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.baby-pill-icon {
+  color: var(--admin-berry, #b84061);
+}
+
+/* 萌趣三色跳动小球 */
+.bouncing-bubbles {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.bubble {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  animation: bounceBubble 1.2s infinite ease-in-out;
+}
+
+.bubble-pink {
+  background: var(--admin-berry, #b84061);
+  animation-delay: -0.32s;
+}
+
+.bubble-yellow {
+  background: var(--admin-sun, #efa95a);
+  animation-delay: -0.16s;
+}
+
+.bubble-teal {
+  background: var(--admin-teal, #39767a);
+}
+
+@keyframes bounceBubble {
+  0%, 80%, 100% {
+    transform: scale(0.6) translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1.2) translateY(-6px);
+    opacity: 1;
+  }
+}
+
+/* 文案排印 */
+.baby-loading-title {
+  margin: 0 0 6px;
+  font-family: var(--admin-serif, "Songti SC", serif);
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #2b2529;
+}
+
+.dot-typing span {
+  display: inline-block;
+  animation: dotBlink 1.4s infinite;
+  animation-fill-mode: both;
+}
+
+.dot-typing span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.dot-typing span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes dotBlink {
+  0% {
+    opacity: 0.2;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.2;
+  }
+}
+
+.baby-loading-subtitle {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #8c8288;
+  line-height: 1.5;
+}
+
+/* 治愈系相册骨架卡片 */
+.baby-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  width: 100%;
+  gap: 16px;
+}
+
+.skeleton-card {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid #e7dedf;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgb(74 55 61 / 4%);
+}
+
+.skeleton-photo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  border-radius: 4px;
+  background: #f4edea;
+  overflow: hidden;
+}
+
+.skeleton-photo::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgb(255 255 255 / 65%) 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: skeletonShimmer 1.8s infinite;
+  content: "";
+}
+
+.skeleton-placeholder-icon {
+  color: #d1c4c8;
+}
+
+.skeleton-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 6px 8px;
+}
+
+.skeleton-line {
+  height: 10px;
+  border-radius: 4px;
+  background: #eee5e7;
+}
+
+.skeleton-title {
+  width: 75%;
+}
+
+.skeleton-date {
+  width: 45%;
+}
+
+@keyframes skeletonShimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (max-width: 720px) {
+  .baby-skeleton-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .baby-loader-card {
+    padding: 22px 18px 18px;
+  }
+
+  .baby-loading-title {
+    font-size: 1.05rem;
+  }
+
+  .baby-loading-subtitle {
+    font-size: 0.8rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble-sparkle,
+  .camera-lens,
+  .flash-shimmer,
+  .bubble,
+  .dot-typing span,
+  .skeleton-photo::after {
+    animation: none;
+  }
+}
+</style>
