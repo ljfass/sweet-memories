@@ -174,6 +174,28 @@ describe('AdminApp integration', () => {
     expect(wrapper.get('[data-photo-count]').text()).toBe('共 1 张')
   })
 
+  it('keeps a production-data warning visible in local development', async () => {
+    const wrapper = mount(AdminApp, {
+      props: {
+        session: session(),
+        photoApi: photoApi([]),
+        uploadApi: idleUploadApi(),
+      },
+    })
+    await flushPromises()
+
+    const warning = wrapper.get('[data-production-proxy-warning]')
+    expect(warning.attributes('role')).toBe('status')
+    expect(warning.text()).toContain('本地开发模式：正在直接操作线上生产数据')
+
+    const warningRule = adminCss.match(
+      /\.admin-production-proxy-banner\s*\{([^}]*)\}/,
+    )?.[1] ?? ''
+    expect(warningRule).toContain('background: #fff4e5')
+    expect(warningRule).toContain('color: #713f12')
+    expect(warningRule).not.toContain('position: fixed')
+  })
+
   it('updates the photo total after a queued upload and permanent deletion', async () => {
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:new-photo')
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)

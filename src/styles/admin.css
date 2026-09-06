@@ -257,6 +257,22 @@
   padding: 24px 0 56px;
 }
 
+.admin-production-proxy-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0 0 16px;
+  padding: 10px 16px;
+  border-block: 1px solid #e2aa62;
+  background: #fff4e5;
+  color: #713f12;
+  line-height: 1.5;
+}
+
+.admin-production-proxy-banner strong {
+  font-weight: 700;
+}
+
 .admin-workspace-content,
 .admin-library,
 .admin-photo-library {

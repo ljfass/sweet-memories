@@ -27,6 +27,7 @@ const uploadQueue = useUploadQueue({
 const logoutMessage = ref('')
 const isLoggingOut = ref(false)
 const isPhotoModalOpen = ref(false)
+const isLocalProductionProxy = import.meta.env.DEV
 
 async function requestLogout(): Promise<void> {
   if (isLoggingOut.value) {
@@ -81,6 +82,16 @@ watch(
       v-else
       class="admin-workspace"
     >
+      <p
+        v-if="isLocalProductionProxy"
+        class="admin-production-proxy-banner"
+        role="status"
+        data-production-proxy-warning
+      >
+        <strong>生产数据模式</strong>
+        <span>本地开发模式：正在直接操作线上生产数据</span>
+      </p>
+
       <div
         class="admin-workspace-content"
         :inert="session.status.value === 'reauth-required'"
