@@ -308,12 +308,17 @@
   line-height: 1.5;
 }
 
+.admin-session-message:empty {
+  display: none;
+}
+
 .admin-library h2 {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: 8px;
   font-size: 1.2rem;
+  margin-bottom: 8px;
 }
 
 .admin-photo-count {
@@ -883,14 +888,15 @@
   }
 
   .admin-library {
-    padding-top: 24px;
+    padding-top: 16px;
   }
 
   .admin-library-actions {
     position: sticky;
     z-index: 3;
-    bottom: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
     justify-content: stretch;
+    margin: 12px 0 18px;
     padding: 8px;
     border: 1px solid #d5dad5;
     border-radius: 6px;
