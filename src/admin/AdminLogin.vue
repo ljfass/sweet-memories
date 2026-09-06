@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted, onUpdated, ref } from 'vue'
 import {
   AlertCircle,
   LoaderCircle,
@@ -14,6 +14,7 @@ import {
 } from '@lucide/vue'
 import gsap from 'gsap'
 import { safeLoginErrorMessage } from './api'
+import ClearFieldButton from './ClearFieldButton.vue'
 
 const props = defineProps<{
   login: (username: string, password: string) => Promise<void>
@@ -26,8 +27,10 @@ const isSubmitting = ref(false)
 const errorMessage = ref('')
 
 const usernameInput = ref<HTMLInputElement | null>(null)
+const passwordInput = ref<HTMLInputElement | null>(null)
 const loginCard = ref<HTMLElement | null>(null)
 const loginForm = ref<HTMLElement | null>(null)
+let focusAfterUpdate: HTMLInputElement | null = null
 
 onMounted(() => {
   usernameInput.value?.focus()
@@ -41,6 +44,12 @@ onMounted(() => {
       ease: 'power3.out',
     })
   }
+})
+
+onUpdated(() => {
+  if (!focusAfterUpdate?.isConnected) return
+  focusAfterUpdate.focus()
+  focusAfterUpdate = null
 })
 
 async function submit(): Promise<void> {
@@ -70,6 +79,16 @@ async function submit(): Promise<void> {
   } finally {
     isSubmitting.value = false
   }
+}
+
+function clearUsername(): void {
+  focusAfterUpdate = usernameInput.value
+  username.value = ''
+}
+
+function clearPassword(): void {
+  focusAfterUpdate = passwordInput.value
+  password.value = ''
 }
 </script>
 
@@ -201,7 +220,14 @@ async function submit(): Promise<void> {
                 required
                 placeholder="请输入管理员用户名"
                 :disabled="isSubmitting"
+                :class="{ 'has-clear-action': username !== '' }"
               >
+              <ClearFieldButton
+                v-if="username !== ''"
+                label="清空用户名"
+                :disabled="isSubmitting"
+                @clear="clearUsername"
+              />
             </div>
           </div>
 
@@ -216,6 +242,7 @@ async function submit(): Promise<void> {
               />
               <input
                 id="admin-login-password"
+                ref="passwordInput"
                 v-model="password"
                 name="password"
                 :type="showPassword ? 'text' : 'password'"
@@ -223,7 +250,15 @@ async function submit(): Promise<void> {
                 required
                 placeholder="请输入访问密码"
                 :disabled="isSubmitting"
+                :class="{ 'has-two-actions': password !== '' }"
               >
+              <ClearFieldButton
+                v-if="password !== ''"
+                class="is-before-trailing-action"
+                label="清空密码"
+                :disabled="isSubmitting"
+                @clear="clearPassword"
+              />
               <button
                 type="button"
                 class="password-toggle"
@@ -663,6 +698,14 @@ async function submit(): Promise<void> {
     border-color 0.2s ease,
     background-color 0.2s ease,
     box-shadow 0.2s ease;
+}
+
+.input-shell input.has-clear-action {
+  padding-right: 52px;
+}
+
+.input-shell input.has-two-actions {
+  padding-right: 88px;
 }
 
 .input-shell input::placeholder {
