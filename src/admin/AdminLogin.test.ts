@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import gsap from 'gsap'
 import { describe, expect, it, vi } from 'vitest'
 import { AdminApiError } from './api'
 import AdminLogin from './AdminLogin.vue'
@@ -9,14 +10,29 @@ describe('AdminLogin', () => {
     const username = wrapper.get('input[name="username"]')
     const password = wrapper.get('input[name="password"]')
 
-    expect(wrapper.get(`label[for="${username.attributes('id')}"]`).text()).toBe('用户名')
-    expect(wrapper.get(`label[for="${password.attributes('id')}"]`).text()).toBe('密码')
+    expect(wrapper.get(`label[for="${username.attributes('id')}"]`).text()).toBe('你的身份')
+    expect(wrapper.get(`label[for="${password.attributes('id')}"]`).text()).toBe('时光暗号')
     expect(username.attributes('autocomplete')).toBe('username')
     expect(password.attributes()).toMatchObject({
       type: 'password',
       autocomplete: 'current-password',
     })
     expect(password.attributes()).not.toHaveProperty('maxlength')
+  })
+
+  it('reverts component-scoped animations when the login view unmounts', () => {
+    const contextSpy = vi.spyOn(gsap, 'context')
+    const wrapper = mount(AdminLogin, { props: { login: vi.fn() } })
+
+    expect(contextSpy).toHaveBeenCalledTimes(1)
+    const context = contextSpy.mock.results[0]?.value
+    expect(context).toBeDefined()
+    const revertSpy = vi.spyOn(context!, 'revert')
+
+    wrapper.unmount()
+
+    expect(revertSpy).toHaveBeenCalledTimes(1)
+    contextSpy.mockRestore()
   })
 
   it('prevents duplicate submission and clears the password only after login succeeds', async () => {

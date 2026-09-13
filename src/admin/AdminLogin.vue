@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUpdated, ref } from 'vue'
+import { onMounted, onUnmounted, onUpdated, ref } from "vue";
 import {
   AlertCircle,
   LoaderCircle,
@@ -11,58 +11,139 @@ import {
   Camera,
   Heart,
   ArrowLeft,
-} from '@lucide/vue'
-import gsap from 'gsap'
-import { safeLoginErrorMessage } from './api'
-import ClearFieldButton from './ClearFieldButton.vue'
+} from "@lucide/vue";
+import gsap from "gsap";
+import { safeLoginErrorMessage } from "./api";
+import ClearFieldButton from "./ClearFieldButton.vue";
 
 const props = defineProps<{
-  login: (username: string, password: string) => Promise<void>
-}>()
+  login: (username: string, password: string) => Promise<void>;
+}>();
 
-const username = ref('')
-const password = ref('')
-const showPassword = ref(false)
-const isSubmitting = ref(false)
-const errorMessage = ref('')
+const username = ref("");
+const password = ref("");
+const showPassword = ref(false);
+const isSubmitting = ref(false);
+const errorMessage = ref("");
 
-const usernameInput = ref<HTMLInputElement | null>(null)
-const passwordInput = ref<HTMLInputElement | null>(null)
-const loginCard = ref<HTMLElement | null>(null)
-const loginForm = ref<HTMLElement | null>(null)
-let focusAfterUpdate: HTMLInputElement | null = null
+const usernameInput = ref<HTMLInputElement | null>(null);
+const passwordInput = ref<HTMLInputElement | null>(null);
+const loginRoot = ref<HTMLElement | null>(null);
+const loginCard = ref<HTMLElement | null>(null);
+const loginForm = ref<HTMLElement | null>(null);
+
+// 模糊光圈 Refs
+const glowBerry = ref<HTMLElement | null>(null);
+const glowAmber = ref<HTMLElement | null>(null);
+const glowTeal = ref<HTMLElement | null>(null);
+
+let focusAfterUpdate: HTMLInputElement | null = null;
+
+let xToBerry: ((value: number) => void) | null = null;
+let yToBerry: ((value: number) => void) | null = null;
+let xToAmber: ((value: number) => void) | null = null;
+let yToAmber: ((value: number) => void) | null = null;
+let xToTeal: ((value: number) => void) | null = null;
+let yToTeal: ((value: number) => void) | null = null;
+let animationContext: gsap.Context | null = null;
+
+const handleMouseMove = (e: MouseEvent) => {
+  const { innerWidth, innerHeight } = window;
+  // 计算鼠标相对于屏幕中心的偏移量 (-1 到 1)
+  const x = (e.clientX / innerWidth - 0.5) * 2;
+  const y = (e.clientY / innerHeight - 0.5) * 2;
+
+  // 加大视差移动比例，让景深效果更明显 (之前只有 10~20%)
+  xToBerry?.(x * -30);
+  yToBerry?.(y * -30);
+  xToAmber?.(x * -45);
+  yToAmber?.(y * -45);
+  xToTeal?.(x * -60);
+  yToTeal?.(y * -60);
+};
 
 onMounted(() => {
-  usernameInput.value?.focus()
+  usernameInput.value?.focus();
 
-  if (loginCard.value) {
-    gsap.from(loginCard.value, {
-      y: 28,
-      opacity: 0,
-      scale: 0.98,
-      duration: 0.7,
-      ease: 'power3.out',
-    })
-  }
-})
+  animationContext = gsap.context(() => {
+    if (loginCard.value) {
+      gsap.from(loginCard.value, {
+        y: 28,
+        opacity: 0,
+        scale: 0.98,
+        duration: 0.7,
+        ease: "power3.out",
+      });
+    }
+
+    const quickToConfig = { duration: 0.8, ease: "power3.out" };
+    if (glowBerry.value) {
+      xToBerry = gsap.quickTo(glowBerry.value, "xPercent", quickToConfig);
+      yToBerry = gsap.quickTo(glowBerry.value, "yPercent", quickToConfig);
+    }
+    if (glowAmber.value) {
+      xToAmber = gsap.quickTo(glowAmber.value, "xPercent", quickToConfig);
+      yToAmber = gsap.quickTo(glowAmber.value, "yPercent", quickToConfig);
+    }
+    if (glowTeal.value) {
+      xToTeal = gsap.quickTo(glowTeal.value, "xPercent", quickToConfig);
+      yToTeal = gsap.quickTo(glowTeal.value, "yPercent", quickToConfig);
+    }
+
+    const glows = [
+      { el: glowBerry.value, x: 80, y: 80, duration: 10 },
+      { el: glowAmber.value, x: 100, y: 90, duration: 12 },
+      { el: glowTeal.value, x: 120, y: 110, duration: 14 },
+    ];
+
+    glows.forEach((glow) => {
+      if (glow.el) {
+        gsap.to(glow.el, {
+          x: `random(-${glow.x}, ${glow.x})`,
+          y: `random(-${glow.y}, ${glow.y})`,
+          scale: "random(0.85, 1.15)",
+          duration: glow.duration,
+          ease: "sine.inOut",
+          yoyo: true,
+          repeat: -1,
+          repeatRefresh: true,
+        });
+      }
+    });
+  }, loginRoot.value ?? undefined);
+
+  window.addEventListener("mousemove", handleMouseMove);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("mousemove", handleMouseMove);
+  animationContext?.revert();
+  animationContext = null;
+  xToBerry = null;
+  yToBerry = null;
+  xToAmber = null;
+  yToAmber = null;
+  xToTeal = null;
+  yToTeal = null;
+});
 
 onUpdated(() => {
-  if (!focusAfterUpdate?.isConnected) return
-  focusAfterUpdate.focus()
-  focusAfterUpdate = null
-})
+  if (!focusAfterUpdate?.isConnected) return;
+  focusAfterUpdate.focus();
+  focusAfterUpdate = null;
+});
 
 async function submit(): Promise<void> {
   if (isSubmitting.value) {
-    return
+    return;
   }
-  isSubmitting.value = true
-  errorMessage.value = ''
+  isSubmitting.value = true;
+  errorMessage.value = "";
   try {
-    await props.login(username.value, password.value)
-    password.value = ''
+    await props.login(username.value, password.value);
+    password.value = "";
   } catch (error) {
-    errorMessage.value = safeLoginErrorMessage(error)
+    errorMessage.value = safeLoginErrorMessage(error);
     if (loginForm.value) {
       gsap.fromTo(
         loginForm.value,
@@ -72,41 +153,45 @@ async function submit(): Promise<void> {
           duration: 0.08,
           yoyo: true,
           repeat: 3,
-          clearProps: 'x',
+          clearProps: "x",
         },
-      )
+      );
     }
   } finally {
-    isSubmitting.value = false
+    isSubmitting.value = false;
   }
 }
 
 function clearUsername(): void {
-  focusAfterUpdate = usernameInput.value
-  username.value = ''
+  focusAfterUpdate = usernameInput.value;
+  username.value = "";
 }
 
 function clearPassword(): void {
-  focusAfterUpdate = passwordInput.value
-  password.value = ''
+  focusAfterUpdate = passwordInput.value;
+  password.value = "";
 }
 </script>
 
 <template>
   <main
+    ref="loginRoot"
     class="admin-login"
     aria-labelledby="admin-login-title"
   >
     <!-- 动态暖光与星芒点阵背景 -->
     <div
+      ref="glowBerry"
       class="ambient-glow glow-berry"
       aria-hidden="true"
     />
     <div
+      ref="glowAmber"
       class="ambient-glow glow-amber"
       aria-hidden="true"
     />
     <div
+      ref="glowTeal"
       class="ambient-glow glow-teal"
       aria-hidden="true"
     />
@@ -127,19 +212,19 @@ function clearPassword(): void {
       >
         <div class="showcase-content">
           <div class="brand-badge-header">
-            <span class="brand-mark-stamp">忆</span>
+            <span class="brand-mark-stamp">宝</span>
             <div class="brand-badge-text">
-              <span class="brand-en">FOR MY BOY</span>
-              <span class="brand-zh">儿子的成长日常</span>
+              <span class="brand-en">亲爱的黎梓熙</span>
+              <span class="brand-zh">写给你的时光日记</span>
             </div>
           </div>
 
           <div class="brand-quote-block">
             <h2 class="brand-hero-title">
-              陪你慢慢长大。
+              今天，又给你拍了好多照片。
             </h2>
             <p class="brand-hero-desc">
-              把你的童年写成光，把日常存成宝藏。
+              每一次按下快门，都是爸爸舍不得你长得太快的小私心。这里存着我们最珍视的日常。
             </p>
           </div>
 
@@ -152,12 +237,12 @@ function clearPassword(): void {
                   class="polaroid-icon"
                   :size="28"
                 />
-                <span class="polaroid-title">My Little Adventurer</span>
-                <span class="polaroid-date">日常碎片 · 珍贵定格</span>
+                <span class="polaroid-title">Little Sunshine</span>
+                <span class="polaroid-date">那些闪闪发光的日子</span>
               </div>
             </div>
             <div class="polaroid-caption">
-              <span class="caption-text">今天也超级开心</span>
+              <span class="caption-text">“看镜头，笑一个！”</span>
               <Heart
                 class="caption-heart"
                 :size="15"
@@ -170,7 +255,7 @@ function clearPassword(): void {
               class="footer-heart"
               :size="15"
             />
-            <span>爸爸的私人镜头 · 爱与成长</span>
+            <span>嘘... 这是只属于我们的秘密基地</span>
           </div>
         </div>
       </section>
@@ -189,20 +274,20 @@ function clearPassword(): void {
                 :size="14"
               />
               <p class="admin-eyebrow">
-                甜蜜回忆 · 管理后台
+                时光任意门
               </p>
             </div>
             <h1 id="admin-login-title">
-              相册管理
+              开启回忆
             </h1>
             <p class="header-subtitle">
-              登录以记录儿子新的成长瞬间
+              输入暗号，回到属于我们的童年时光
             </p>
           </header>
 
           <!-- 用户名输入区 -->
           <div class="admin-field">
-            <label for="admin-login-username">用户名</label>
+            <label for="admin-login-username">你的身份</label>
             <div class="input-shell">
               <User
                 class="field-icon"
@@ -218,7 +303,7 @@ function clearPassword(): void {
                 autocomplete="username"
                 maxlength="32"
                 required
-                placeholder="请输入管理员用户名"
+                placeholder="例如：超级奶爸"
                 :disabled="isSubmitting"
                 :class="{ 'has-clear-action': username !== '' }"
               >
@@ -233,7 +318,7 @@ function clearPassword(): void {
 
           <!-- 密码输入区 -->
           <div class="admin-field">
-            <label for="admin-login-password">密码</label>
+            <label for="admin-login-password">时光暗号</label>
             <div class="input-shell">
               <Lock
                 class="field-icon"
@@ -248,7 +333,7 @@ function clearPassword(): void {
                 :type="showPassword ? 'text' : 'password'"
                 autocomplete="current-password"
                 required
-                placeholder="请输入访问密码"
+                placeholder="请输入密码"
                 :disabled="isSubmitting"
                 :class="{ 'has-two-actions': password !== '' }"
               >
@@ -310,7 +395,7 @@ function clearPassword(): void {
                 class="spinner"
                 :size="18"
               />
-              <span>{{ isSubmitting ? '正在进入...' : '进入相册后台' }}</span>
+              <span>{{ isSubmitting ? "正在穿梭..." : "打开任意门" }}</span>
             </span>
           </button>
 
@@ -321,7 +406,7 @@ function clearPassword(): void {
               class="back-gallery-link"
             >
               <ArrowLeft :size="14" />
-              <span>返回公开相册首页</span>
+              <span>回到相册主页</span>
             </a>
             <span class="shortcut-tip">按 Enter 键快速提交</span>
           </footer>
@@ -341,7 +426,12 @@ function clearPassword(): void {
   min-height: 100vh;
   padding: 32px 20px;
   overflow: hidden;
-  background: radial-gradient(circle at 18% 20%, #fff7ed 0%, #fdf2f4 42%, #faf5f6 100%);
+  background: radial-gradient(
+    circle at 18% 20%,
+    #fff7ed 0%,
+    #fdf2f4 42%,
+    #faf5f6 100%
+  );
   font-family: var(--admin-sans, system-ui, -apple-system, sans-serif);
   color: var(--admin-text, #2d292c);
   box-sizing: border-box;
@@ -352,7 +442,10 @@ function clearPassword(): void {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-image: radial-gradient(rgb(209 179 189 / 45%) 1.2px, transparent 1.2px);
+  background-image: radial-gradient(
+    rgb(209 179 189 / 45%) 1.2px,
+    transparent 1.2px
+  );
   background-size: 24px 24px;
   opacity: 0.55;
   mask-image: radial-gradient(circle at center, black 50%, transparent 95%);
@@ -365,7 +458,7 @@ function clearPassword(): void {
   pointer-events: none;
   filter: blur(85px);
   opacity: 0.42;
-  animation: floatGlow 14s ease-in-out infinite alternate;
+  will-change: transform;
 }
 
 .glow-berry {
@@ -382,7 +475,6 @@ function clearPassword(): void {
   width: 460px;
   height: 460px;
   background: radial-gradient(circle, #fef3c7 0%, #fcd34d 50%, transparent 80%);
-  animation-delay: -5s;
 }
 
 .glow-teal {
@@ -392,19 +484,6 @@ function clearPassword(): void {
   height: 320px;
   background: radial-gradient(circle, #ccfbf1 0%, #99f6e4 60%, transparent 80%);
   opacity: 0.28;
-  animation-delay: -9s;
-}
-
-@keyframes floatGlow {
-  0% {
-    transform: translate(0, 0) scale(1);
-  }
-  50% {
-    transform: translate(25px, -20px) scale(1.08);
-  }
-  100% {
-    transform: translate(-20px, 20px) scale(0.96);
-  }
 }
 
 /* ================= 典雅双栏卡片容器 ================= */
@@ -515,9 +594,13 @@ function clearPassword(): void {
   padding: 10px 10px 14px;
   border-radius: 8px;
   background: #ffffff;
-  box-shadow: 0 12px 30px rgb(184 64 97 / 13%), 0 2px 6px rgb(0 0 0 / 4%);
+  box-shadow:
+    0 12px 30px rgb(184 64 97 / 13%),
+    0 2px 6px rgb(0 0 0 / 4%);
   transform: rotate(-2.5deg);
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  transition:
+    transform 0.3s ease,
+    box-shadow 0.3s ease;
 }
 
 .showcase-polaroid:hover {
@@ -741,7 +824,9 @@ function clearPassword(): void {
   background: transparent;
   color: #8c8288;
   cursor: pointer;
-  transition: color 0.2s ease, transform 0.2s ease;
+  transition:
+    color 0.2s ease,
+    transform 0.2s ease;
 }
 
 .password-toggle:hover {
@@ -859,7 +944,9 @@ function clearPassword(): void {
   color: #695f64;
   text-decoration: none;
   font-weight: 600;
-  transition: color 0.2s ease, transform 0.2s ease;
+  transition:
+    color 0.2s ease,
+    transform 0.2s ease;
 }
 
 .back-gallery-link:hover {

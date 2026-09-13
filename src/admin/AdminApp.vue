@@ -1,66 +1,74 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
-import AdminLogin from './AdminLogin.vue'
-import PhotoLibrary from './PhotoLibrary.vue'
-import ReauthDialog from './ReauthDialog.vue'
-import { AdminApi, safeLogoutErrorMessage } from './api'
-import type { AdminPhotoApiClient, AdminSessionState, AdminUploadApiClient } from './types'
-import { usePhotoLibrary } from './usePhotoLibrary'
-import { useAdminSession } from './useAdminSession'
-import { useUploadQueue } from './useUploadQueue'
+import { onMounted, ref, watch } from "vue";
+import { Baby } from "@lucide/vue";
+import AdminLogin from "./AdminLogin.vue";
+import PhotoLibrary from "./PhotoLibrary.vue";
+import ReauthDialog from "./ReauthDialog.vue";
+import { AdminApi, safeLogoutErrorMessage } from "./api";
+import type {
+  AdminPhotoApiClient,
+  AdminSessionState,
+  AdminUploadApiClient,
+} from "./types";
+import { usePhotoLibrary } from "./usePhotoLibrary";
+import { useAdminSession } from "./useAdminSession";
+import { useUploadQueue } from "./useUploadQueue";
 
 const props = defineProps<{
-  session?: AdminSessionState
-  photoApi?: AdminPhotoApiClient
-  uploadApi?: AdminUploadApiClient
-}>()
+  session?: AdminSessionState;
+  photoApi?: AdminPhotoApiClient;
+  uploadApi?: AdminUploadApiClient;
+}>();
 
-const defaultApi = new AdminApi()
-const session = props.session ?? useAdminSession(defaultApi)
-const photoLibrary = usePhotoLibrary(props.photoApi ?? defaultApi, session.csrfToken)
+const defaultApi = new AdminApi();
+const session = props.session ?? useAdminSession(defaultApi);
+const photoLibrary = usePhotoLibrary(
+  props.photoApi ?? defaultApi,
+  session.csrfToken,
+);
 const uploadQueue = useUploadQueue({
   api: props.uploadApi ?? defaultApi,
   sessionStatus: session.status,
   csrfToken: session.csrfToken,
   onUploaded: photoLibrary.addUploadedPhoto,
-})
-const logoutMessage = ref('')
-const isLoggingOut = ref(false)
-const isPhotoModalOpen = ref(false)
-const isLocalProductionProxy = import.meta.env.DEV
+});
+const logoutMessage = ref("");
+const isLoggingOut = ref(false);
+const isPhotoModalOpen = ref(false);
+const isLocalProductionProxy = import.meta.env.DEV;
 
 async function requestLogout(): Promise<void> {
   if (isLoggingOut.value) {
-    return
+    return;
   }
-  isLoggingOut.value = true
+  isLoggingOut.value = true;
   try {
-    await session.logout()
+    await session.logout();
   } finally {
-    isLoggingOut.value = false
+    isLoggingOut.value = false;
   }
 }
 
 async function logout(): Promise<void> {
-  logoutMessage.value = ''
+  logoutMessage.value = "";
   try {
-    await requestLogout()
+    await requestLogout();
   } catch {
-    logoutMessage.value = safeLogoutErrorMessage()
+    logoutMessage.value = safeLogoutErrorMessage();
   }
 }
 
-onMounted(() => session.initialize())
+onMounted(() => session.initialize());
 
 watch(
   () => session.status.value,
   (status) => {
-    if (status === 'authenticated' && photoLibrary.status.value === 'idle') {
-      void photoLibrary.load()
+    if (status === "authenticated" && photoLibrary.status.value === "idle") {
+      void photoLibrary.load();
     }
   },
   { immediate: true },
-)
+);
 </script>
 
 <template>
@@ -95,7 +103,9 @@ watch(
       <div
         class="admin-workspace-content"
         :inert="session.status.value === 'reauth-required'"
-        :aria-hidden="session.status.value === 'reauth-required' ? 'true' : undefined"
+        :aria-hidden="
+          session.status.value === 'reauth-required' ? 'true' : undefined
+        "
       >
         <header
           class="admin-toolbar"
@@ -107,7 +117,10 @@ watch(
               class="admin-brand-mark"
               aria-hidden="true"
             >
-              忆
+              <Baby
+                :size="24"
+                stroke-width="2.5"
+              />
             </span>
             <div>
               <p class="admin-eyebrow">
@@ -124,7 +137,7 @@ watch(
               :disabled="isLoggingOut"
               @click="logout"
             >
-              退出登录
+              关上日记本
             </button>
           </div>
         </header>

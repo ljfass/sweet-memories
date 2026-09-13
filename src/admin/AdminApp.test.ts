@@ -298,7 +298,7 @@ describe('AdminApp integration', () => {
     })
     await flushPromises()
 
-    expect(wrapper.get('.admin-brand-mark').text()).toBe('忆')
+    expect(wrapper.get('.admin-brand-mark svg')).toBeDefined()
     expect(wrapper.get('.admin-brand-mark').attributes('aria-hidden')).toBe('true')
     expect(wrapper.get('.admin-toolbar h1').text()).toBe('相册管理')
     expect(wrapper.get('#photo-library-title > span:first-child').text()).toBe('成长相册')
