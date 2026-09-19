@@ -126,13 +126,18 @@ describe('App', () => {
   })
 
   it('applies sleep mode from the floating control', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
     const wrapper = mount(App)
 
     expect(wrapper.get('.album-app').classes()).not.toContain('is-sleeping')
+    expect(wrapper.get('audio').exists()).toBe(true)
 
     await wrapper.get('[data-testid="sleep-toggle"]').trigger('click')
+    await wrapper.vm.$nextTick()
 
     expect(wrapper.get('.album-app').classes()).toContain('is-sleeping')
     expect(wrapper.get('.sleep-title').text()).toBe('嘘，宝宝睡着了... 💤')
+    expect(wrapper.find('.sleep-overlay').exists()).toBe(false)
+    expect(componentSource).toMatch(/:is-overlay-visible="false"/)
   })
 })
