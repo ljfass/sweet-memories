@@ -14,6 +14,7 @@ const Harness = defineComponent({
   template: `
     <audio ref="audioElement" preload="none" />
     <button type="button" data-testid="toggle" @click="togglePlayback">toggle</button>
+    <button type="button" data-testid="play" @click="play">play</button>
     <span data-testid="status">{{ status }}</span>
     <span data-testid="error">{{ errorMessage }}</span>
   `,
@@ -71,5 +72,53 @@ describe('useAudioPlayer', () => {
 
     await audio.trigger('error')
     expect(wrapper.get('[data-testid="status"]').text()).toBe('error')
+  })
+
+  it('starts playback without toggling a playing track off', async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const wrapper = mount(Harness)
+
+    await wrapper.get('[data-testid="play"]').trigger('click')
+    await flushPromises()
+    expect(play).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="status"]').text()).toBe('playing')
+
+    await wrapper.get('[data-testid="play"]').trigger('click')
+    await flushPromises()
+    expect(play).toHaveBeenCalledOnce()
+    expect(pause).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="status"]').text()).toBe('playing')
+  })
+
+  it('does not start a second play() while loading', async () => {
+    let resolvePlayback!: () => void
+    const playback = new Promise<void>((resolve) => {
+      resolvePlayback = resolve
+    })
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockReturnValue(playback)
+    const wrapper = mount(Harness)
+
+    await wrapper.get('[data-testid="play"]').trigger('click')
+    expect(wrapper.get('[data-testid="status"]').text()).toBe('loading')
+    await wrapper.get('[data-testid="play"]').trigger('click')
+    expect(play).toHaveBeenCalledOnce()
+
+    resolvePlayback()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="status"]').text()).toBe('playing')
+  })
+
+  it('keeps the stable error when play() is rejected', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockRejectedValue(
+      new DOMException('Not allowed', 'NotAllowedError'),
+    )
+    const wrapper = mount(Harness)
+
+    await wrapper.get('[data-testid="play"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="status"]').text()).toBe('error')
+    expect(wrapper.get('[data-testid="error"]').text()).toBe('音乐暂时无法播放')
   })
 })

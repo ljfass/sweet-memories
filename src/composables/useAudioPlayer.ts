@@ -46,6 +46,28 @@ export function useAudioPlayer(audioElement: Ref<HTMLAudioElement | null>) {
     }
   }
 
+  const play = async () => {
+    if (status.value === 'playing' || status.value === 'loading') {
+      return
+    }
+
+    const audio = audioElement.value
+    if (!audio) {
+      handleError()
+      return
+    }
+
+    status.value = 'loading'
+    errorMessage.value = ''
+
+    try {
+      await audio.play()
+      handlePlay()
+    } catch {
+      handleError()
+    }
+  }
+
   onMounted(() => {
     const audio = audioElement.value
     if (!audio) return
@@ -69,6 +91,7 @@ export function useAudioPlayer(audioElement: Ref<HTMLAudioElement | null>) {
   return {
     status: readonly(status),
     errorMessage: readonly(errorMessage),
+    play,
     togglePlayback,
   }
 }
