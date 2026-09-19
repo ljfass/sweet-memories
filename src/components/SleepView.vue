@@ -2,7 +2,6 @@
 import { onMounted, ref } from "vue";
 import sleepImageUrl from "../assets/generated/sleeping.jpg";
 
-// Generate random stars for the background
 const stars = ref<
   Array<{
     id: number;
@@ -58,7 +57,7 @@ onMounted(() => {
     </div>
 
     <div class="sleep-content">
-      <div class="breathing-frame">
+      <div class="moon-frame">
         <picture class="sleep-picture">
           <img
             :src="sleepImageUrl"
@@ -87,7 +86,7 @@ onMounted(() => {
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: linear-gradient(135deg, #050b14 0%, #0a1128 50%, #151b30 100%);
+  background: radial-gradient(ellipse at 50% 38%, #1b2438 0%, #0b1220 55%, #070b14 100%);
   z-index: 10;
   display: flex;
   align-items: center;
@@ -130,82 +129,83 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 40px;
-  animation: float 6s ease-in-out infinite;
+  gap: 28px;
+  animation: settle-in 1.4s ease both;
 }
 
-@keyframes float {
-  0%,
-  100% {
+@keyframes settle-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
     transform: translateY(0);
   }
-  50% {
-    transform: translateY(-15px);
-  }
 }
 
-.breathing-frame {
+.moon-frame {
   position: relative;
-  border-radius: 20px;
-  padding: 8px;
-  background: rgba(255, 255, 255, 0.05);
+  width: min(72vw, 340px);
+  height: min(72vw, 340px);
+  border-radius: 50%;
+  padding: 7px;
+  background:
+    radial-gradient(circle at 32% 28%, rgb(255 248 230 / 55%), transparent 42%),
+    rgb(255 248 230 / 8%);
   box-shadow:
-    0 0 30px rgba(128, 160, 255, 0.2),
-    inset 0 0 20px rgba(128, 160, 255, 0.1);
-  animation: breathe 4s ease-in-out infinite;
+    0 0 0 1px rgb(255 236 205 / 10%),
+    0 0 28px rgb(245 214 160 / 12%),
+    0 18px 48px rgb(0 0 0 / 42%);
+  animation: moonlight 6.5s ease-in-out infinite;
 }
 
-.breathing-frame::before {
+.moon-frame::after {
   content: "";
   position: absolute;
-  top: -2px;
-  left: -2px;
-  right: -2px;
-  bottom: -2px;
-  border-radius: 22px;
-  background: linear-gradient(
-    45deg,
-    rgba(128, 160, 255, 0.5),
-    transparent,
-    rgba(200, 180, 255, 0.5)
-  );
-  z-index: -1;
-  opacity: 0.6;
-  animation: breathe-border 4s ease-in-out infinite;
+  inset: 10%;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 36px 10px rgb(245 214 160 / 8%);
+  animation: moonlight-halo 6.5s ease-in-out infinite;
 }
 
-@keyframes breathe {
+@keyframes moonlight {
   0%,
   100% {
     box-shadow:
-      0 0 30px rgba(128, 160, 255, 0.1),
-      inset 0 0 20px rgba(128, 160, 255, 0.1);
+      0 0 0 1px rgb(255 236 205 / 8%),
+      0 0 22px rgb(245 214 160 / 10%),
+      0 18px 48px rgb(0 0 0 / 42%);
   }
   50% {
     box-shadow:
-      0 0 60px rgba(128, 160, 255, 0.4),
-      inset 0 0 40px rgba(128, 160, 255, 0.2);
+      0 0 0 1px rgb(255 248 230 / 55%),
+      0 0 48px rgb(255 228 180 / 55%),
+      0 0 96px rgb(245 214 160 / 38%),
+      0 18px 48px rgb(0 0 0 / 42%);
   }
 }
 
-@keyframes breathe-border {
+@keyframes moonlight-halo {
   0%,
   100% {
-    opacity: 0.3;
+    opacity: 0.35;
+    box-shadow: 0 0 28px 8px rgb(245 214 160 / 6%);
   }
   50% {
-    opacity: 0.8;
+    opacity: 1;
+    box-shadow: 0 0 72px 28px rgb(255 228 180 / 28%);
   }
 }
 
 .sleep-picture {
   display: block;
-  border-radius: 14px;
+  border-radius: 50%;
   overflow: hidden;
   background-color: #1a2238;
-  width: min(80vw, 400px);
-  height: min(80vw, 400px);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  width: 100%;
+  height: 100%;
 }
 
 .sleep-image {
@@ -213,32 +213,31 @@ onMounted(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: brightness(0.85) contrast(0.95);
-  transition: filter 1s ease;
+  object-position: 28% 42%;
+  filter: saturate(0.92) contrast(0.98);
 }
 
 .sleep-typography {
   text-align: center;
-  color: #e2e8f0;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  color: #d7cfc3;
+  text-shadow: 0 1px 12px rgb(0 0 0 / 45%);
 }
 
 .sleep-title {
-  font-size: 2rem;
-  font-weight: 700;
-  letter-spacing: 2px;
-  margin-bottom: 12px;
-  background: linear-gradient(to right, #e2e8f0, #a5b4fc);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  margin: 0 0 8px;
+  color: #f4efe6;
+  font-size: 1.15rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
 }
 
 .sleep-subtitle {
-  font-size: 1.1rem;
-  color: #94a3b8;
+  margin: 0;
+  color: #9a9084;
+  font-size: 0.82rem;
   font-weight: 400;
-  letter-spacing: 1px;
+  letter-spacing: 0.12em;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -249,10 +248,7 @@ onMounted(() => {
     animation: none;
     transform: none;
   }
-  .breathing-frame {
-    animation: none;
-  }
-  .breathing-frame::before {
+  .moon-frame {
     animation: none;
   }
 }
