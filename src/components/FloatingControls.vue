@@ -4,7 +4,7 @@ import { computed, ref, type CSSProperties } from 'vue'
 import { useAudioPlayer } from '../composables/useAudioPlayer'
 import { useMusicNotes, type MusicNote } from '../composables/useMusicNotes'
 
-defineProps<{
+const props = defineProps<{
   isSleepMode: boolean
   isOverlayVisible: boolean
   audioSources: {
@@ -13,12 +13,12 @@ defineProps<{
   }
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   'toggle-sleep': []
 }>()
 
 const audioElement = ref<HTMLAudioElement | null>(null)
-const { status, errorMessage, togglePlayback } = useAudioPlayer(audioElement)
+const { status, errorMessage, play, togglePlayback } = useAudioPlayer(audioElement)
 const isPlaying = computed(() => status.value === 'playing')
 const isLoading = computed(() => status.value === 'loading')
 const { notes } = useMusicNotes(isPlaying)
@@ -34,6 +34,14 @@ const musicLabel = computed(() => {
   if (isLoading.value) return '正在加载背景音乐'
   return '播放背景音乐'
 })
+
+function handleSleepToggle() {
+  const enteringSleep = !props.isSleepMode
+  emit('toggle-sleep')
+  if (enteringSleep) {
+    void play()
+  }
+}
 </script>
 
 <template>
@@ -45,7 +53,7 @@ const musicLabel = computed(() => {
       :aria-label="isSleepMode ? '退出哄睡模式' : '开启哄睡模式'"
       :title="isSleepMode ? '退出哄睡模式' : '开启哄睡模式'"
       :aria-pressed="isSleepMode"
-      @click="$emit('toggle-sleep')"
+      @click="handleSleepToggle"
     >
       <span
         class="sleep-icon"

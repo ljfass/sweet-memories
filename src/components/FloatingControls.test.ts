@@ -98,4 +98,71 @@ describe('FloatingControls', () => {
     expect(errorWrapper.get('[role="status"]').text()).toBe('音乐暂时无法播放')
     expect(errorWrapper.findAll('.music-note')).toHaveLength(0)
   })
+
+  it('starts the lullaby when entering sleep from a user click', async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    const wrapper = mount(FloatingControls, {
+      props: { isSleepMode: false, isOverlayVisible: false, audioSources },
+    })
+
+    await wrapper.get('[data-testid="sleep-toggle"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('toggle-sleep')).toHaveLength(1)
+    expect(play).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="music-toggle"]').classes()).toContain('is-playing')
+    expect(wrapper.find('.sleep-overlay').exists()).toBe(false)
+  })
+
+  it('does not pause an already playing lullaby when entering sleep', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const wrapper = mount(FloatingControls, {
+      props: { isSleepMode: false, isOverlayVisible: false, audioSources },
+    })
+
+    await wrapper.get('[data-testid="music-toggle"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="music-toggle"]').classes()).toContain('is-playing')
+
+    await wrapper.get('[data-testid="sleep-toggle"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('toggle-sleep')).toHaveLength(1)
+    expect(pause).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="music-toggle"]').classes()).toContain('is-playing')
+  })
+
+  it('leaves playback alone when exiting sleep', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const wrapper = mount(FloatingControls, {
+      props: { isSleepMode: false, isOverlayVisible: false, audioSources },
+    })
+
+    await wrapper.get('[data-testid="music-toggle"]').trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ isSleepMode: true })
+
+    await wrapper.get('[data-testid="sleep-toggle"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('toggle-sleep')).toHaveLength(1)
+    expect(pause).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="music-toggle"]').classes()).toContain('is-playing')
+  })
+
+  it('still enters sleep when lullaby playback is rejected', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockRejectedValue(new Error('blocked'))
+    const wrapper = mount(FloatingControls, {
+      props: { isSleepMode: false, isOverlayVisible: false, audioSources },
+    })
+
+    await wrapper.get('[data-testid="sleep-toggle"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('toggle-sleep')).toHaveLength(1)
+    expect(wrapper.get('[role="status"]').text()).toBe('音乐暂时无法播放')
+    expect(wrapper.find('.sleep-overlay').exists()).toBe(false)
+  })
 })
