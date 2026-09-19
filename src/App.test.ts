@@ -130,7 +130,7 @@ describe('App', () => {
     const wrapper = mount(App)
 
     expect(wrapper.get('.album-app').classes()).not.toContain('is-sleeping')
-    expect(wrapper.get('audio').exists()).toBe(true)
+    expect(wrapper.find('audio').exists()).toBe(true)
 
     await wrapper.get('[data-testid="sleep-toggle"]').trigger('click')
     await wrapper.vm.$nextTick()
