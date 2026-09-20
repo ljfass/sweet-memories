@@ -44,6 +44,8 @@ describe('PhotoEditor', () => {
     })
 
     expect(wrapper.get('aside').attributes('aria-label')).toBe('照片编辑器')
+    expect(wrapper.get('input[name="capturedDate"]').element.parentElement?.classList.contains('admin-date-field'))
+      .toBe(true)
     expect(wrapper.get('[data-description-fallback]').text()).toContain('使用标题')
     await wrapper.get('input[name="title"]').setValue('新的满月标题')
     await wrapper.get('input[name="capturedDate"]').setValue('2026-06-01')

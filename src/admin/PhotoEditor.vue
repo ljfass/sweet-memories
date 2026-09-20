@@ -122,7 +122,7 @@ function clearDraftField(
       </div>
       <div class="admin-field">
         <label :for="`photo-date-${photo.id}`">拍摄日期</label>
-        <div class="admin-clearable-field">
+        <div class="admin-clearable-field admin-date-field">
           <input
             :id="`photo-date-${photo.id}`"
             ref="capturedDateInput"

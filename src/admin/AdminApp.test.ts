@@ -351,6 +351,12 @@ describe('AdminApp integration', () => {
 
   it('keeps the captured-date field inside the mobile editor', () => {
     expect(adminCss).toMatch(
+      /\.admin-date-field\s*\{[^}]*display:\s*flex;[^}]*min-width:\s*0;/s,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-date-field > input\[type="date"\]\s*\{[^}]*flex:\s*1 1 0;[^}]*width:\s*0;/s,
+    )
+    expect(adminCss).toMatch(
       /\.admin-clearable-field\s*\{[^}]*min-width:\s*0;/s,
     )
     expect(adminCss).toMatch(

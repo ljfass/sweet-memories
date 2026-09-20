@@ -143,6 +143,18 @@
   padding-right: 84px;
 }
 
+.admin-date-field {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.admin-date-field > input[type="date"] {
+  flex: 1 1 0;
+  width: 0;
+  max-width: none;
+}
+
 .admin-field input:focus-visible,
 .admin-primary-button:focus-visible,
 .admin-secondary-button:focus-visible {
