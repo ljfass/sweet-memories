@@ -79,6 +79,16 @@ const { memories, status: photoStatus, retry: retryPhotos } = usePublicMemories(
           </p>
           <PhotoGallery :memories="memories" />
         </section>
+        <footer
+          class="site-compliance"
+          aria-label="网站备案信息"
+        >
+          <a
+            href="https://beian.miit.gov.cn/"
+            target="_blank"
+            rel="noreferrer"
+          >粤ICP备2026124085号-1</a>
+        </footer>
       </main>
     </transition>
   </div>
@@ -143,6 +153,28 @@ const { memories, status: photoStatus, retry: retryPhotos } = usePublicMemories(
 }
 
 .album-retry:focus-visible {
+  outline: 3px solid var(--focus-color);
+  outline-offset: 3px;
+}
+
+.site-compliance {
+  display: flex;
+  justify-content: center;
+  margin: 24px auto 0;
+  padding: 0 20px;
+  color: var(--muted-color);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.site-compliance a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.site-compliance a:focus-visible {
   outline: 3px solid var(--focus-color);
   outline-offset: 3px;
 }

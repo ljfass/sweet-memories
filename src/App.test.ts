@@ -61,6 +61,12 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="music-toggle"]').exists()).toBe(true)
     expect(wrapper.find('.ambient-effects').exists()).toBe(true)
     expect(wrapper.get('.public-album').attributes('aria-busy')).toBe('false')
+
+    const filingLink = wrapper.get('.site-compliance a')
+    expect(filingLink.text()).toBe('粤ICP备2026124085号-1')
+    expect(filingLink.attributes('href')).toBe('https://beian.miit.gov.cn/')
+    expect(filingLink.attributes('target')).toBe('_blank')
+    expect(filingLink.attributes('rel')).toBe('noreferrer')
   })
 
   it('reserves a stable photo wall while API photos are loading', () => {
