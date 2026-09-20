@@ -129,6 +129,7 @@
 
 .admin-clearable-field {
   position: relative;
+  min-width: 0;
 }
 
 .admin-clearable-field > input,
@@ -137,6 +138,8 @@
 }
 
 .admin-clearable-field > input[type="date"] {
+  min-width: 0;
+  max-width: 100%;
   padding-right: 84px;
 }
 
@@ -1005,6 +1008,14 @@
 
   .admin-editor-preview {
     height: min(38vh, 300px);
+  }
+
+  .admin-clearable-field > input[type="date"] {
+    padding-right: 52px;
+  }
+
+  .admin-photo-editor .admin-clear-field-button.is-before-native-action {
+    right: 4px;
   }
 }
 

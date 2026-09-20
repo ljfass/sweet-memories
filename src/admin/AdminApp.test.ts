@@ -349,6 +349,21 @@ describe('AdminApp integration', () => {
     expect(dateRule).toContain('font-variant-numeric: tabular-nums')
   })
 
+  it('keeps the captured-date field inside the mobile editor', () => {
+    expect(adminCss).toMatch(
+      /\.admin-clearable-field\s*\{[^}]*min-width:\s*0;/s,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-clearable-field > input\[type="date"\]\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-clearable-field > input\[type="date"\]\s*\{[^}]*padding-right:\s*52px/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor \.admin-clear-field-button\.is-before-native-action\s*\{[^}]*right:\s*4px/,
+    )
+  })
+
   it('keeps mobile toolbar and editor controls at least 44px', () => {
     expect(adminCss).toMatch(
       /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-library-actions \.admin-primary-button,[\s\S]*\.admin-library-actions \.admin-secondary-button\s*\{[^}]*min-height:\s*44px/,
