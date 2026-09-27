@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { useBabyConfig } from '../composables/useBabyConfig'
 import AgeCounter from './AgeCounter.vue'
 
-const birthDate = new Date('2025-10-09T08:55:00')
+const { birthDate } = useBabyConfig()
 </script>
 
 <template>

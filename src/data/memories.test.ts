@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import babyConfig from '../config/baby.json'
+import { parseBabyConfig } from '../composables/useBabyConfig'
+import { calculateMonthAge } from '../utils/calculateMonthAge'
 import { audioSources, memories, videoPosterUrl, videoUrl } from './memories'
 
 describe('album data', () => {
@@ -37,6 +40,19 @@ describe('album data', () => {
       }
       expect(memory.sources.fallback).toContain('photo-')
     }
+  })
+
+  it('keeps captured dates canonical, ascending, and on or after the birth date', () => {
+    // parsePublicPhotos enforces this for API data; nothing enforces it for the
+    // hand-written static fixtures, so pin it here.
+    const { birthDate } = parseBabyConfig(babyConfig)
+    const capturedDates = memories.map(({ capturedDate }) => capturedDate)
+
+    for (const capturedDate of capturedDates) {
+      expect(capturedDate).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(calculateMonthAge(birthDate, capturedDate)).not.toBeNull()
+    }
+    expect(capturedDates).toEqual([...capturedDates].sort())
   })
 
   it('maps optimized video and audio delivery assets', () => {

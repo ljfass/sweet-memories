@@ -110,7 +110,7 @@ const { memories, status: photoStatus, retry: retryPhotos } = usePublicMemories(
 }
 
 .public-album.is-loading {
-  min-height: 780px;
+  min-height: 830px;
 }
 
 .public-album.is-error {
@@ -181,13 +181,13 @@ const { memories, status: photoStatus, retry: retryPhotos } = usePublicMemories(
 
 @media (max-width: 960px) {
   .public-album.is-loading {
-    min-height: 1120px;
+    min-height: 1195px;
   }
 }
 
 @media (max-width: 768px) {
   .public-album.is-loading {
-    min-height: 1960px;
+    min-height: 2080px;
   }
 }
 </style>

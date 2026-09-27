@@ -117,7 +117,7 @@ button {
 .video-section {
   position: relative;
   z-index: 2;
-  width: min(90%, 800px);
+  width: min(90%, 420px);
   margin: 40px auto 10px;
   text-align: center;
 }
@@ -152,9 +152,14 @@ button {
     box-shadow 1s ease;
 }
 
+/* The clip and its poster are both portrait; aspect-ratio is load-bearing
+   because preload="none" means no metadata to size the element from. */
 .video-frame video {
+  display: block;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  max-width: 360px;
+  margin-inline: auto;
+  aspect-ratio: 9 / 16;
   border-radius: 4px;
   outline: none;
   background: var(--media-bg);
@@ -291,6 +296,18 @@ button {
   font-size: 1.25rem;
   font-weight: 700;
   line-height: 1.4;
+  text-align: center;
+  transition: color 1s ease;
+}
+
+/* .polaroid sets no text-align, so this has to center itself like .caption. */
+.photo-age {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted-color);
+  font-size: 0.95rem;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
   text-align: center;
   transition: color 1s ease;
 }
@@ -511,6 +528,7 @@ button {
 
   .video-section {
     width: calc(100% - 32px);
+    max-width: 420px;
     margin-top: 24px;
   }
 

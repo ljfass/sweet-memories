@@ -15,7 +15,9 @@ const age = useAgeCounter(props.birthDate)
   >
     来到这个美丽世界已经
     <br>
-    <strong>{{ age.years }}</strong> 年
+    <template v-if="age.years > 0">
+      <strong>{{ age.years }}</strong> 年
+    </template>
     <strong>{{ age.days }}</strong> 天
     <strong>{{ age.hours }}</strong> 小时
     <strong>{{ age.minutes }}</strong> 分

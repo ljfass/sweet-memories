@@ -291,6 +291,7 @@ export function mapPublicPhoto(value: unknown): Memory {
     id,
     caption: readBoundedText(value, 'title', 120),
     alt: readBoundedText(value, 'alt', 500),
+    capturedDate,
     transform: parseTransform(Reflect.get(value, 'transform')),
     sources: parseSources(Reflect.get(value, 'sources'), id),
   }
@@ -303,17 +304,12 @@ export function parsePublicPhotos(value: unknown): readonly Memory[] {
   const photos = value.map(mapPublicPhoto)
   const ids = new Set<string>()
   let previousDate = ''
-  for (const [index, photo] of photos.entries()) {
-    const source = value[index]
-    if (!isRecord(source)) {
-      throw invalidData()
-    }
-    const capturedDate = readBoundedText(source, 'capturedDate', 10)
-    if (ids.has(photo.id) || (previousDate !== '' && capturedDate < previousDate)) {
+  for (const photo of photos) {
+    if (ids.has(photo.id) || (previousDate !== '' && photo.capturedDate < previousDate)) {
       throw invalidData()
     }
     ids.add(photo.id)
-    previousDate = capturedDate
+    previousDate = photo.capturedDate
   }
   return Object.freeze(photos)
 }

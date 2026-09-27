@@ -68,10 +68,9 @@ async function renderPhotos() {
 async function renderPoster() {
   await sharp(POSTER_OUTPUT.sourcePath)
     .rotate()
-    .resize(POSTER_OUTPUT.width, POSTER_OUTPUT.height, {
-      fit: 'contain',
-      background: { r: 0, g: 0, b: 0, alpha: 1 },
-    })
+    // Crop rather than pad: letterboxing here baked black bars into the poster
+    // pixels, which no amount of CSS could undo.
+    .resize(POSTER_OUTPUT.width, POSTER_OUTPUT.height, { fit: 'cover' })
     .jpeg({ quality: 78, mozjpeg: true })
     .toFile(POSTER_OUTPUT.outputPath)
 }
@@ -124,8 +123,11 @@ async function renderVideo() {
 
   const candidatePath = path.join(OUTPUT_DIR, '.memory-h264-candidate.mp4')
   const remuxPath = path.join(OUTPUT_DIR, '.memory-faststart-remux.mp4')
+  // Cap the long edge at 1280 and the short edge at 720, whichever way the
+  // source is oriented. A fixed 1280x720 box squeezes a portrait clip into
+  // 720x720 and throws away most of its horizontal resolution.
   const scaleFilter =
-    "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+    "scale=w='if(gt(iw,ih),min(1280,iw),min(720,iw))':h='if(gt(iw,ih),min(720,ih),min(1280,ih))':force_original_aspect_ratio=decrease:force_divisible_by=2"
 
   await run(ffmpegPath, [
     '-y',
@@ -143,7 +145,7 @@ async function renderVideo() {
     '-preset',
     'medium',
     '-crf',
-    '23',
+    '25',
     '-pix_fmt',
     'yuv420p',
     '-c:a',

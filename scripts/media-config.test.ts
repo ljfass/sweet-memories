@@ -22,8 +22,8 @@ describe('media config', () => {
   it('defines the poster, deferred audio sources, and video output', () => {
     expect(POSTER_OUTPUT).toMatchObject({
       filename: 'video-poster.jpg',
-      width: 1280,
-      height: 720,
+      width: 720,
+      height: 1280,
     })
     expect(AUDIO_OUTPUTS.map((output) => output.filename)).toEqual([
       'lullaby.m4a',

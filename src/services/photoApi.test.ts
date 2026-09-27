@@ -64,6 +64,7 @@ describe('public photo API', () => {
       id: 'photo-id',
       caption: '满月啦',
       alt: '爸爸妈妈抱着宝宝庆祝满月',
+      capturedDate: '2026-02-03',
       sources: {
         avif: '/media/photo-id/320.avif 320w, /media/photo-id/640.avif 640w',
         webp: '/media/photo-id/320.webp 320w, /media/photo-id/640.webp 640w',

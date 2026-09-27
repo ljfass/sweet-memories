@@ -30,6 +30,7 @@ const apiMemory: Memory = {
   id: 'api-photo',
   caption: '新的成长瞬间',
   alt: '宝宝在公园里开心地笑',
+  capturedDate: '2026-05-20',
   sources: {
     avif: '/media/api-photo/320.avif 320w',
     webp: '/media/api-photo/320.webp 320w',

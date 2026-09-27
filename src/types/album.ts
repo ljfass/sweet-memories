@@ -25,6 +25,7 @@ export interface Memory {
   id: string
   caption: string
   alt: string
+  capturedDate: string
   sources: ResponsiveImageSources
   transform: MemoryTransform
 }

@@ -44,8 +44,8 @@ export const POSTER_OUTPUT = Object.freeze({
   filename: 'video-poster.jpg',
   sourcePath: path.join(SOURCE_IMAGE_DIR, '7777.jpg'),
   outputPath: path.join(OUTPUT_DIR, 'video-poster.jpg'),
-  width: 1280,
-  height: 720,
+  width: 720,
+  height: 1280,
   format: 'jpeg',
   maxBytes: 400 * KB,
 })
