@@ -1005,7 +1005,15 @@
   }
 
   .admin-photo-editor-header {
+    position: sticky;
+    z-index: 2;
+    top: 0;
     grid-template-columns: 44px 1fr 44px;
+    margin: -18px -16px 16px;
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px;
+    border-bottom: 1px solid var(--admin-border);
+    background: var(--admin-paper);
+    box-shadow: 0 4px 12px rgb(35 39 42 / 8%);
   }
 
   .admin-photo-editor .admin-icon-button,
