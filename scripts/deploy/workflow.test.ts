@@ -217,7 +217,10 @@ describe('production deployment workflow', () => {
     expect(stepIndex(steps, 'upload-api')).toBeLessThan(stepIndex(steps, 'upload-frontend'))
     expect(stepIndex(steps, 'activate-api')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
     expect(uploadApi).toBe(
-      'timeout 240s scp "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"',
+      'timeout 240s scp -O "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"',
+    )
+    expect(uploadFrontend.run).toBe(
+      'timeout 240s scp -O "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_FRONTEND_ARCHIVE"',
     )
     expect(activateApi.run).toContain(
       'sudo /usr/local/sbin/manage-sweet-memories-api activate "$GITHUB_SHA" "$REMOTE_API_ARCHIVE"',

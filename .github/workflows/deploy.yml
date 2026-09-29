@@ -253,7 +253,7 @@ jobs:
       - name: 上传 API 发布包
         id: upload-api
         timeout-minutes: 5
-        run: timeout 240s scp "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"
+        run: timeout 240s scp -O "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"
 
       - name: 原子启用 API
         id: activate-api
@@ -332,7 +332,7 @@ jobs:
           (steps.read-album-mode.outputs.mode == 'static' ||
           steps.activate-legacy.outcome == 'success') }}
         timeout-minutes: 5
-        run: timeout 240s scp "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_FRONTEND_ARCHIVE"
+        run: timeout 240s scp -O "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_FRONTEND_ARCHIVE"
 
       - name: 原子启用前端
         id: activate-frontend
