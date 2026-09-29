@@ -328,7 +328,10 @@ describe('AdminApp integration', () => {
       /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor\s*\{[^}]*position:\s*fixed[^}]*height:\s*100dvh/,
     )
     expect(adminCss).toMatch(
-      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor-header\s*\{[^}]*position:\s*sticky;[^}]*z-index:\s*2;[^}]*top:\s*0;[^}]*padding:\s*calc\(12px \+ env\(safe-area-inset-top, 0px\)\) 16px 12px;[^}]*background:\s*var\(--admin-paper\);/,
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor\s*\{[^}]*padding:\s*0 16px calc\(28px \+ env\(safe-area-inset-bottom\)\);/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor-header\s*\{[^}]*position:\s*sticky;[^}]*z-index:\s*2;[^}]*top:\s*0;[^}]*margin:\s*0 -16px 16px;[^}]*padding:\s*calc\(12px \+ env\(safe-area-inset-top, 0px\)\) 16px 12px;[^}]*background:\s*var\(--admin-paper\);/,
     )
     expect(adminCss).toContain('@media (prefers-reduced-motion: reduce)')
   })
