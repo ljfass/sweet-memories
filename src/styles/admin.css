@@ -397,6 +397,14 @@
   font-size: 0.9rem;
 }
 
+.admin-library-refresh-message {
+  margin: -8px 0 18px;
+  color: #a32943;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .admin-upload-queue {
   margin-bottom: 24px;
   border-block: 1px solid var(--admin-border);
@@ -936,16 +944,42 @@
   }
 
   .admin-library-actions {
-    position: sticky;
-    z-index: 3;
-    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    position: static;
     justify-content: stretch;
     margin: 12px 0 18px;
     padding: 8px;
     border: 1px solid #d5dad5;
     border-radius: 6px;
     background: rgb(255 255 255 / 96%);
-    box-shadow: 0 10px 30px rgb(37 40 44 / 12%);
+  }
+
+  .admin-mobile-floating-actions {
+    position: fixed;
+    z-index: 45;
+    top: calc(12px + env(safe-area-inset-top, 0px));
+    right: 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    width: min(196px, calc(100vw - 24px));
+    padding: 5px;
+    border: 1px solid #d5dad5;
+    border-radius: 999px;
+    background: rgb(255 253 253 / 98%);
+    box-shadow: 0 8px 24px rgb(45 41 44 / 18%);
+    gap: 5px;
+  }
+
+  .admin-mobile-floating-actions .admin-primary-button,
+  .admin-mobile-floating-actions .admin-icon-button {
+    min-width: 0;
+    height: 40px;
+    min-height: 40px;
+    border-radius: 999px;
+  }
+
+  .admin-mobile-floating-actions .admin-icon-button {
+    width: 44px;
+    padding: 0;
   }
 
   .admin-library-actions .admin-primary-button,

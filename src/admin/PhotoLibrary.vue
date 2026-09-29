@@ -20,9 +20,12 @@ const emit = defineEmits<{
 const deleteCandidate = ref<AdminPhoto | null>(null)
 const deleteCandidateIndex = ref<number | null>(null)
 const libraryRoot = ref<HTMLElement | null>(null)
+const actionBar = ref<HTMLElement | null>(null)
 const editorReturnTarget = ref<HTMLElement | null>(null)
 const uploadInput = ref<HTMLInputElement | null>(null)
 const uploadSelectionMessage = ref('')
+const showFloatingActions = ref(false)
+let actionObserver: IntersectionObserver | null = null
 const mobileMedia = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
   ? window.matchMedia('(max-width: 720px)')
   : null
@@ -70,8 +73,17 @@ function updateViewport(event: MediaQueryListEvent): void {
 }
 
 onMounted(() => mobileMedia?.addEventListener('change', updateViewport))
+onMounted(() => {
+  if (typeof IntersectionObserver === 'undefined' || actionBar.value === null) return
+  actionObserver = new IntersectionObserver(([entry]) => {
+    showFloatingActions.value = isMobile.value && entry?.isIntersecting === false
+  })
+  actionObserver.observe(actionBar.value)
+})
 onBeforeUnmount(() => {
   mobileMedia?.removeEventListener('change', updateViewport)
+  actionObserver?.disconnect()
+  actionObserver = null
   if (isMobileEditorOpen.value) emit('mobile-modal-change', false)
   if (isAnyPhotoModalOpen.value) emit('modal-change', false)
 })
@@ -81,6 +93,10 @@ watch(isMobileEditorOpen, async (open) => {
   if (!open) return
   await nextTick()
   libraryRoot.value?.querySelector<HTMLElement>('.admin-photo-editor')?.focus()
+})
+
+watch(isMobile, (mobile) => {
+  if (!mobile) showFloatingActions.value = false
 })
 
 watch(isAnyPhotoModalOpen, (open) => emit('modal-change', open))
@@ -95,6 +111,11 @@ function capturedDateLabel(value: string | null): string {
 
 function openPhotoPicker(): void {
   uploadInput.value?.click()
+}
+
+function refreshPhotos(): void {
+  if (props.library.isRefreshing.value) return
+  void props.library.refresh()
 }
 
 function addSelectedFiles(event: Event): void {
@@ -202,7 +223,9 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
       :aria-hidden="isDeleteDialogOpen ? 'true' : undefined"
     >
       <div
+        ref="actionBar"
         class="admin-library-actions"
+        :aria-busy="library.isRefreshing.value ? 'true' : undefined"
         :inert="isMobileEditorOpen"
         :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
       >
@@ -235,7 +258,9 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
           class="admin-secondary-button"
           type="button"
           data-refresh
-          @click="library.refresh"
+          :disabled="library.isRefreshing.value"
+          :aria-label="library.isRefreshing.value ? '正在刷新照片' : '刷新照片列表'"
+          @click="refreshPhotos"
         >
           <RefreshCw
             :size="18"
@@ -244,6 +269,14 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
           刷新
         </button>
       </div>
+
+      <p
+        v-if="library.messageFor('library') !== '' && library.status.value === 'ready'"
+        class="admin-library-refresh-message"
+        role="alert"
+      >
+        {{ library.messageFor('library') }}
+      </p>
 
       <p
         v-if="uploadSelectionMessage !== ''"
@@ -271,7 +304,7 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
 
       <!-- 萌趣治愈的宝宝时光相册加载动效 -->
       <div
-        v-if="library.status.value === 'loading'"
+        v-if="library.status.value === 'loading' && library.photos.value.length === 0"
         class="baby-loading-container"
         role="status"
         aria-live="polite"
@@ -372,7 +405,7 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
         <button
           class="admin-secondary-button"
           type="button"
-          @click="library.refresh"
+          @click="refreshPhotos"
         >
           重试
         </button>
@@ -482,6 +515,44 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
           选择一张照片进行编辑
         </aside>
       </div>
+    </div>
+
+    <div
+      v-if="showFloatingActions"
+      class="admin-mobile-floating-actions"
+      data-mobile-floating-actions
+      :inert="isAnyPhotoModalOpen"
+      :aria-hidden="isAnyPhotoModalOpen ? 'true' : 'false'"
+      :aria-busy="library.isRefreshing.value ? 'true' : undefined"
+    >
+      <button
+        class="admin-primary-button admin-upload-button"
+        type="button"
+        data-upload
+        :disabled="library.uploadsDisabled.value"
+        title="上传照片"
+        @click="openPhotoPicker"
+      >
+        <Upload
+          :size="18"
+          aria-hidden="true"
+        />
+        上传
+      </button>
+      <button
+        class="admin-icon-button"
+        type="button"
+        data-refresh
+        :disabled="library.isRefreshing.value"
+        aria-label="刷新照片"
+        title="刷新照片"
+        @click="refreshPhotos"
+      >
+        <RefreshCw
+          :size="18"
+          aria-hidden="true"
+        />
+      </button>
     </div>
 
     <DeletePhotoDialog

@@ -333,6 +333,15 @@ describe('AdminApp integration', () => {
     expect(adminCss).toMatch(
       /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor-header\s*\{[^}]*position:\s*sticky;[^}]*z-index:\s*2;[^}]*top:\s*0;[^}]*margin:\s*0 -16px 16px;[^}]*padding:\s*calc\(12px \+ env\(safe-area-inset-top, 0px\)\) 16px 12px;[^}]*background:\s*var\(--admin-paper\);/,
     )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-mobile-floating-actions\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*45;[^}]*top:\s*calc\(12px \+ env\(safe-area-inset-top, 0px\)\);[^}]*right:\s*12px;[^}]*background:\s*rgb\(255 253 253 \/ 98%\);/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-mobile-floating-actions\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) 44px;/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-library-actions\s*\{[^}]*position:\s*static;/,
+    )
     expect(adminCss).toContain('@media (prefers-reduced-motion: reduce)')
   })
 

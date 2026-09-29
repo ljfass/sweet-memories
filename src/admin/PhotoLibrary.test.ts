@@ -61,6 +61,7 @@ function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState 
   const selectedId = ref<string | null>(null)
   return {
     photos: ref([photo]), status: ref('ready'), selectedId,
+    isRefreshing: ref(false),
     isMigrationPending: computed(() => false), uploadsDisabled: computed(() => false),
     load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined),
     select: vi.fn((id) => { selectedId.value = id }), draftFor: vi.fn(() => draft), updateDraft: vi.fn(),
@@ -70,6 +71,33 @@ function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState 
     save: vi.fn(async () => undefined), loadLatest: vi.fn(async () => undefined),
     remove: vi.fn(async () => true), addUploadedPhoto: vi.fn(),
     ...overrides,
+  }
+}
+
+function installIntersectionObserver(): {
+  readonly observe: ReturnType<typeof vi.fn>
+  readonly disconnect: ReturnType<typeof vi.fn>
+  readonly setIntersecting: (isIntersecting: boolean) => void
+} {
+  let callback: IntersectionObserverCallback | undefined
+  const observe = vi.fn()
+  const disconnect = vi.fn()
+  vi.stubGlobal('IntersectionObserver', class {
+    readonly unobserve = vi.fn()
+
+    constructor(nextCallback: IntersectionObserverCallback) {
+      callback = nextCallback
+    }
+
+    observe = observe
+    disconnect = disconnect
+  })
+  return {
+    observe,
+    disconnect,
+    setIntersecting: (isIntersecting) => callback?.([
+      { isIntersecting } as IntersectionObserverEntry,
+    ], {} as IntersectionObserver),
   }
 }
 
@@ -135,6 +163,53 @@ afterEach(() => {
 })
 
 describe('PhotoLibrary', () => {
+  it('shows the mobile floating actions only after the original actions leave the viewport', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const state = library()
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    expect(wrapper.find('[data-mobile-floating-actions]').exists()).toBe(false)
+    observer.setIntersecting(false)
+    await nextTick()
+
+    expect(wrapper.get('[data-mobile-floating-actions]').attributes('aria-hidden')).toBe('false')
+    expect(wrapper.get('[data-mobile-floating-actions] [data-upload]').text()).toContain('上传')
+    expect(wrapper.get('[data-mobile-floating-actions] [data-refresh]').attributes('aria-label'))
+      .toBe('刷新照片')
+    expect(observer.observe).toHaveBeenCalledTimes(1)
+
+    observer.setIntersecting(true)
+    await nextTick()
+    expect(wrapper.find('[data-mobile-floating-actions]').exists()).toBe(false)
+
+    wrapper.unmount()
+    expect(observer.disconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the same refresh action for the floating and original controls', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const state = library()
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    await wrapper.get('[data-refresh]').trigger('click')
+    observer.setIntersecting(false)
+    await nextTick()
+    await wrapper.get('[data-mobile-floating-actions] [data-refresh]').trigger('click')
+
+    expect(state.refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the photo grid mounted while an in-place refresh is running', () => {
+    const state = library({ status: ref('loading'), isRefreshing: ref(true) })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    expect(wrapper.find('.admin-library-layout').exists()).toBe(true)
+    expect(wrapper.find('.admin-photo-card').exists()).toBe(true)
+    expect(wrapper.find('.baby-loading-container').exists()).toBe(false)
+  })
+
   it('opens a bounded photo picker and passes selected File objects to the real queue', async () => {
     const state = uploadQueue()
     const wrapper = mount(PhotoLibrary, { props: { library: library(), uploadQueue: state } })
