@@ -52,6 +52,58 @@ function deferred<T>(): {
 }
 
 describe('usePhotoLibrary', () => {
+  it('keeps the current snapshot and exposes a separate refresh state while refreshing', async () => {
+    const pending = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => pending.promise)
+
+    const refreshing = library.refresh()
+
+    expect(library.isRefreshing.value).toBe(true)
+    expect(library.status.value).toBe('ready')
+    expect(library.photos.value).toHaveLength(1)
+
+    pending.resolve([photo({ title: '刷新后的照片', version: 2 })])
+    await refreshing
+
+    expect(library.isRefreshing.value).toBe(false)
+    expect(library.status.value).toBe('ready')
+    expect(library.photos.value[0]).toMatchObject({ title: '刷新后的照片', version: 2 })
+  })
+
+  it('does not start a second refresh while the first refresh is pending', async () => {
+    const pending = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => pending.promise)
+
+    const first = library.refresh()
+    const second = library.refresh()
+
+    expect(api.listPhotos).toHaveBeenCalledTimes(2)
+    expect(library.isRefreshing.value).toBe(true)
+    pending.resolve([photo()])
+    await Promise.all([first, second])
+    expect(library.isRefreshing.value).toBe(false)
+  })
+
+  it('keeps the existing photos and ready status when an in-place refresh fails', async () => {
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    vi.mocked(api.listPhotos).mockRejectedValueOnce(new AdminApiError('unavailable', 'private'))
+
+    await library.refresh()
+
+    expect(library.status.value).toBe('ready')
+    expect(library.photos.value).toHaveLength(1)
+    expect(library.messageFor('library')).toBe('暂时无法加载照片，请稍后重试')
+    expect(library.isRefreshing.value).toBe(false)
+  })
+
   it('keeps independent drafts in memory and replaces the snapshot only after save succeeds', async () => {
     const api = fakeApi()
     const library = usePhotoLibrary(api, ref('csrf-token'))

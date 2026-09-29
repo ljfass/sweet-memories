@@ -124,6 +124,7 @@ export interface UploadQueueState {
 export interface PhotoLibraryState {
   readonly photos: Ref<readonly AdminPhoto[]>
   readonly status: Ref<'idle' | 'loading' | 'ready' | 'error'>
+  readonly isRefreshing: Readonly<Ref<boolean>>
   readonly selectedId: Ref<string | null>
   readonly isMigrationPending: ComputedRef<boolean>
   readonly uploadsDisabled: ComputedRef<boolean>

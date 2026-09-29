@@ -59,6 +59,7 @@ export function usePhotoLibrary(
 ): PhotoLibraryState {
   const photos = ref<readonly AdminPhoto[]>([])
   const status = ref<PhotoLibraryState['status']['value']>('idle')
+  const isRefreshing = ref(false)
   const selectedId = ref<string | null>(null)
   const drafts = reactive(new Map<string, PhotoDraft>())
   const draftBaseVersions = reactive(new Map<string, number>())
@@ -72,6 +73,7 @@ export function usePhotoLibrary(
   const uploadsDisabled = computed(() => isMigrationPending.value)
   let loadGeneration = 0
   let uploadRevision = 0
+  let refreshPromise: Promise<void> | null = null
   const localUploads = new Map<string, { readonly photo: AdminPhoto; readonly revision: number }>()
 
   function setError(id: string, text: string): void {
@@ -140,10 +142,11 @@ export function usePhotoLibrary(
     }
   }
 
-  async function load(): Promise<void> {
+  async function load(preserveContent = false): Promise<void> {
     const generation = ++loadGeneration
     const uploadsAtRequestStart = uploadRevision
-    status.value = 'loading'
+    messages.delete('library')
+    if (!preserveContent) status.value = 'loading'
     try {
       const nextPhotos = await api.listPhotos()
       if (generation !== loadGeneration) return
@@ -151,13 +154,21 @@ export function usePhotoLibrary(
       status.value = 'ready'
     } catch (error) {
       if (generation !== loadGeneration) return
-      status.value = 'error'
+      if (!preserveContent) status.value = 'error'
       setError('library', safeActionMessage(error, 'load'))
     }
   }
 
-  async function refresh(): Promise<void> {
-    await load()
+  function refresh(): Promise<void> {
+    if (refreshPromise !== null) return refreshPromise
+    if (status.value !== 'ready') return load()
+
+    isRefreshing.value = true
+    refreshPromise = load(true).finally(() => {
+      isRefreshing.value = false
+      refreshPromise = null
+    })
+    return refreshPromise
   }
 
   function select(id: string | null): void {
@@ -324,7 +335,7 @@ export function usePhotoLibrary(
   }
 
   return {
-    photos, status, selectedId, isMigrationPending, uploadsDisabled,
+    photos, status, isRefreshing, selectedId, isMigrationPending, uploadsDisabled,
     load, refresh, select, draftFor, updateDraft,
     isDirty: (id) => dirty.has(id),
     hasConflict: (id) => conflicts.has(id),
