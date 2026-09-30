@@ -518,7 +518,7 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
     </div>
 
     <div
-      v-if="showFloatingActions"
+      v-if="showFloatingActions && !isAnyPhotoModalOpen"
       class="admin-mobile-floating-actions"
       data-mobile-floating-actions
       :inert="isAnyPhotoModalOpen"

@@ -201,6 +201,25 @@ describe('PhotoLibrary', () => {
     expect(state.refresh).toHaveBeenCalledTimes(2)
   })
 
+  it('hides the floating actions while the mobile photo editor is open', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const wrapper = mount(PhotoLibrary, { props: { library: library() } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+    expect(wrapper.find('[data-mobile-floating-actions]').exists()).toBe(true)
+
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+    expect(wrapper.get('.admin-photo-editor')).toBeDefined()
+    expect(wrapper.find('[data-mobile-floating-actions]').exists()).toBe(false)
+
+    await wrapper.get('[aria-label="返回照片库"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-mobile-floating-actions]').exists()).toBe(true)
+  })
+
   it('keeps the photo grid mounted while an in-place refresh is running', () => {
     const state = library({ status: ref('loading'), isRefreshing: ref(true) })
     const wrapper = mount(PhotoLibrary, { props: { library: state } })
