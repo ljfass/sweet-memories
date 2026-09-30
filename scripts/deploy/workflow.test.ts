@@ -233,7 +233,7 @@ describe('production deployment workflow', () => {
     expect(stepIndex(steps, 'package-api')).toBeLessThan(stepIndex(steps, 'package-frontend'))
     expect(stepIndex(steps, 'upload-api')).toBeLessThan(stepIndex(steps, 'upload-frontend'))
     expect(stepIndex(steps, 'activate-api')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
-    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(12)
+    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(20)
     expect(uploadFrontend['timeout-minutes']).toBe(8)
     expect(uploadApi).toContain('archive="$RUNNER_TEMP/api-release.tar.gz"')
     expect(uploadApi).toContain('$REMOTE_API_ARCHIVE')
@@ -253,6 +253,7 @@ describe('production deployment workflow', () => {
     expect(uploadCommands).toContain('sha256sum')
     expect(uploadCommands).toContain('cat "$chunk_dir"/chunk-* > "$upload"')
     expect(uploadCommands).toContain('ln --')
+    expect(uploadCommands.match(/if ! ln --/gu)).toHaveLength(2)
     expect(uploadCommands).toContain('trap')
     expect(uploadCommands).not.toContain('dd ')
     expect(uploadCommands).not.toContain('scp ')
@@ -580,7 +581,7 @@ exec "$@"
       ['test-deploy', 5], ['test-monitor', 5], ['build-frontend', 5],
       ['build-api', 5], ['package-api', 5], ['package-frontend', 2],
       ['validate-config', 1], ['configure-ssh', 1], ['validate-live', 3],
-      ['upload-api', 12], ['activate-api', 5], ['read-album-mode', 1],
+      ['upload-api', 20], ['activate-api', 5], ['read-album-mode', 1],
       ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 8],
       ['activate-frontend', 5], ['health-check', 8], ['enable-uploads', 3],
       ['disable-uploads', 3], ['rollback-frontend', 5], ['rollback-api', 11],
