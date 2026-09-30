@@ -252,8 +252,15 @@ jobs:
 
       - name: 上传 API 发布包
         id: upload-api
-        timeout-minutes: 11
-        run: timeout 600s scp -O "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/api-release.tar.gz"
+          archive_size="$(stat -c %s -- "$archive")"
+          timeout 240s ssh production \
+            "umask 077; dd of='$REMOTE_API_ARCHIVE' iflag=fullblock oflag=excl status=none && test \"\$(stat -c %s -- '$REMOTE_API_ARCHIVE')\" -eq '$archive_size'" \
+            < "$archive"
 
       - name: 原子启用 API
         id: activate-api
@@ -332,7 +339,14 @@ jobs:
           (steps.read-album-mode.outputs.mode == 'static' ||
           steps.activate-legacy.outcome == 'success') }}
         timeout-minutes: 5
-        run: timeout 240s scp -O "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_FRONTEND_ARCHIVE"
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/release.tar.gz"
+          archive_size="$(stat -c %s -- "$archive")"
+          timeout 240s ssh production \
+            "umask 077; dd of='$REMOTE_FRONTEND_ARCHIVE' iflag=fullblock oflag=excl status=none && test \"\$(stat -c %s -- '$REMOTE_FRONTEND_ARCHIVE')\" -eq '$archive_size'" \
+            < "$archive"
 
       - name: 原子启用前端
         id: activate-frontend

@@ -212,17 +212,21 @@ describe('production deployment workflow', () => {
     const uploadApi = stepById(steps, 'upload-api').run ?? ''
     const activateApi = stepById(steps, 'activate-api')
     const uploadFrontend = stepById(steps, 'upload-frontend')
+    const uploadCommands = `${uploadApi}\n${uploadFrontend.run ?? ''}`
 
     expect(stepIndex(steps, 'package-api')).toBeLessThan(stepIndex(steps, 'package-frontend'))
     expect(stepIndex(steps, 'upload-api')).toBeLessThan(stepIndex(steps, 'upload-frontend'))
     expect(stepIndex(steps, 'activate-api')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
-    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(11)
-    expect(uploadApi).toBe(
-      'timeout 600s scp -O "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"',
-    )
-    expect(uploadFrontend.run).toBe(
-      'timeout 240s scp -O "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_FRONTEND_ARCHIVE"',
-    )
+    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(5)
+    expect(uploadApi).toContain('archive="$RUNNER_TEMP/api-release.tar.gz"')
+    expect(uploadApi).toContain('timeout 240s ssh production')
+    expect(uploadApi).toContain("dd of='$REMOTE_API_ARCHIVE'")
+    expect(uploadFrontend.run).toContain('archive="$RUNNER_TEMP/release.tar.gz"')
+    expect(uploadFrontend.run).toContain('timeout 240s ssh production')
+    expect(uploadFrontend.run).toContain("dd of='$REMOTE_FRONTEND_ARCHIVE'")
+    expect(uploadCommands).toContain('oflag=excl')
+    expect(uploadCommands).toContain('stat -c %s')
+    expect(uploadCommands).not.toContain('scp ')
     expect(activateApi.run).toContain(
       'sudo /usr/local/sbin/manage-sweet-memories-api activate "$GITHUB_SHA" "$REMOTE_API_ARCHIVE"',
     )
@@ -495,7 +499,7 @@ describe('production deployment workflow', () => {
       ['test-deploy', 5], ['test-monitor', 5], ['build-frontend', 5],
       ['build-api', 5], ['package-api', 5], ['package-frontend', 2],
       ['validate-config', 1], ['configure-ssh', 1], ['validate-live', 3],
-      ['upload-api', 11], ['activate-api', 5], ['read-album-mode', 1],
+      ['upload-api', 5], ['activate-api', 5], ['read-album-mode', 1],
       ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 5],
       ['activate-frontend', 5], ['health-check', 8], ['enable-uploads', 3],
       ['disable-uploads', 3], ['rollback-frontend', 5], ['rollback-api', 11],
