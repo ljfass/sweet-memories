@@ -40,7 +40,7 @@ function closeModal() {
     >
       来到这个美丽世界已经
 
-      <br />
+      <br>
       <template v-if="age.years > 0">
         <strong>{{ age.years }}</strong> 年
       </template>
@@ -49,7 +49,10 @@ function closeModal() {
       <strong>{{ age.seconds }}</strong> 秒
     </p>
 
-    <Baby3DModal :is-open="isModalOpen" @close="closeModal" />
+    <Baby3DModal
+      :is-open="isModalOpen"
+      @close="closeModal"
+    />
   </div>
 </template>
 

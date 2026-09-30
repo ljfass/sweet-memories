@@ -123,7 +123,9 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="polaroid-caption">
-              <h2 class="baby-title">我 1 岁啦！🎂</h2>
+              <h2 class="baby-title">
+                我 1 岁啦！🎂
+              </h2>
               <p class="baby-subtitle">
                 来到这个美丽世界的珍贵心动定格 · 3D 空间印记
               </p>
