@@ -17,7 +17,7 @@ jobs:
   deploy:
     name: 检查并部署
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 220
     environment:
       name: production
       url: ${{ vars.PRODUCTION_URL }}
@@ -257,7 +257,7 @@ jobs:
 
       - name: 分块上传 API 发布包
         id: upload-api
-        timeout-minutes: 20
+        timeout-minutes: 30
         shell: bash
         run: |
           set -euo pipefail
@@ -267,7 +267,7 @@ jobs:
           chunk_root="$(mktemp -d "$RUNNER_TEMP/api-release-chunks.XXXXXX")"
           chunk_dir="${REMOTE_API_ARCHIVE}.chunks"
           trap 'rm -rf -- "$chunk_root"' EXIT HUP INT TERM
-          split -b 1m -d -a 4 -- "$archive" "$chunk_root/chunk-"
+          split -b 512k -d -a 4 -- "$archive" "$chunk_root/chunk-"
           timeout 30s ssh production \
             "set -eu; umask 077; test ! -e '$REMOTE_API_ARCHIVE'; mkdir -m 700 -- '$chunk_dir'"
 
@@ -278,8 +278,8 @@ jobs:
             chunk_size="$(wc -c < "$chunk" | tr -d '[:space:]')"
             chunk_sha256="$(sha256sum "$chunk" | cut -d ' ' -f 1)"
             uploaded=false
-            for attempt in 1 2 3; do
-              if timeout 30s ssh production \
+            for attempt in 1 2 3 4 5; do
+              if timeout 60s ssh production \
                 "set -eu; final='$chunk_dir/$chunk_name'; expected_size='$chunk_size'; expected_sha256='$chunk_sha256'; if [ -f \"\$final\" ]; then actual_size=\$(wc -c < \"\$final\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$final\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; exit 0; fi; test ! -e \"\$final\"; upload=\$(mktemp \"\${final}.upload.XXXXXX\"); trap 'rm -f -- \"\$upload\"' EXIT HUP INT TERM; cat > \"\$upload\"; actual_size=\$(wc -c < \"\$upload\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$upload\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; chmod 600 \"\$upload\"; if ! ln -- \"\$upload\" \"\$final\" 2>/dev/null; then test -f \"\$final\"; test ! -L \"\$final\"; actual_size=\$(wc -c < \"\$final\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$final\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; fi; rm -f -- \"\$upload\"; trap - EXIT HUP INT TERM" \
                 < "$chunk"; then
                 uploaded=true
@@ -396,7 +396,7 @@ jobs:
           steps.prepare-photo-mode.outcome == 'success' &&
           (steps.read-album-mode.outputs.mode == 'static' ||
           steps.activate-legacy.outcome == 'success') }}
-        timeout-minutes: 8
+        timeout-minutes: 20
         shell: bash
         run: |
           set -euo pipefail
@@ -406,7 +406,7 @@ jobs:
           chunk_root="$(mktemp -d "$RUNNER_TEMP/frontend-release-chunks.XXXXXX")"
           chunk_dir="${REMOTE_FRONTEND_ARCHIVE}.chunks"
           trap 'rm -rf -- "$chunk_root"' EXIT HUP INT TERM
-          split -b 1m -d -a 4 -- "$archive" "$chunk_root/chunk-"
+          split -b 512k -d -a 4 -- "$archive" "$chunk_root/chunk-"
           timeout 30s ssh production \
             "set -eu; umask 077; test ! -e '$REMOTE_FRONTEND_ARCHIVE'; mkdir -m 700 -- '$chunk_dir'"
 
@@ -417,8 +417,8 @@ jobs:
             chunk_size="$(wc -c < "$chunk" | tr -d '[:space:]')"
             chunk_sha256="$(sha256sum "$chunk" | cut -d ' ' -f 1)"
             uploaded=false
-            for attempt in 1 2 3; do
-              if timeout 30s ssh production \
+            for attempt in 1 2 3 4 5; do
+              if timeout 60s ssh production \
                 "set -eu; final='$chunk_dir/$chunk_name'; expected_size='$chunk_size'; expected_sha256='$chunk_sha256'; if [ -f \"\$final\" ]; then actual_size=\$(wc -c < \"\$final\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$final\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; exit 0; fi; test ! -e \"\$final\"; upload=\$(mktemp \"\${final}.upload.XXXXXX\"); trap 'rm -f -- \"\$upload\"' EXIT HUP INT TERM; cat > \"\$upload\"; actual_size=\$(wc -c < \"\$upload\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$upload\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; chmod 600 \"\$upload\"; if ! ln -- \"\$upload\" \"\$final\" 2>/dev/null; then test -f \"\$final\"; test ! -L \"\$final\"; actual_size=\$(wc -c < \"\$final\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$final\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; fi; rm -f -- \"\$upload\"; trap - EXIT HUP INT TERM" \
                 < "$chunk"; then
                 uploaded=true

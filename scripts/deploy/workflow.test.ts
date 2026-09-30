@@ -233,16 +233,16 @@ describe('production deployment workflow', () => {
     expect(stepIndex(steps, 'package-api')).toBeLessThan(stepIndex(steps, 'package-frontend'))
     expect(stepIndex(steps, 'upload-api')).toBeLessThan(stepIndex(steps, 'upload-frontend'))
     expect(stepIndex(steps, 'activate-api')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
-    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(20)
-    expect(uploadFrontend['timeout-minutes']).toBe(8)
+    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(30)
+    expect(uploadFrontend['timeout-minutes']).toBe(20)
     expect(uploadApi).toContain('archive="$RUNNER_TEMP/api-release.tar.gz"')
     expect(uploadApi).toContain('$REMOTE_API_ARCHIVE')
     expect(uploadFrontend.run).toContain('archive="$RUNNER_TEMP/release.tar.gz"')
     expect(uploadFrontend.run).toContain('$REMOTE_FRONTEND_ARCHIVE')
-    expect(uploadCommands).toContain('split -b 1m -d -a 4')
+    expect(uploadCommands).toContain('split -b 512k -d -a 4')
     expect(uploadCommands).toContain('for chunk in "$chunk_root"/chunk-*')
-    expect(uploadCommands).toContain('for attempt in 1 2 3')
-    expect(uploadCommands).toContain('timeout 30s ssh production')
+    expect(uploadCommands).toContain('for attempt in 1 2 3 4 5')
+    expect(uploadCommands).toContain('timeout 60s ssh production')
     expect(uploadCommands).toContain('.upload.XXXXXX')
     expect(uploadCommands).toContain('.chunks')
     expect(uploadCommands).toContain('mktemp')
@@ -581,8 +581,8 @@ exec "$@"
       ['test-deploy', 5], ['test-monitor', 5], ['build-frontend', 5],
       ['build-api', 5], ['package-api', 5], ['package-frontend', 2],
       ['validate-config', 1], ['configure-ssh', 1], ['validate-live', 3],
-      ['upload-api', 20], ['activate-api', 5], ['read-album-mode', 1],
-      ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 8],
+      ['upload-api', 30], ['activate-api', 5], ['read-album-mode', 1],
+      ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 20],
       ['activate-frontend', 5], ['health-check', 8], ['enable-uploads', 3],
       ['disable-uploads', 3], ['rollback-frontend', 5], ['rollback-api', 11],
       ['archive-cleanup-frontend', 2], ['archive-cleanup-api', 2],
@@ -596,7 +596,7 @@ exec "$@"
     for (const [id, budget] of expectedBudgets) {
       expect(stepById(deploy.steps, id)['timeout-minutes']).toBe(budget)
     }
-    expect(deploy['timeout-minutes']).toBe(180)
+    expect(deploy['timeout-minutes']).toBe(220)
     expect(deploy['timeout-minutes']).toBeGreaterThan(total + 10)
   })
 
