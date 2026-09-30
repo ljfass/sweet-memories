@@ -216,8 +216,9 @@ describe('production deployment workflow', () => {
     expect(stepIndex(steps, 'package-api')).toBeLessThan(stepIndex(steps, 'package-frontend'))
     expect(stepIndex(steps, 'upload-api')).toBeLessThan(stepIndex(steps, 'upload-frontend'))
     expect(stepIndex(steps, 'activate-api')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
+    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(11)
     expect(uploadApi).toBe(
-      'timeout 240s scp -O "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"',
+      'timeout 600s scp -O "$RUNNER_TEMP/api-release.tar.gz" "production:$REMOTE_API_ARCHIVE"',
     )
     expect(uploadFrontend.run).toBe(
       'timeout 240s scp -O "$RUNNER_TEMP/release.tar.gz" "production:$REMOTE_FRONTEND_ARCHIVE"',
@@ -494,7 +495,7 @@ describe('production deployment workflow', () => {
       ['test-deploy', 5], ['test-monitor', 5], ['build-frontend', 5],
       ['build-api', 5], ['package-api', 5], ['package-frontend', 2],
       ['validate-config', 1], ['configure-ssh', 1], ['validate-live', 3],
-      ['upload-api', 5], ['activate-api', 5], ['read-album-mode', 1],
+      ['upload-api', 11], ['activate-api', 5], ['read-album-mode', 1],
       ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 5],
       ['activate-frontend', 5], ['health-check', 8], ['enable-uploads', 3],
       ['disable-uploads', 3], ['rollback-frontend', 5], ['rollback-api', 11],
