@@ -257,9 +257,9 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/api-release.tar.gz"
-          archive_size="$(stat -c %s -- "$archive")"
+          archive_size="$(wc -c < "$archive" | tr -d '[:space:]')"
           timeout 240s ssh production \
-            "umask 077; dd of='$REMOTE_API_ARCHIVE' iflag=fullblock oflag=excl status=none && test \"\$(stat -c %s -- '$REMOTE_API_ARCHIVE')\" -eq '$archive_size'" \
+            "set -eu; umask 077; upload=\$(mktemp '${REMOTE_API_ARCHIVE}.upload.XXXXXX'); trap 'rm -f -- \"\$upload\"' EXIT HUP INT TERM; cat > \"\$upload\"; actual_size=\$(wc -c < \"\$upload\" | tr -d '[:space:]'); test \"\$actual_size\" -eq '$archive_size'; chmod 600 \"\$upload\"; ln -- \"\$upload\" '$REMOTE_API_ARCHIVE'; rm -f -- \"\$upload\"; trap - EXIT HUP INT TERM" \
             < "$archive"
 
       - name: 原子启用 API
@@ -343,9 +343,9 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/release.tar.gz"
-          archive_size="$(stat -c %s -- "$archive")"
+          archive_size="$(wc -c < "$archive" | tr -d '[:space:]')"
           timeout 240s ssh production \
-            "umask 077; dd of='$REMOTE_FRONTEND_ARCHIVE' iflag=fullblock oflag=excl status=none && test \"\$(stat -c %s -- '$REMOTE_FRONTEND_ARCHIVE')\" -eq '$archive_size'" \
+            "set -eu; umask 077; upload=\$(mktemp '${REMOTE_FRONTEND_ARCHIVE}.upload.XXXXXX'); trap 'rm -f -- \"\$upload\"' EXIT HUP INT TERM; cat > \"\$upload\"; actual_size=\$(wc -c < \"\$upload\" | tr -d '[:space:]'); test \"\$actual_size\" -eq '$archive_size'; chmod 600 \"\$upload\"; ln -- \"\$upload\" '$REMOTE_FRONTEND_ARCHIVE'; rm -f -- \"\$upload\"; trap - EXIT HUP INT TERM" \
             < "$archive"
 
       - name: 原子启用前端
