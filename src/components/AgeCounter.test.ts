@@ -38,4 +38,12 @@ describe('AgeCounter', () => {
     expect(wrapper.text()).toContain('来到这个美丽世界已经')
     expect(wrapper.findAll('strong')).toHaveLength(4)
   })
+
+  it('opens the 3D memory modal on click', async () => {
+    const wrapper = mountAt('2026-09-27T21:03:40')
+
+    expect(document.body.querySelector('.baby-3d-backdrop')).toBeNull()
+    await wrapper.get('.age-counter').trigger('click')
+    expect(document.body.querySelector('.baby-3d-backdrop')).not.toBeNull()
+  })
 })
