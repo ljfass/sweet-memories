@@ -15,6 +15,7 @@ interface WorkflowStep {
   run?: string
   'timeout-minutes'?: number
   uses?: string
+  with?: Record<string, unknown>
 }
 
 interface DeployJob {
@@ -121,7 +122,7 @@ describe('production deployment workflow', () => {
     const workflow = loadWorkflow()
 
     expect(workflow.on).toEqual({ push: { tags: ['v*'] } })
-    expect(workflow.permissions).toEqual({ contents: 'read' })
+    expect(workflow.permissions).toEqual({ contents: 'write' })
     expect(workflow.concurrency).toEqual({
       group: 'sweet-memories-production',
       queue: 'max',
@@ -135,6 +136,7 @@ describe('production deployment workflow', () => {
 
   it('pins executable actions and the API package runner to reviewed versions', () => {
     const deploy = loadWorkflow().jobs.deploy
+    const checkout = stepById(deploy.steps, 'checkout')
     const actionRefs = deploy.steps
       .map((step) => step.uses)
       .filter((uses): uses is string => uses !== undefined)
@@ -147,6 +149,10 @@ describe('production deployment workflow', () => {
     for (const actionRef of actionRefs) {
       expect(actionRef).toMatch(/^[^@]+@[0-9a-f]{40}$/)
     }
+    expect(checkout.with).toMatchObject({
+      'fetch-depth': 0,
+      'persist-credentials': false,
+    })
   })
 
   it('installs and verifies HEIF tools before installing project dependencies', () => {
@@ -207,30 +213,57 @@ describe('production deployment workflow', () => {
     }
   })
 
-  it('uploads and activates the API before any frontend upload or activation', () => {
+  it('publishes immutable release assets for verified server-side downloads', () => {
     const steps = loadWorkflow().jobs.deploy.steps
+    const publish = stepById(steps, 'publish-release')
     const uploadApi = stepById(steps, 'upload-api').run ?? ''
     const activateApi = stepById(steps, 'activate-api')
     const uploadFrontend = stepById(steps, 'upload-frontend')
     const uploadCommands = `${uploadApi}\n${uploadFrontend.run ?? ''}`
 
     expect(stepIndex(steps, 'package-api')).toBeLessThan(stepIndex(steps, 'package-frontend'))
+    expect(stepIndex(steps, 'package-frontend')).toBeLessThan(stepIndex(steps, 'publish-release'))
+    expect(stepIndex(steps, 'publish-release')).toBeLessThan(stepIndex(steps, 'upload-api'))
     expect(stepIndex(steps, 'upload-api')).toBeLessThan(stepIndex(steps, 'upload-frontend'))
     expect(stepIndex(steps, 'activate-api')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
+    expect(publish.env?.GH_TOKEN).toBe('${{ github.token }}')
+    expect(publish.run).toContain('gh release create "$GITHUB_REF_NAME" --verify-tag')
+    expect(publish.run).toContain('gh release upload "$GITHUB_REF_NAME"')
+    expect(publish.run).toContain('gh release download "$GITHUB_REF_NAME"')
+    expect(publish.run).toContain('sweet-memories-api-${GITHUB_SHA}.tar.gz')
+    expect(publish.run).toContain('sweet-memories-frontend-${GITHUB_SHA}.tar.gz')
+    expect(publish.run).toContain('ln -- "$api_archive" "$publish_root/$api_name"')
+    expect(publish.run).toContain('ln -- "$frontend_archive" "$publish_root/$frontend_name"')
+    expect(publish.run).toContain(
+      'gh release upload "$GITHUB_REF_NAME" "$source_file"',
+    )
+    expect(publish.run).not.toContain('$source_file#$asset_name')
+    expect(publish.run).toContain('sha256sum')
+    expect(publish.run).not.toContain('--clobber')
+    expect(publish.run).toContain('>> "$GITHUB_OUTPUT"')
     expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(5)
-    expect(uploadApi).toContain('archive="$RUNNER_TEMP/api-release.tar.gz"')
     expect(uploadApi).toContain('timeout 240s ssh production')
     expect(uploadApi).toContain('$REMOTE_API_ARCHIVE')
-    expect(uploadFrontend.run).toContain('archive="$RUNNER_TEMP/release.tar.gz"')
     expect(uploadFrontend.run).toContain('timeout 240s ssh production')
     expect(uploadFrontend.run).toContain('$REMOTE_FRONTEND_ARCHIVE')
     expect(uploadCommands).toContain('.upload.XXXXXX')
     expect(uploadCommands).toContain('mktemp')
-    expect(uploadCommands).toContain('wc -c')
+    expect(uploadCommands).toContain("curl --fail --location --proto '=https'")
+    expect(uploadCommands).toContain('sha256sum')
     expect(uploadCommands).toContain('ln --')
     expect(uploadCommands).toContain('trap')
+    expect(stepById(steps, 'upload-api').env).toMatchObject({
+      RELEASE_URL: '${{ steps.publish-release.outputs.api_url }}',
+      RELEASE_SHA256: '${{ steps.publish-release.outputs.api_sha256 }}',
+    })
+    expect(uploadFrontend.env).toMatchObject({
+      RELEASE_URL: '${{ steps.publish-release.outputs.frontend_url }}',
+      RELEASE_SHA256: '${{ steps.publish-release.outputs.frontend_sha256 }}',
+    })
     expect(uploadCommands).not.toContain('dd ')
     expect(uploadCommands).not.toContain('scp ')
+    expect(uploadCommands).not.toContain('cat >')
+    expect(uploadCommands).not.toContain('< "$archive"')
     expect(activateApi.run).toContain(
       'sudo /usr/local/sbin/manage-sweet-memories-api activate "$GITHUB_SHA" "$REMOTE_API_ARCHIVE"',
     )
@@ -502,7 +535,8 @@ describe('production deployment workflow', () => {
       ['typecheck', 5], ['lint', 5], ['test', 7], ['test-api', 8],
       ['test-deploy', 5], ['test-monitor', 5], ['build-frontend', 5],
       ['build-api', 5], ['package-api', 5], ['package-frontend', 2],
-      ['validate-config', 1], ['configure-ssh', 1], ['validate-live', 3],
+      ['publish-release', 5], ['validate-config', 1], ['configure-ssh', 1],
+      ['validate-live', 3],
       ['upload-api', 5], ['activate-api', 5], ['read-album-mode', 1],
       ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 5],
       ['activate-frontend', 5], ['health-check', 8], ['enable-uploads', 3],

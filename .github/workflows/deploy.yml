@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: sweet-memories-production
@@ -32,6 +32,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: 验证提交已经进入 main
         id: validate-main
@@ -144,6 +145,18 @@ jobs:
           : "${ALIYUN_SSH_PORT:?缺少 ALIYUN_SSH_PORT}"
           : "${ALIYUN_USER:?缺少 ALIYUN_USER}"
           : "${PRODUCTION_URL:?缺少 PRODUCTION_URL}"
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'GITHUB_SHA 必须是 40 位小写十六进制字符。' >&2
+            exit 1
+          fi
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9][0-9A-Za-z.-]*$ ]]; then
+            echo '发布 Tag 不是安全的版本名称。' >&2
+            exit 1
+          fi
+          if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo 'GitHub 仓库名称无效。' >&2
+            exit 1
+          fi
           if [[ ! "$ALIYUN_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
             echo 'ALIYUN_HOST 只能包含字母、数字、点和连字符。' >&2
             exit 1
@@ -164,6 +177,68 @@ jobs:
             echo 'PRODUCTION_URL 必须是 HTTPS URL。' >&2
             exit 1
           fi
+
+      - name: 发布不可变构建包
+        id: publish-release
+        timeout-minutes: 5
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api_archive="$RUNNER_TEMP/api-release.tar.gz"
+          frontend_archive="$RUNNER_TEMP/release.tar.gz"
+          api_name="sweet-memories-api-${GITHUB_SHA}.tar.gz"
+          frontend_name="sweet-memories-frontend-${GITHUB_SHA}.tar.gz"
+          api_sha256="$(sha256sum "$api_archive" | cut -d ' ' -f 1)"
+          frontend_sha256="$(sha256sum "$frontend_archive" | cut -d ' ' -f 1)"
+          verification_root="$(mktemp -d "$RUNNER_TEMP/release-verification.XXXXXX")"
+          publish_root="$verification_root/publish"
+          trap 'rm -rf -- "$verification_root"' EXIT HUP INT TERM
+          mkdir -m 700 -- "$publish_root"
+          ln -- "$api_archive" "$publish_root/$api_name"
+          ln -- "$frontend_archive" "$publish_root/$frontend_name"
+
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "$GITHUB_REF_NAME" \
+              --notes "Automated production release for ${GITHUB_SHA}."
+          fi
+
+          ensure_asset() {
+            local source_file="$1"
+            local asset_name="$2"
+            local expected_sha256="$3"
+            local asset_root="$verification_root/verify-$asset_name"
+            local downloaded actual_sha256
+
+            if gh release view "$GITHUB_REF_NAME" --json assets \
+              --jq '.assets[].name' | grep -Fqx -- "$asset_name"; then
+              mkdir -m 700 -- "$asset_root"
+              gh release download "$GITHUB_REF_NAME" \
+                --pattern "$asset_name" --dir "$asset_root"
+              downloaded="$asset_root/$asset_name"
+              actual_sha256="$(sha256sum "$downloaded" | cut -d ' ' -f 1)"
+              if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+                echo "Release 资产已存在但内容不匹配：$asset_name" >&2
+                exit 1
+              fi
+              return
+            fi
+
+            gh release upload "$GITHUB_REF_NAME" "$source_file"
+          }
+
+          ensure_asset "$publish_root/$api_name" "$api_name" "$api_sha256"
+          ensure_asset "$publish_root/$frontend_name" "$frontend_name" "$frontend_sha256"
+
+          release_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          {
+            printf 'api_url=%s/%s\n' "$release_base" "$api_name"
+            printf 'api_sha256=%s\n' "$api_sha256"
+            printf 'frontend_url=%s/%s\n' "$release_base" "$frontend_name"
+            printf 'frontend_sha256=%s\n' "$frontend_sha256"
+          } >> "$GITHUB_OUTPUT"
 
       - name: 配置 SSH
         id: configure-ssh
@@ -250,17 +325,39 @@ jobs:
             exit 1
           fi
 
-      - name: 上传 API 发布包
+      - name: 服务器下载 API 发布包
         id: upload-api
         timeout-minutes: 5
         shell: bash
+        env:
+          RELEASE_URL: ${{ steps.publish-release.outputs.api_url }}
+          RELEASE_SHA256: ${{ steps.publish-release.outputs.api_sha256 }}
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/api-release.tar.gz"
-          archive_size="$(wc -c < "$archive" | tr -d '[:space:]')"
-          timeout 240s ssh production \
-            "set -eu; umask 077; upload=\$(mktemp '${REMOTE_API_ARCHIVE}.upload.XXXXXX'); trap 'rm -f -- \"\$upload\"' EXIT HUP INT TERM; cat > \"\$upload\"; actual_size=\$(wc -c < \"\$upload\" | tr -d '[:space:]'); test \"\$actual_size\" -eq '$archive_size'; chmod 600 \"\$upload\"; ln -- \"\$upload\" '$REMOTE_API_ARCHIVE'; rm -f -- \"\$upload\"; trap - EXIT HUP INT TERM" \
-            < "$archive"
+          timeout 240s ssh production bash -s -- \
+            "$REMOTE_API_ARCHIVE" "$RELEASE_URL" "$RELEASE_SHA256" <<'REMOTE'
+          set -eu
+          target="$1"
+          url="$2"
+          expected_sha256="$3"
+          umask 077
+          case "$url" in https://github.com/*) ;; *) exit 1 ;; esac
+          case "$expected_sha256" in *[!0-9a-f]*|'') exit 1 ;; esac
+          test "${#expected_sha256}" -eq 64
+          test ! -e "$target"
+          upload="$(mktemp "${target}.upload.XXXXXX")"
+          trap 'rm -f -- "$upload"' EXIT HUP INT TERM
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --tlsv1.2 --silent --show-error --connect-timeout 15 \
+            --max-time 180 --retry 5 --retry-delay 2 --retry-max-time 220 \
+            --retry-all-errors --output "$upload" "$url"
+          actual_sha256="$(sha256sum "$upload" | cut -d ' ' -f 1)"
+          test "$actual_sha256" = "$expected_sha256"
+          chmod 600 "$upload"
+          ln -- "$upload" "$target"
+          rm -f -- "$upload"
+          trap - EXIT HUP INT TERM
+          REMOTE
 
       - name: 原子启用 API
         id: activate-api
@@ -331,7 +428,7 @@ jobs:
           set -euo pipefail
           timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli migration activate
 
-      - name: 上传前端发布包
+      - name: 服务器下载前端发布包
         id: upload-frontend
         if: >-
           ${{ steps.activate-api.outcome == 'success' &&
@@ -340,13 +437,35 @@ jobs:
           steps.activate-legacy.outcome == 'success') }}
         timeout-minutes: 5
         shell: bash
+        env:
+          RELEASE_URL: ${{ steps.publish-release.outputs.frontend_url }}
+          RELEASE_SHA256: ${{ steps.publish-release.outputs.frontend_sha256 }}
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/release.tar.gz"
-          archive_size="$(wc -c < "$archive" | tr -d '[:space:]')"
-          timeout 240s ssh production \
-            "set -eu; umask 077; upload=\$(mktemp '${REMOTE_FRONTEND_ARCHIVE}.upload.XXXXXX'); trap 'rm -f -- \"\$upload\"' EXIT HUP INT TERM; cat > \"\$upload\"; actual_size=\$(wc -c < \"\$upload\" | tr -d '[:space:]'); test \"\$actual_size\" -eq '$archive_size'; chmod 600 \"\$upload\"; ln -- \"\$upload\" '$REMOTE_FRONTEND_ARCHIVE'; rm -f -- \"\$upload\"; trap - EXIT HUP INT TERM" \
-            < "$archive"
+          timeout 240s ssh production bash -s -- \
+            "$REMOTE_FRONTEND_ARCHIVE" "$RELEASE_URL" "$RELEASE_SHA256" <<'REMOTE'
+          set -eu
+          target="$1"
+          url="$2"
+          expected_sha256="$3"
+          umask 077
+          case "$url" in https://github.com/*) ;; *) exit 1 ;; esac
+          case "$expected_sha256" in *[!0-9a-f]*|'') exit 1 ;; esac
+          test "${#expected_sha256}" -eq 64
+          test ! -e "$target"
+          upload="$(mktemp "${target}.upload.XXXXXX")"
+          trap 'rm -f -- "$upload"' EXIT HUP INT TERM
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --tlsv1.2 --silent --show-error --connect-timeout 15 \
+            --max-time 180 --retry 5 --retry-delay 2 --retry-max-time 220 \
+            --retry-all-errors --output "$upload" "$url"
+          actual_sha256="$(sha256sum "$upload" | cut -d ' ' -f 1)"
+          test "$actual_sha256" = "$expected_sha256"
+          chmod 600 "$upload"
+          ln -- "$upload" "$target"
+          rm -f -- "$upload"
+          trap - EXIT HUP INT TERM
+          REMOTE
 
       - name: 原子启用前端
         id: activate-frontend
