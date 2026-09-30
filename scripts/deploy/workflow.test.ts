@@ -1,7 +1,17 @@
 // @vitest-environment node
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
@@ -122,7 +132,7 @@ describe('production deployment workflow', () => {
     const workflow = loadWorkflow()
 
     expect(workflow.on).toEqual({ push: { tags: ['v*'] } })
-    expect(workflow.permissions).toEqual({ contents: 'write' })
+    expect(workflow.permissions).toEqual({ contents: 'read' })
     expect(workflow.concurrency).toEqual({
       group: 'sweet-memories-production',
       queue: 'max',
@@ -213,63 +223,93 @@ describe('production deployment workflow', () => {
     }
   })
 
-  it('publishes immutable release assets for verified server-side downloads', () => {
+  it('uploads independently verified chunks before atomic activation', () => {
     const steps = loadWorkflow().jobs.deploy.steps
-    const publish = stepById(steps, 'publish-release')
     const uploadApi = stepById(steps, 'upload-api').run ?? ''
     const activateApi = stepById(steps, 'activate-api')
     const uploadFrontend = stepById(steps, 'upload-frontend')
     const uploadCommands = `${uploadApi}\n${uploadFrontend.run ?? ''}`
 
     expect(stepIndex(steps, 'package-api')).toBeLessThan(stepIndex(steps, 'package-frontend'))
-    expect(stepIndex(steps, 'package-frontend')).toBeLessThan(stepIndex(steps, 'publish-release'))
-    expect(stepIndex(steps, 'publish-release')).toBeLessThan(stepIndex(steps, 'upload-api'))
     expect(stepIndex(steps, 'upload-api')).toBeLessThan(stepIndex(steps, 'upload-frontend'))
     expect(stepIndex(steps, 'activate-api')).toBeLessThan(stepIndex(steps, 'activate-frontend'))
-    expect(publish.env?.GH_TOKEN).toBe('${{ github.token }}')
-    expect(publish.run).toContain('gh release create "$GITHUB_REF_NAME" --verify-tag')
-    expect(publish.run).toContain('gh release upload "$GITHUB_REF_NAME"')
-    expect(publish.run).toContain('gh release download "$GITHUB_REF_NAME"')
-    expect(publish.run).toContain('sweet-memories-api-${GITHUB_SHA}.tar.gz')
-    expect(publish.run).toContain('sweet-memories-frontend-${GITHUB_SHA}.tar.gz')
-    expect(publish.run).toContain('ln -- "$api_archive" "$publish_root/$api_name"')
-    expect(publish.run).toContain('ln -- "$frontend_archive" "$publish_root/$frontend_name"')
-    expect(publish.run).toContain(
-      'gh release upload "$GITHUB_REF_NAME" "$source_file"',
-    )
-    expect(publish.run).not.toContain('$source_file#$asset_name')
-    expect(publish.run).toContain('sha256sum')
-    expect(publish.run).not.toContain('--clobber')
-    expect(publish.run).toContain('>> "$GITHUB_OUTPUT"')
-    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(5)
-    expect(uploadApi).toContain('timeout 240s ssh production')
+    expect(stepById(steps, 'upload-api')['timeout-minutes']).toBe(12)
+    expect(uploadFrontend['timeout-minutes']).toBe(8)
+    expect(uploadApi).toContain('archive="$RUNNER_TEMP/api-release.tar.gz"')
     expect(uploadApi).toContain('$REMOTE_API_ARCHIVE')
-    expect(uploadFrontend.run).toContain('timeout 240s ssh production')
+    expect(uploadFrontend.run).toContain('archive="$RUNNER_TEMP/release.tar.gz"')
     expect(uploadFrontend.run).toContain('$REMOTE_FRONTEND_ARCHIVE')
+    expect(uploadCommands).toContain('split -b 1m -d -a 4')
+    expect(uploadCommands).toContain('for chunk in "$chunk_root"/chunk-*')
+    expect(uploadCommands).toContain('for attempt in 1 2 3')
+    expect(uploadCommands).toContain('timeout 30s ssh production')
     expect(uploadCommands).toContain('.upload.XXXXXX')
+    expect(uploadCommands).toContain('.chunks')
     expect(uploadCommands).toContain('mktemp')
-    expect(uploadCommands).toContain("curl --fail --location --proto '=https'")
+    expect(uploadCommands).toContain('chunk_size')
+    expect(uploadCommands).toContain('chunk_sha256')
+    expect(uploadCommands).toContain('archive_size')
+    expect(uploadCommands).toContain('archive_sha256')
     expect(uploadCommands).toContain('sha256sum')
+    expect(uploadCommands).toContain('cat "$chunk_dir"/chunk-* > "$upload"')
     expect(uploadCommands).toContain('ln --')
     expect(uploadCommands).toContain('trap')
-    expect(stepById(steps, 'upload-api').env).toMatchObject({
-      RELEASE_URL: '${{ steps.publish-release.outputs.api_url }}',
-      RELEASE_SHA256: '${{ steps.publish-release.outputs.api_sha256 }}',
-    })
-    expect(uploadFrontend.env).toMatchObject({
-      RELEASE_URL: '${{ steps.publish-release.outputs.frontend_url }}',
-      RELEASE_SHA256: '${{ steps.publish-release.outputs.frontend_sha256 }}',
-    })
     expect(uploadCommands).not.toContain('dd ')
     expect(uploadCommands).not.toContain('scp ')
-    expect(uploadCommands).not.toContain('cat >')
-    expect(uploadCommands).not.toContain('< "$archive"')
+    expect(uploadCommands).not.toContain('curl ')
     expect(activateApi.run).toContain(
       'sudo /usr/local/sbin/manage-sweet-memories-api activate "$GITHUB_SHA" "$REMOTE_API_ARCHIVE"',
     )
     expect(activateApi['continue-on-error']).toBe(true)
     expect(uploadFrontend.if).toContain("steps.activate-api.outcome == 'success'")
   })
+
+  it('reassembles a chunked API archive byte-for-byte through the SSH boundary', () => {
+    const upload = stepById(loadWorkflow().jobs.deploy.steps, 'upload-api').run ?? ''
+    const root = mkdtempSync(join(tmpdir(), 'sweet-memories-chunk-upload-'))
+    const runnerTemp = join(root, 'runner')
+    const bin = join(root, 'bin')
+    const archive = Buffer.alloc((2 * 1024 * 1024) + 17, 'verified-chunk-data')
+    const remoteArchive = join(root, 'remote-api.tar.gz')
+
+    try {
+      mkdirSync(runnerTemp)
+      mkdirSync(bin)
+      writeFileSync(join(runnerTemp, 'api-release.tar.gz'), archive)
+      writeFileSync(join(bin, 'ssh'), `#!/usr/bin/env bash
+set -euo pipefail
+shift
+if [[ $# -eq 1 ]]; then
+  exec bash -c "$1"
+fi
+exec "$@"
+`)
+      writeFileSync(join(bin, 'timeout'), `#!/usr/bin/env bash
+set -euo pipefail
+shift
+exec "$@"
+`)
+      chmodSync(join(bin, 'ssh'), 0o700)
+      chmodSync(join(bin, 'timeout'), 0o700)
+
+      const result = spawnSync('bash', ['-c', upload], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          REMOTE_API_ARCHIVE: remoteArchive,
+          RUNNER_TEMP: runnerTemp,
+        },
+        timeout: 30_000,
+      })
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(readFileSync(remoteArchive)).toEqual(archive)
+      expect(existsSync(`${remoteArchive}.chunks`)).toBe(false)
+    } finally {
+      rmSync(root, { force: true, recursive: true })
+    }
+  }, 15_000)
 
   it('reads the album source as exact structured JSON after API health succeeds', () => {
     const steps = loadWorkflow().jobs.deploy.steps
@@ -494,11 +534,15 @@ describe('production deployment workflow', () => {
     )
     expect(frontendArchive['continue-on-error']).toBe(true)
     expect(apiArchive['continue-on-error']).toBe(true)
-    expect(frontendArchive.run).toBe(
-      'timeout 30s ssh production rm -f -- "$REMOTE_FRONTEND_ARCHIVE"',
+    expect(frontendArchive.run).toContain(
+      'rm -f -- "$REMOTE_FRONTEND_ARCHIVE"',
     )
-    expect(apiArchive.run).toBe(
-      'timeout 30s ssh production rm -f -- "$REMOTE_API_ARCHIVE"',
+    expect(frontendArchive.run).toContain(
+      'rm -rf -- "${REMOTE_FRONTEND_ARCHIVE}.chunks"',
+    )
+    expect(apiArchive.run).toContain('rm -f -- "$REMOTE_API_ARCHIVE"')
+    expect(apiArchive.run).toContain(
+      'rm -rf -- "${REMOTE_API_ARCHIVE}.chunks"',
     )
     expect(evaluateCondition(frontendArchive.if, {
       cancelled: true,
@@ -535,10 +579,9 @@ describe('production deployment workflow', () => {
       ['typecheck', 5], ['lint', 5], ['test', 7], ['test-api', 8],
       ['test-deploy', 5], ['test-monitor', 5], ['build-frontend', 5],
       ['build-api', 5], ['package-api', 5], ['package-frontend', 2],
-      ['publish-release', 5], ['validate-config', 1], ['configure-ssh', 1],
-      ['validate-live', 3],
-      ['upload-api', 5], ['activate-api', 5], ['read-album-mode', 1],
-      ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 5],
+      ['validate-config', 1], ['configure-ssh', 1], ['validate-live', 3],
+      ['upload-api', 12], ['activate-api', 5], ['read-album-mode', 1],
+      ['prepare-photo-mode', 5], ['activate-legacy', 3], ['upload-frontend', 8],
       ['activate-frontend', 5], ['health-check', 8], ['enable-uploads', 3],
       ['disable-uploads', 3], ['rollback-frontend', 5], ['rollback-api', 11],
       ['archive-cleanup-frontend', 2], ['archive-cleanup-api', 2],
@@ -552,7 +595,7 @@ describe('production deployment workflow', () => {
     for (const [id, budget] of expectedBudgets) {
       expect(stepById(deploy.steps, id)['timeout-minutes']).toBe(budget)
     }
-    expect(deploy['timeout-minutes']).toBe(170)
+    expect(deploy['timeout-minutes']).toBe(180)
     expect(deploy['timeout-minutes']).toBeGreaterThan(total + 10)
   })
 

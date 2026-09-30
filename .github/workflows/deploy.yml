@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: sweet-memories-production
@@ -17,7 +17,7 @@ jobs:
   deploy:
     name: 检查并部署
     runs-on: ubuntu-24.04
-    timeout-minutes: 170
+    timeout-minutes: 180
     environment:
       name: production
       url: ${{ vars.PRODUCTION_URL }}
@@ -149,14 +149,6 @@ jobs:
             echo 'GITHUB_SHA 必须是 40 位小写十六进制字符。' >&2
             exit 1
           fi
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9][0-9A-Za-z.-]*$ ]]; then
-            echo '发布 Tag 不是安全的版本名称。' >&2
-            exit 1
-          fi
-          if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo 'GitHub 仓库名称无效。' >&2
-            exit 1
-          fi
           if [[ ! "$ALIYUN_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
             echo 'ALIYUN_HOST 只能包含字母、数字、点和连字符。' >&2
             exit 1
@@ -177,68 +169,6 @@ jobs:
             echo 'PRODUCTION_URL 必须是 HTTPS URL。' >&2
             exit 1
           fi
-
-      - name: 发布不可变构建包
-        id: publish-release
-        timeout-minutes: 5
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          api_archive="$RUNNER_TEMP/api-release.tar.gz"
-          frontend_archive="$RUNNER_TEMP/release.tar.gz"
-          api_name="sweet-memories-api-${GITHUB_SHA}.tar.gz"
-          frontend_name="sweet-memories-frontend-${GITHUB_SHA}.tar.gz"
-          api_sha256="$(sha256sum "$api_archive" | cut -d ' ' -f 1)"
-          frontend_sha256="$(sha256sum "$frontend_archive" | cut -d ' ' -f 1)"
-          verification_root="$(mktemp -d "$RUNNER_TEMP/release-verification.XXXXXX")"
-          publish_root="$verification_root/publish"
-          trap 'rm -rf -- "$verification_root"' EXIT HUP INT TERM
-          mkdir -m 700 -- "$publish_root"
-          ln -- "$api_archive" "$publish_root/$api_name"
-          ln -- "$frontend_archive" "$publish_root/$frontend_name"
-
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag \
-              --title "$GITHUB_REF_NAME" \
-              --notes "Automated production release for ${GITHUB_SHA}."
-          fi
-
-          ensure_asset() {
-            local source_file="$1"
-            local asset_name="$2"
-            local expected_sha256="$3"
-            local asset_root="$verification_root/verify-$asset_name"
-            local downloaded actual_sha256
-
-            if gh release view "$GITHUB_REF_NAME" --json assets \
-              --jq '.assets[].name' | grep -Fqx -- "$asset_name"; then
-              mkdir -m 700 -- "$asset_root"
-              gh release download "$GITHUB_REF_NAME" \
-                --pattern "$asset_name" --dir "$asset_root"
-              downloaded="$asset_root/$asset_name"
-              actual_sha256="$(sha256sum "$downloaded" | cut -d ' ' -f 1)"
-              if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-                echo "Release 资产已存在但内容不匹配：$asset_name" >&2
-                exit 1
-              fi
-              return
-            fi
-
-            gh release upload "$GITHUB_REF_NAME" "$source_file"
-          }
-
-          ensure_asset "$publish_root/$api_name" "$api_name" "$api_sha256"
-          ensure_asset "$publish_root/$frontend_name" "$frontend_name" "$frontend_sha256"
-
-          release_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
-          {
-            printf 'api_url=%s/%s\n' "$release_base" "$api_name"
-            printf 'api_sha256=%s\n' "$api_sha256"
-            printf 'frontend_url=%s/%s\n' "$release_base" "$frontend_name"
-            printf 'frontend_sha256=%s\n' "$frontend_sha256"
-          } >> "$GITHUB_OUTPUT"
 
       - name: 配置 SSH
         id: configure-ssh
@@ -325,39 +255,70 @@ jobs:
             exit 1
           fi
 
-      - name: 服务器下载 API 发布包
+      - name: 分块上传 API 发布包
         id: upload-api
-        timeout-minutes: 5
+        timeout-minutes: 12
         shell: bash
-        env:
-          RELEASE_URL: ${{ steps.publish-release.outputs.api_url }}
-          RELEASE_SHA256: ${{ steps.publish-release.outputs.api_sha256 }}
         run: |
           set -euo pipefail
-          timeout 240s ssh production bash -s -- \
-            "$REMOTE_API_ARCHIVE" "$RELEASE_URL" "$RELEASE_SHA256" <<'REMOTE'
+          archive="$RUNNER_TEMP/api-release.tar.gz"
+          archive_size="$(wc -c < "$archive" | tr -d '[:space:]')"
+          archive_sha256="$(sha256sum "$archive" | cut -d ' ' -f 1)"
+          chunk_root="$(mktemp -d "$RUNNER_TEMP/api-release-chunks.XXXXXX")"
+          chunk_dir="${REMOTE_API_ARCHIVE}.chunks"
+          trap 'rm -rf -- "$chunk_root"' EXIT HUP INT TERM
+          split -b 1m -d -a 4 -- "$archive" "$chunk_root/chunk-"
+          timeout 30s ssh production \
+            "set -eu; umask 077; test ! -e '$REMOTE_API_ARCHIVE'; mkdir -m 700 -- '$chunk_dir'"
+
+          chunk_count=0
+          for chunk in "$chunk_root"/chunk-*; do
+            chunk_name="${chunk##*/}"
+            [[ "$chunk_name" =~ ^chunk-[0-9]{4}$ ]]
+            chunk_size="$(wc -c < "$chunk" | tr -d '[:space:]')"
+            chunk_sha256="$(sha256sum "$chunk" | cut -d ' ' -f 1)"
+            uploaded=false
+            for attempt in 1 2 3; do
+              if timeout 30s ssh production \
+                "set -eu; final='$chunk_dir/$chunk_name'; expected_size='$chunk_size'; expected_sha256='$chunk_sha256'; if [ -f \"\$final\" ]; then actual_size=\$(wc -c < \"\$final\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$final\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; exit 0; fi; test ! -e \"\$final\"; upload=\$(mktemp \"\${final}.upload.XXXXXX\"); trap 'rm -f -- \"\$upload\"' EXIT HUP INT TERM; cat > \"\$upload\"; actual_size=\$(wc -c < \"\$upload\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$upload\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; chmod 600 \"\$upload\"; ln -- \"\$upload\" \"\$final\"; rm -f -- \"\$upload\"; trap - EXIT HUP INT TERM" \
+                < "$chunk"; then
+                uploaded=true
+                break
+              fi
+              echo "API 分块 $chunk_name 第 $attempt 次上传失败。" >&2
+            done
+            [[ "$uploaded" == true ]]
+            chunk_count=$((chunk_count + 1))
+          done
+
+          timeout 60s ssh production bash -s -- \
+            "$REMOTE_API_ARCHIVE" "$chunk_dir" "$chunk_count" \
+            "$archive_size" "$archive_sha256" <<'REMOTE'
           set -eu
           target="$1"
-          url="$2"
-          expected_sha256="$3"
-          umask 077
-          case "$url" in https://github.com/*) ;; *) exit 1 ;; esac
-          case "$expected_sha256" in *[!0-9a-f]*|'') exit 1 ;; esac
-          test "${#expected_sha256}" -eq 64
-          test ! -e "$target"
+          chunk_dir="$2"
+          expected_count="$3"
+          expected_size="$4"
+          expected_sha256="$5"
+          set -- "$chunk_dir"/chunk-*
+          test "$1" != "$chunk_dir/chunk-*"
+          test "$#" -eq "$expected_count"
+          for chunk in "$@"; do test -f "$chunk" && test ! -L "$chunk"; done
           upload="$(mktemp "${target}.upload.XXXXXX")"
           trap 'rm -f -- "$upload"' EXIT HUP INT TERM
-          curl --fail --location --proto '=https' --proto-redir '=https' \
-            --tlsv1.2 --silent --show-error --connect-timeout 15 \
-            --max-time 180 --retry 5 --retry-delay 2 --retry-max-time 220 \
-            --retry-all-errors --output "$upload" "$url"
+          cat "$chunk_dir"/chunk-* > "$upload"
+          actual_size="$(wc -c < "$upload" | tr -d '[:space:]')"
           actual_sha256="$(sha256sum "$upload" | cut -d ' ' -f 1)"
+          test "$actual_size" = "$expected_size"
           test "$actual_sha256" = "$expected_sha256"
           chmod 600 "$upload"
           ln -- "$upload" "$target"
-          rm -f -- "$upload"
+          rm -f -- "$upload" "$chunk_dir"/chunk-*
+          rmdir -- "$chunk_dir"
           trap - EXIT HUP INT TERM
           REMOTE
+          trap - EXIT HUP INT TERM
+          rm -rf -- "$chunk_root"
 
       - name: 原子启用 API
         id: activate-api
@@ -428,44 +389,75 @@ jobs:
           set -euo pipefail
           timeout 120s ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli migration activate
 
-      - name: 服务器下载前端发布包
+      - name: 分块上传前端发布包
         id: upload-frontend
         if: >-
           ${{ steps.activate-api.outcome == 'success' &&
           steps.prepare-photo-mode.outcome == 'success' &&
           (steps.read-album-mode.outputs.mode == 'static' ||
           steps.activate-legacy.outcome == 'success') }}
-        timeout-minutes: 5
+        timeout-minutes: 8
         shell: bash
-        env:
-          RELEASE_URL: ${{ steps.publish-release.outputs.frontend_url }}
-          RELEASE_SHA256: ${{ steps.publish-release.outputs.frontend_sha256 }}
         run: |
           set -euo pipefail
-          timeout 240s ssh production bash -s -- \
-            "$REMOTE_FRONTEND_ARCHIVE" "$RELEASE_URL" "$RELEASE_SHA256" <<'REMOTE'
+          archive="$RUNNER_TEMP/release.tar.gz"
+          archive_size="$(wc -c < "$archive" | tr -d '[:space:]')"
+          archive_sha256="$(sha256sum "$archive" | cut -d ' ' -f 1)"
+          chunk_root="$(mktemp -d "$RUNNER_TEMP/frontend-release-chunks.XXXXXX")"
+          chunk_dir="${REMOTE_FRONTEND_ARCHIVE}.chunks"
+          trap 'rm -rf -- "$chunk_root"' EXIT HUP INT TERM
+          split -b 1m -d -a 4 -- "$archive" "$chunk_root/chunk-"
+          timeout 30s ssh production \
+            "set -eu; umask 077; test ! -e '$REMOTE_FRONTEND_ARCHIVE'; mkdir -m 700 -- '$chunk_dir'"
+
+          chunk_count=0
+          for chunk in "$chunk_root"/chunk-*; do
+            chunk_name="${chunk##*/}"
+            [[ "$chunk_name" =~ ^chunk-[0-9]{4}$ ]]
+            chunk_size="$(wc -c < "$chunk" | tr -d '[:space:]')"
+            chunk_sha256="$(sha256sum "$chunk" | cut -d ' ' -f 1)"
+            uploaded=false
+            for attempt in 1 2 3; do
+              if timeout 30s ssh production \
+                "set -eu; final='$chunk_dir/$chunk_name'; expected_size='$chunk_size'; expected_sha256='$chunk_sha256'; if [ -f \"\$final\" ]; then actual_size=\$(wc -c < \"\$final\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$final\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; exit 0; fi; test ! -e \"\$final\"; upload=\$(mktemp \"\${final}.upload.XXXXXX\"); trap 'rm -f -- \"\$upload\"' EXIT HUP INT TERM; cat > \"\$upload\"; actual_size=\$(wc -c < \"\$upload\" | tr -d '[:space:]'); actual_sha256=\$(sha256sum \"\$upload\" | cut -d ' ' -f 1); test \"\$actual_size\" = \"\$expected_size\"; test \"\$actual_sha256\" = \"\$expected_sha256\"; chmod 600 \"\$upload\"; ln -- \"\$upload\" \"\$final\"; rm -f -- \"\$upload\"; trap - EXIT HUP INT TERM" \
+                < "$chunk"; then
+                uploaded=true
+                break
+              fi
+              echo "前端分块 $chunk_name 第 $attempt 次上传失败。" >&2
+            done
+            [[ "$uploaded" == true ]]
+            chunk_count=$((chunk_count + 1))
+          done
+
+          timeout 60s ssh production bash -s -- \
+            "$REMOTE_FRONTEND_ARCHIVE" "$chunk_dir" "$chunk_count" \
+            "$archive_size" "$archive_sha256" <<'REMOTE'
           set -eu
           target="$1"
-          url="$2"
-          expected_sha256="$3"
-          umask 077
-          case "$url" in https://github.com/*) ;; *) exit 1 ;; esac
-          case "$expected_sha256" in *[!0-9a-f]*|'') exit 1 ;; esac
-          test "${#expected_sha256}" -eq 64
-          test ! -e "$target"
+          chunk_dir="$2"
+          expected_count="$3"
+          expected_size="$4"
+          expected_sha256="$5"
+          set -- "$chunk_dir"/chunk-*
+          test "$1" != "$chunk_dir/chunk-*"
+          test "$#" -eq "$expected_count"
+          for chunk in "$@"; do test -f "$chunk" && test ! -L "$chunk"; done
           upload="$(mktemp "${target}.upload.XXXXXX")"
           trap 'rm -f -- "$upload"' EXIT HUP INT TERM
-          curl --fail --location --proto '=https' --proto-redir '=https' \
-            --tlsv1.2 --silent --show-error --connect-timeout 15 \
-            --max-time 180 --retry 5 --retry-delay 2 --retry-max-time 220 \
-            --retry-all-errors --output "$upload" "$url"
+          cat "$chunk_dir"/chunk-* > "$upload"
+          actual_size="$(wc -c < "$upload" | tr -d '[:space:]')"
           actual_sha256="$(sha256sum "$upload" | cut -d ' ' -f 1)"
+          test "$actual_size" = "$expected_size"
           test "$actual_sha256" = "$expected_sha256"
           chmod 600 "$upload"
           ln -- "$upload" "$target"
-          rm -f -- "$upload"
+          rm -f -- "$upload" "$chunk_dir"/chunk-*
+          rmdir -- "$chunk_dir"
           trap - EXIT HUP INT TERM
           REMOTE
+          trap - EXIT HUP INT TERM
+          rm -rf -- "$chunk_root"
 
       - name: 原子启用前端
         id: activate-frontend
@@ -722,14 +714,18 @@ jobs:
         if: ${{ always() && steps.upload-frontend.outcome != 'skipped' }}
         continue-on-error: true
         timeout-minutes: 2
-        run: timeout 30s ssh production rm -f -- "$REMOTE_FRONTEND_ARCHIVE"
+        run: |
+          timeout 30s ssh production rm -f -- "$REMOTE_FRONTEND_ARCHIVE"
+          timeout 30s ssh production rm -rf -- "${REMOTE_FRONTEND_ARCHIVE}.chunks"
 
       - name: 清理远程 API 发布包
         id: archive-cleanup-api
         if: ${{ always() && steps.upload-api.outcome != 'skipped' }}
         continue-on-error: true
         timeout-minutes: 2
-        run: timeout 30s ssh production rm -f -- "$REMOTE_API_ARCHIVE"
+        run: |
+          timeout 30s ssh production rm -f -- "$REMOTE_API_ARCHIVE"
+          timeout 30s ssh production rm -rf -- "${REMOTE_API_ARCHIVE}.chunks"
 
       - name: 清理旧前端版本
         id: cleanup-frontend
