@@ -130,7 +130,7 @@ watch(
             </div>
           </div>
           <div class="admin-toolbar-actions">
-            <span class="admin-username">{{ session.username.value }}</span>
+            <!-- <span class="admin-username">{{ session.username.value }}</span> -->
             <button
               class="admin-secondary-button"
               type="button"

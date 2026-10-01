@@ -871,6 +871,69 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
   }
 }
 
+/* ================= 年份标题装饰线与文字流光效果 ================= */
+.admin-photo-year-heading span {
+  position: relative;
+  overflow: hidden;
+  border-radius: 999px;
+  box-shadow: 0 1px 4px rgb(239 169 90 / 30%);
+}
+
+.admin-photo-year-heading span::after {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(255 255 255 / 85%) 50%,
+    transparent 100%
+  );
+  animation: yearMarkerShimmer 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  content: "";
+}
+
+.admin-photo-year-heading h3 {
+  background: linear-gradient(
+    90deg,
+    var(--admin-text, #2d292c) 0%,
+    var(--admin-text, #2d292c) 35%,
+    #9c9599 46%,
+    #ffffff 50%,
+    #9c9599 54%,
+    var(--admin-text, #2d292c) 65%,
+    var(--admin-text, #2d292c) 100%
+  );
+  background-size: 300% 100%;
+  background-position: 0% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: yearTextShimmer 4.6s ease-in-out infinite;
+}
+
+@keyframes yearMarkerShimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  35%,
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes yearTextShimmer {
+  0% {
+    background-position: 0% 0;
+  }
+
+  50%,
+  100% {
+    background-position: 100% 0;
+  }
+}
+
 @media (max-width: 720px) {
   .baby-skeleton-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -896,8 +959,15 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
   .flash-shimmer,
   .bubble,
   .dot-typing span,
-  .skeleton-photo::after {
+  .skeleton-photo::after,
+  .admin-photo-year-heading span::after {
     animation: none;
+  }
+
+  .admin-photo-year-heading h3 {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--admin-text, #2d292c);
   }
 }
 </style>
