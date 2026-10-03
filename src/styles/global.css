@@ -363,6 +363,224 @@ button {
   background: rgb(30 41 59 / 80%);
 }
 
+/* ================= 拟物化墙壁翘板开关（纯白磨砂塑料材质，精密机械触感） ================= */
+.sleep-toggle.wall-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0;
+  border: none;
+  background: transparent;
+  perspective: 200px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.sleep-toggle.wall-switch:hover {
+  transform: translateY(-1px);
+}
+
+.sleep-toggle.wall-switch:focus-visible {
+  outline: 2px solid var(--focus-color, #38bdf8);
+  outline-offset: 4px;
+}
+
+/* 内凹安装槽边框底座：深色安装槽与立体边缘，容纳白色活动按键 */
+.switch-inner-socket {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border-radius: 5px;
+  background: #181a1f;
+  box-shadow:
+    0 4px 12px rgb(0 0 0 / 18%),
+    0 1px 3px rgb(0 0 0 / 12%),
+    inset 0 1.5px 2px rgb(0 0 0 / 70%),
+    inset 0 -1px 1.5px rgb(0 0 0 / 45%),
+    inset 1px 0 1.5px rgb(0 0 0 / 55%),
+    inset -1px 0 1.5px rgb(0 0 0 / 55%);
+  transition:
+    box-shadow 300ms ease,
+    background 300ms ease;
+}
+
+.sleep-toggle.wall-switch:hover .switch-inner-socket {
+  box-shadow:
+    0 6px 16px rgb(0 0 0 / 24%),
+    0 2px 5px rgb(0 0 0 / 15%),
+    inset 0 1.5px 2px rgb(0 0 0 / 70%),
+    inset 0 -1px 1.5px rgb(0 0 0 / 45%);
+}
+
+.is-sleeping .switch-inner-socket,
+.sleep-toggle.wall-switch.is-switched-off .switch-inner-socket {
+  background: #101216;
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 50%),
+    0 2px 5px rgb(0 0 0 / 35%),
+    inset 0 1.5px 2px rgb(0 0 0 / 80%);
+}
+
+/* 具有厚度的活动按键：以中心横轴为支点，模拟真实机械翘板运动 */
+.switch-rocker-key {
+  position: relative;
+  display: block;
+  width: calc(100% - 3px);
+  height: calc(100% - 3px);
+  border-radius: 3.5px;
+  transform-origin: 50% 50%;
+  transform-style: preserve-3d;
+  transition:
+    transform 180ms cubic-bezier(0.2, 1.25, 0.4, 1),
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+
+/* 开启状态（白天 / 开灯）：上端压入安装槽、下端翘起凸出 */
+.sleep-toggle.wall-switch.is-switched-on .switch-rocker-key,
+:not(.is-sleeping) .sleep-toggle.wall-switch:not(.is-switched-off) .switch-rocker-key {
+  transform: rotateX(-12deg);
+  background: linear-gradient(
+    175deg,
+    #cfd3da 0%,
+    #e8ebf0 26%,
+    #f8f9fa 65%,
+    #ffffff 100%
+  );
+  box-shadow:
+    0 3px 5px -1px rgb(0 0 0 / 42%),
+    0 1.5px 2px rgb(0 0 0 / 25%),
+    inset 0 3.5px 3px -1px rgb(0 0 0 / 36%),
+    inset 1px 0 0.5px rgb(255 255 255 / 90%),
+    inset -1px 0 0.5px rgb(255 255 255 / 70%);
+}
+
+/* 开启状态下按键底部翘起时露出的立体厚度边缘与接触面阴影 */
+.sleep-toggle.wall-switch.is-switched-on .rocker-thickness,
+:not(.is-sleeping) .sleep-toggle.wall-switch:not(.is-switched-off) .rocker-thickness {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 0 0 3.5px 3.5px;
+  background: linear-gradient(180deg, #f5f6f8 0%, #c8cdd6 100%);
+  border-bottom: 0.5px solid rgb(0 0 0 / 30%);
+  box-shadow: 0 1px 1px rgb(0 0 0 / 25%);
+  transform: translateY(1.2px);
+  opacity: 1;
+  transition: transform 180ms cubic-bezier(0.2, 1.25, 0.4, 1), opacity 180ms ease;
+}
+
+/* 关闭状态（哄睡模式 / 夜晚 / 关灯）：上端翘起凸出、下端压入安装槽 */
+.is-sleeping .switch-rocker-key,
+.sleep-toggle.wall-switch.is-switched-off .switch-rocker-key {
+  transform: rotateX(12deg);
+  background: linear-gradient(
+    175deg,
+    #ffffff 0%,
+    #f2f4f7 32%,
+    #dbe0e7 75%,
+    #c4cad4 100%
+  );
+  box-shadow:
+    0 -2.5px 4px -1px rgb(0 0 0 / 40%),
+    0 -1px 2px rgb(0 0 0 / 20%),
+    inset 0 1.5px 0.5px #ffffff,
+    inset 1px 0 0.5px rgb(255 255 255 / 90%),
+    inset -1px 0 0.5px rgb(255 255 255 / 70%),
+    inset 0 -3.5px 3px -1px rgb(0 0 0 / 45%);
+}
+
+.is-sleeping .sleep-toggle.wall-switch.is-switched-off .switch-rocker-key {
+  background: linear-gradient(
+    175deg,
+    #d6d9e0 0%,
+    #c1c6d0 35%,
+    #a8aebb 75%,
+    #9197a4 100%
+  );
+}
+
+/* 关闭状态下，按键下端压入，底部厚度隐藏入槽 */
+.is-sleeping .rocker-thickness,
+.sleep-toggle.wall-switch.is-switched-off .rocker-thickness {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  transform: translateY(0);
+  opacity: 0;
+  transition: transform 180ms cubic-bezier(0.2, 1.25, 0.4, 1), opacity 180ms ease;
+}
+
+/* 鼠标或手指按住时提供轻微的额外下压反馈，松开后稳定在对应档位 */
+.sleep-toggle.wall-switch:active {
+  transform: translateY(1px);
+}
+
+.sleep-toggle.wall-switch.is-switched-on:active .switch-rocker-key,
+:not(.is-sleeping) .sleep-toggle.wall-switch:not(.is-switched-off):active .switch-rocker-key {
+  transform: rotateX(-3deg) translateY(0.5px) scale(0.985);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 30%),
+    inset 0 2px 2px rgb(0 0 0 / 25%);
+}
+
+.is-sleeping .sleep-toggle.wall-switch:active .switch-rocker-key,
+.sleep-toggle.wall-switch.is-switched-off:active .switch-rocker-key {
+  transform: rotateX(3deg) translateY(0.5px) scale(0.985);
+  box-shadow:
+    0 -1px 2px rgb(0 0 0 / 30%),
+    inset 0 -2px 2px rgb(0 0 0 / 25%);
+}
+
+/* 胶囊形横条指示灯：位于按键上部中央，开启时柔和发光 */
+.rocker-indicator {
+  position: absolute;
+  top: 16%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 7.5px;
+  height: 2px;
+  border-radius: 1px;
+  transition:
+    background 200ms ease,
+    box-shadow 200ms ease,
+    opacity 200ms ease;
+}
+
+/* 开启状态（白天 / 开灯）：指示灯柔和发光 */
+.sleep-toggle.wall-switch.is-switched-on .rocker-indicator,
+:not(.is-sleeping) .sleep-toggle.wall-switch:not(.is-switched-off) .rocker-indicator {
+  background: #38bdf8;
+  box-shadow:
+    0 0 3px #0284c7,
+    0 0 6px rgb(56 189 248 / 75%),
+    inset 0 0.5px 0.5px rgb(255 255 255 / 90%);
+  opacity: 1;
+}
+
+/* 关闭状态（夜间 / 关灯）：指示灯熄灭，呈半透明磨砂镜片 */
+.is-sleeping .rocker-indicator,
+.sleep-toggle.wall-switch.is-switched-off .rocker-indicator {
+  background: #9aa1ad;
+  box-shadow:
+    inset 0 0.8px 1px rgb(0 0 0 / 45%),
+    0 0.5px 0.5px rgb(255 255 255 / 50%);
+  opacity: 0.65;
+}
+
 .music-control {
   position: fixed;
   z-index: 99;
@@ -577,6 +795,10 @@ button {
     transform: scale(1.12) rotate(-10deg);
   }
 
+  .sleep-toggle.wall-switch:hover {
+    transform: translateY(-2px);
+  }
+
   .music-btn:hover {
     box-shadow:
       0 10px 28px rgb(240 180 195 / 32%),
@@ -662,6 +884,11 @@ button {
     right: 15px;
     width: 45px;
     height: 45px;
+  }
+
+  .sleep-toggle.wall-switch {
+    width: 32px;
+    height: 32px;
   }
 
   .sleep-icon {

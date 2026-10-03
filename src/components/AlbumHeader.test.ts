@@ -24,4 +24,17 @@ describe('AlbumHeader', () => {
     expect(wrapper.get('.age-counter').text()).toContain('1 年')
     expect(wrapper.get('.age-counter').text()).toContain('1 天')
   })
+
+  it('splits title into animated character spans and handles mouse interactions', async () => {
+    const wrapper = mount(AlbumHeader)
+    const chars = wrapper.findAll('.title-char')
+
+    expect(chars).toHaveLength(7)
+    expect(chars.map((char) => char.text())).toEqual(['宝', '贝', '的', '快', '乐', '时', '光'])
+
+    await chars[0]?.trigger('mouseenter')
+    await chars[0]?.trigger('mouseleave')
+
+    wrapper.unmount()
+  })
 })
