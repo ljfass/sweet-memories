@@ -126,6 +126,52 @@ describe('useUploadQueue', () => {
     expect(queue.items.value.every((item) => item.status === 'succeeded')).toBe(true)
   })
 
+  it('keeps an upload successful when its batch completion observer throws', async () => {
+    const controlled = controlledApi()
+    const completed = vi.fn(() => {
+      throw new Error('observer failed')
+    })
+    const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+    queue.add([file('first.jpg')])
+    await flushPromises()
+
+    controlled.calls[0]?.result.resolve(photo('first'))
+    await flushPromises()
+
+    expect(completed).toHaveBeenCalledTimes(1)
+    expect(queue.items.value[0]).toMatchObject({
+      status: 'succeeded',
+      progress: 100,
+      errorCode: null,
+      photo: photo('first'),
+    })
+    expect(queue.status.value).toBe('complete')
+  })
+
+  it('isolates concurrently pending batches that complete out of order', async () => {
+    const controlled = controlledApi()
+    const completed = vi.fn()
+    const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+    queue.add([file('first-a.jpg'), file('first-b.jpg')])
+    queue.add([file('second.jpg')])
+    await flushPromises()
+
+    controlled.calls[1]?.result.resolve(photo('first-b'))
+    await flushPromises()
+    controlled.calls[2]?.result.resolve(photo('second'))
+    await flushPromises()
+
+    expect(completed.mock.calls).toEqual([[{ batchId: 2, count: 1 }]])
+
+    controlled.calls[0]?.result.resolve(photo('first-a'))
+    await flushPromises()
+
+    expect(completed.mock.calls).toEqual([
+      [{ batchId: 2, count: 1 }],
+      [{ batchId: 1, count: 2 }],
+    ])
+  })
+
   it('assigns an increasing batch ID to each file selection', async () => {
     const controlled = controlledApi()
     const completed = vi.fn()

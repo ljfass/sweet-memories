@@ -86,7 +86,11 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
       items.value.some((item) => item.id === batchItemId && item.status === 'succeeded'))
     if (!completed) return
     forgetBatch(batchId)
-    options.onBatchCompleted?.({ batchId: batch.id, count: batch.count })
+    try {
+      options.onBatchCompleted?.({ batchId: batch.id, count: batch.count })
+    } catch {
+      // Completion observers cannot change the finalized upload outcome.
+    }
   }
 
   function updateQueueStatus(): void {
