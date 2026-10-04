@@ -91,6 +91,50 @@ describe('usePhotoLibrary', () => {
     expect(library.isRefreshing.value).toBe(false)
   })
 
+  it('deduplicates refreshes while the library is idle', async () => {
+    const pending = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => pending.promise)
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+
+    const first = library.refresh()
+    const second = library.refresh()
+
+    expect(second).toBe(first)
+    expect(api.listPhotos).toHaveBeenCalledTimes(1)
+    expect(library.isRefreshing.value).toBe(true)
+    expect(library.status.value).toBe('loading')
+
+    pending.resolve([photo()])
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true])
+    expect(library.isRefreshing.value).toBe(false)
+    expect(library.status.value).toBe('ready')
+  })
+
+  it('deduplicates refreshes while retrying from an error state', async () => {
+    const pending = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    vi.mocked(api.listPhotos).mockRejectedValueOnce(new AdminApiError('unavailable', 'private'))
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    expect(library.status.value).toBe('error')
+    vi.mocked(api.listPhotos).mockImplementationOnce(() => pending.promise)
+
+    const first = library.refresh()
+    const second = library.refresh()
+
+    expect(second).toBe(first)
+    expect(api.listPhotos).toHaveBeenCalledTimes(2)
+    expect(library.isRefreshing.value).toBe(true)
+    expect(library.status.value).toBe('loading')
+
+    pending.resolve([photo({ title: '重试后的照片', version: 2 })])
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true])
+    expect(library.isRefreshing.value).toBe(false)
+    expect(library.status.value).toBe('ready')
+    expect(library.photos.value[0]).toMatchObject({ title: '重试后的照片', version: 2 })
+  })
+
   it('keeps the existing photos and ready status when an in-place refresh fails', async () => {
     const api = fakeApi()
     const library = usePhotoLibrary(api, ref('csrf-token'))

@@ -167,14 +167,17 @@ export function usePhotoLibrary(
 
   function refresh(): Promise<boolean> {
     if (refreshPromise !== null) return refreshPromise
-    if (status.value !== 'ready') return loadPhotos(false)
 
+    const preserveContent = status.value === 'ready'
     isRefreshing.value = true
-    refreshPromise = loadPhotos(true).finally(() => {
+    let currentPromise: Promise<boolean>
+    currentPromise = loadPhotos(preserveContent).finally(() => {
+      if (refreshPromise !== currentPromise) return
       isRefreshing.value = false
       refreshPromise = null
     })
-    return refreshPromise
+    refreshPromise = currentPromise
+    return currentPromise
   }
 
   function select(id: string | null): void {
