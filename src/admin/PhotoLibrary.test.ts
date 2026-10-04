@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { computed, nextTick, ref } from 'vue'
+import { computed, h, nextTick, ref, shallowRef } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AdminApp from './AdminApp.vue'
 import { AdminApiError } from './api'
@@ -203,6 +203,33 @@ describe('PhotoLibrary', () => {
     expect(wrapper.emitted('refresh-success')).toEqual([[1], [1]])
   })
 
+  it('ignores a second refresh click while the first control is refreshing', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const pending = deferred<boolean>()
+    const isRefreshing = ref(false)
+    const state = library({ isRefreshing })
+    vi.mocked(state.refresh).mockImplementationOnce(() => {
+      isRefreshing.value = true
+      return pending.promise
+    })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+    observer.setIntersecting(false)
+    await nextTick()
+
+    await wrapper.get('.admin-library-actions [data-refresh]').trigger('click')
+    await wrapper.get('[data-mobile-floating-actions] [data-refresh]').trigger('click')
+
+    expect(state.refresh).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('refresh-success')).toBeUndefined()
+
+    isRefreshing.value = false
+    pending.resolve(true)
+    await flushPromises()
+
+    expect(wrapper.emitted('refresh-success')).toEqual([[1]])
+  })
+
   it('emits the merged photo count after a user refresh is accepted', async () => {
     const state = library()
     vi.mocked(state.refresh).mockImplementationOnce(async () => {
@@ -216,6 +243,27 @@ describe('PhotoLibrary', () => {
     await flushPromises()
 
     expect(wrapper.emitted('refresh-success')).toEqual([[2]])
+  })
+
+  it('does not emit for an accepted refresh from a replaced library', async () => {
+    const pending = deferred<boolean>()
+    const requestedLibrary = library({ refresh: vi.fn(() => pending.promise) })
+    const replacementLibrary = library({ photos: ref([photo, secondPhoto]) })
+    const activeLibrary = shallowRef(requestedLibrary)
+    const wrapper = mount({
+      setup: () => () => h(PhotoLibrary, { library: activeLibrary.value }),
+    })
+    const photoLibrary = wrapper.getComponent(PhotoLibrary)
+
+    await photoLibrary.get('[data-refresh]').trigger('click')
+    activeLibrary.value = replacementLibrary
+    await nextTick()
+    expect(photoLibrary.props('library')).toBe(replacementLibrary)
+    expect(photoLibrary.emitted('refresh-success')).toBeUndefined()
+    pending.resolve(true)
+    await flushPromises()
+
+    expect(photoLibrary.emitted('refresh-success')).toBeUndefined()
   })
 
   it('does not emit refresh success when the requested refresh is not accepted', async () => {

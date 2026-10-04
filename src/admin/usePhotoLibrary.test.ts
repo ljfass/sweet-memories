@@ -432,7 +432,7 @@ describe('usePhotoLibrary', () => {
     const refreshing = library.refresh()
     await expect(library.remove('photo-1')).resolves.toBe(true)
     refresh.resolve([photo()])
-    await refreshing
+    await expect(refreshing).resolves.toBe(false)
 
     expect(library.photos.value).toEqual([])
     expect(library.status.value).toBe('ready')
@@ -482,7 +482,7 @@ describe('usePhotoLibrary', () => {
     })
     library.addUploadedPhoto(uploaded)
     refresh.resolve([photo({ title: '刷新后的服务端照片', version: 2 })])
-    await refreshing
+    await expect(refreshing).resolves.toBe(true)
 
     expect(library.photos.value.map((entry) => entry.id)).toEqual(['uploaded-photo', 'photo-1'])
     expect(library.photos.value[1]).toMatchObject({ title: '刷新后的服务端照片', version: 2 })

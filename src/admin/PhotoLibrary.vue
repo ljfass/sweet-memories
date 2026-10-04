@@ -115,9 +115,12 @@ function openPhotoPicker(): void {
 }
 
 async function refreshPhotos(): Promise<void> {
-  if (props.library.isRefreshing.value) return
-  const accepted = await props.library.refresh()
-  if (accepted) emit('refresh-success', props.library.photos.value.length)
+  const requestedLibrary = props.library
+  if (requestedLibrary.isRefreshing.value) return
+  const accepted = await requestedLibrary.refresh()
+  if (accepted && props.library === requestedLibrary) {
+    emit('refresh-success', requestedLibrary.photos.value.length)
+  }
 }
 
 function addSelectedFiles(event: Event): void {
