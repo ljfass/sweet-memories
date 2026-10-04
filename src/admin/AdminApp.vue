@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from "vue";
 import { Baby } from "@lucide/vue";
 import AdminLogin from "./AdminLogin.vue";
+import AdminSuccessNotifications from "./AdminSuccessNotifications.vue";
 import PhotoLibrary from "./PhotoLibrary.vue";
 import ReauthDialog from "./ReauthDialog.vue";
 import { AdminApi, safeLogoutErrorMessage } from "./api";
@@ -9,7 +10,9 @@ import type {
   AdminPhotoApiClient,
   AdminSessionState,
   AdminUploadApiClient,
+  UploadBatchCompletion,
 } from "./types";
+import { useAdminSuccessNotifications } from "./useAdminSuccessNotifications";
 import { usePhotoLibrary } from "./usePhotoLibrary";
 import { useAdminSession } from "./useAdminSession";
 import { useUploadQueue } from "./useUploadQueue";
@@ -26,11 +29,29 @@ const photoLibrary = usePhotoLibrary(
   props.photoApi ?? defaultApi,
   session.csrfToken,
 );
+const successNotifications = useAdminSuccessNotifications();
+let refreshNoticeId = 0;
+
+function showUploadCompleted(completion: UploadBatchCompletion): void {
+  successNotifications.show(
+    `upload-${completion.batchId}`,
+    `${completion.count} 张照片上传完成`,
+  );
+}
+
+function showRefreshCompleted(count: number): void {
+  successNotifications.show(
+    `refresh-${++refreshNoticeId}`,
+    `刷新成功 · 共 ${count} 张`,
+  );
+}
+
 const uploadQueue = useUploadQueue({
   api: props.uploadApi ?? defaultApi,
   sessionStatus: session.status,
   csrfToken: session.csrfToken,
   onUploaded: photoLibrary.addUploadedPhoto,
+  onBatchCompleted: showUploadCompleted,
 });
 const logoutMessage = ref("");
 const isLoggingOut = ref(false);
@@ -176,10 +197,19 @@ watch(
               :upload-queue="uploadQueue"
               :suspended="session.status.value === 'reauth-required'"
               @modal-change="isPhotoModalOpen = $event"
+              @refresh-success="showRefreshCompleted"
             />
           </slot>
         </section>
       </div>
+
+      <AdminSuccessNotifications
+        :items="successNotifications.items.value"
+        :suspended="session.status.value === 'reauth-required' || isPhotoModalOpen"
+        @pause="successNotifications.pause"
+        @resume="successNotifications.resume"
+        @dismiss="successNotifications.dismiss"
+      />
 
       <ReauthDialog
         :open="session.status.value === 'reauth-required'"

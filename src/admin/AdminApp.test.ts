@@ -174,6 +174,171 @@ describe('AdminApp integration', () => {
     expect(wrapper.get('[data-photo-count]').text()).toBe('共 1 张')
   })
 
+  it('shows one completion notification for a successful two-photo upload batch', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((file) => `blob:${(file as File).name}`)
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const uploads: AdminUploadApiClient = {
+      uploadPhoto: vi.fn()
+        .mockResolvedValueOnce(photo({ id: 'photo-1', title: '第一张', status: 'published' }))
+        .mockResolvedValueOnce(photo({ id: 'photo-2', title: '第二张', status: 'published' })),
+    }
+    const wrapper = mount(AdminApp, {
+      props: { session: session(), photoApi: photoApi([]), uploadApi: uploads },
+    })
+    await flushPromises()
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [
+        new File(['one'], 'one.jpg', { type: 'image/jpeg' }),
+        new File(['two'], 'two.jpg', { type: 'image/jpeg' }),
+      ],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+
+    const notifications = wrapper.get('[data-success-notifications]')
+    expect(notifications.findAll('[data-success-notification]')).toHaveLength(1)
+    expect(notifications.text()).toContain('2 张照片上传完成')
+    expect(wrapper.findAll('[data-upload-item]')).toHaveLength(2)
+    expect(wrapper.text()).toContain('上传队列已完成')
+    expect(wrapper.findAll('.admin-upload-item').every((item) =>
+      item.text().includes('上传完成'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('only shows refresh success after an accepted user refresh', async () => {
+    const first = photo({ id: 'photo-1', status: 'published' })
+    const second = photo({ id: 'photo-2', status: 'published' })
+    const photos = photoApi([first])
+    vi.mocked(photos.listPhotos)
+      .mockResolvedValueOnce([first])
+      .mockResolvedValueOnce([first, second])
+    const wrapper = mount(AdminApp, {
+      props: { session: session(), photoApi: photos, uploadApi: idleUploadApi() },
+    })
+    await flushPromises()
+
+    const notifications = wrapper.get('[data-success-notifications]')
+    expect(notifications.findAll('[data-success-notification]')).toHaveLength(0)
+
+    await wrapper.get('[data-refresh]').trigger('click')
+    await flushPromises()
+
+    expect(notifications.findAll('[data-success-notification]')).toHaveLength(1)
+    expect(notifications.text()).toContain('刷新成功 · 共 2 张')
+    wrapper.unmount()
+  })
+
+  it('keeps the safe refresh error without showing a success notification', async () => {
+    const existing = photo({ id: 'photo-1', status: 'published' })
+    const photos = photoApi([existing])
+    vi.mocked(photos.listPhotos)
+      .mockResolvedValueOnce([existing])
+      .mockRejectedValueOnce(new Error('/srv/private refresh failure'))
+    const wrapper = mount(AdminApp, {
+      props: { session: session(), photoApi: photos, uploadApi: idleUploadApi() },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-refresh]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-success-notifications]')
+      .findAll('[data-success-notification]')).toHaveLength(0)
+    expect(wrapper.get('.admin-library-refresh-message').text())
+      .toBe('暂时无法加载照片，请稍后重试')
+    expect(wrapper.text()).not.toContain('/srv/private refresh failure')
+    wrapper.unmount()
+  })
+
+  it('keeps upload and refresh completion notifications visible together', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:uploaded-photo')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const uploaded = photo({ id: 'photo-1', title: '新照片', status: 'published' })
+    const photos = photoApi([])
+    vi.mocked(photos.listPhotos)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([uploaded])
+    const uploads: AdminUploadApiClient = {
+      uploadPhoto: vi.fn(async () => uploaded),
+    }
+    const wrapper = mount(AdminApp, {
+      props: { session: session(), photoApi: photos, uploadApi: uploads },
+    })
+    await flushPromises()
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['photo'], 'new-photo.jpg', { type: 'image/jpeg' })],
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+    await wrapper.get('[data-refresh]').trigger('click')
+    await flushPromises()
+
+    const notices = wrapper.get('[data-success-notifications]')
+      .findAll('[data-success-notification]')
+    expect(notices).toHaveLength(2)
+    expect(notices.map((notice) => notice.text())).toEqual([
+      expect.stringContaining('1 张照片上传完成'),
+      expect.stringContaining('刷新成功 · 共 1 张'),
+    ])
+    wrapper.unmount()
+  })
+
+  it('suspends existing notifications during reauthentication and photo modals', async () => {
+    const existing = photo({ id: 'photo-1', status: 'published' })
+    const adminSession = session()
+    const photos = photoApi([existing])
+    const wrapper = mount(AdminApp, {
+      attachTo: document.body,
+      props: { session: adminSession, photoApi: photos, uploadApi: idleUploadApi() },
+    })
+    await flushPromises()
+    await wrapper.get('[data-refresh]').trigger('click')
+    await flushPromises()
+
+    const notifications = wrapper.get('[data-success-notifications]')
+    const notice = notifications.get('[data-success-notification]')
+    const dismiss = notice.get('[data-dismiss-success]')
+    expect(notifications.element.closest('.admin-workspace-content')).toBeNull()
+
+    adminSession.status.value = 'reauth-required'
+    await flushPromises()
+
+    expect(notifications.attributes('aria-live')).toBe('polite')
+    expect(notifications.attributes('data-suspended')).toBe('true')
+    expect(notice.attributes('tabindex')).toBe('-1')
+    expect(dismiss.attributes('disabled')).toBeDefined()
+
+    adminSession.status.value = 'authenticated'
+    await flushPromises()
+
+    expect(notifications.attributes('data-suspended')).toBeUndefined()
+    expect(notice.attributes('tabindex')).toBe('0')
+    expect(dismiss.attributes('disabled')).toBeUndefined()
+
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await wrapper.get('[data-open-delete]').trigger('click')
+    await flushPromises()
+
+    expect(notifications.attributes('aria-live')).toBe('polite')
+    expect(notifications.attributes('data-suspended')).toBe('true')
+    expect(notice.attributes('tabindex')).toBe('-1')
+    expect(dismiss.attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[role="dialog"] .admin-secondary-button').trigger('click')
+    await flushPromises()
+
+    expect(notifications.attributes('data-suspended')).toBeUndefined()
+    expect(notice.attributes('tabindex')).toBe('0')
+    expect(dismiss.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('keeps a production-data warning visible in local development', async () => {
     const wrapper = mount(AdminApp, {
       props: {
