@@ -225,7 +225,6 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
   function retry(id: string): void {
     const item = items.value.find((candidate) => candidate.id === id)
     if (item?.status !== 'failed') return
-    if (item.errorCode === 'file-too-large') return
     if (item.file.size > MAX_FILE_BYTES) {
       replaceItem(id, { errorCode: 'file-too-large' })
       const batchId = batchByItemId.get(id)

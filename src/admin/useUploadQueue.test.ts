@@ -201,24 +201,27 @@ describe('useUploadQueue', () => {
     queue.retry(queue.items.value[1]!.id)
     await flushPromises()
 
-    expect(controlled.calls).toHaveLength(1)
+    expect(controlled.calls).toHaveLength(2)
+    controlled.calls[1]?.result.resolve(photo('oversized-retried'))
+    await flushPromises()
     expect(completed).not.toHaveBeenCalled()
 
     queue.add([file('later.jpg')])
     await flushPromises()
-    controlled.calls[1]?.result.resolve(photo('later'))
+    controlled.calls[2]?.result.resolve(photo('later'))
     await flushPromises()
 
     expect(completed).toHaveBeenCalledTimes(1)
     expect(completed).toHaveBeenCalledWith({ batchId: 2, count: 1 })
   })
 
-  it('never retries or reports a batch rejected as too large by the API', async () => {
+  it('retries an API-rejected oversized item without reporting its canceled batch', async () => {
     const controlled = controlledApi()
     const completed = vi.fn()
     const queue = createQueue(controlled.api, { onBatchCompleted: completed })
     queue.add([file('server-rejected.jpg')])
     await flushPromises()
+    const firstRequestId = controlled.calls[0]?.requestId
 
     controlled.calls[0]?.result.reject(new AdminApiError('upload-too-large', 'server limit'))
     await flushPromises()
@@ -230,12 +233,15 @@ describe('useUploadQueue', () => {
     queue.retry(rejectedId)
     await flushPromises()
 
-    expect(controlled.calls).toHaveLength(1)
+    expect(controlled.calls).toHaveLength(2)
+    expect(controlled.calls[1]?.requestId).toBe(firstRequestId)
+    controlled.calls[1]?.result.resolve(photo('server-rejected-retried'))
+    await flushPromises()
     expect(completed).not.toHaveBeenCalled()
 
     queue.add([file('later.jpg')])
     await flushPromises()
-    controlled.calls[1]?.result.resolve(photo('later'))
+    controlled.calls[2]?.result.resolve(photo('later'))
     await flushPromises()
 
     expect(completed).toHaveBeenCalledTimes(1)
