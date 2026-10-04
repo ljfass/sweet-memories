@@ -176,7 +176,12 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
         pauseForAuthentication()
         replaceItem(item.id, { status: 'paused', errorCode: null })
       } else {
-        replaceItem(item.id, { status: 'failed', errorCode: uploadErrorCode(error) })
+        const errorCode = uploadErrorCode(error)
+        replaceItem(item.id, { status: 'failed', errorCode })
+        if (errorCode === 'file-too-large') {
+          const batchId = batchByItemId.get(item.id)
+          if (batchId !== undefined) forgetBatch(batchId)
+        }
       }
     } finally {
       activeCount -= 1
@@ -220,8 +225,11 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
   function retry(id: string): void {
     const item = items.value.find((candidate) => candidate.id === id)
     if (item?.status !== 'failed') return
+    if (item.errorCode === 'file-too-large') return
     if (item.file.size > MAX_FILE_BYTES) {
       replaceItem(id, { errorCode: 'file-too-large' })
+      const batchId = batchByItemId.get(id)
+      if (batchId !== undefined) forgetBatch(batchId)
       return
     }
     replaceItem(id, {
