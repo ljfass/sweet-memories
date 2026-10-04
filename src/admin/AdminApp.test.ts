@@ -72,7 +72,19 @@ function idleUploadApi(): AdminUploadApiClient {
   return { uploadPhoto: vi.fn() }
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>
+  resolve(value: T): void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -336,6 +348,110 @@ describe('AdminApp integration', () => {
     expect(notifications.attributes('data-suspended')).toBeUndefined()
     expect(notice.attributes('tabindex')).toBe('0')
     expect(dismiss.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('discards paused notifications when reauthentication ends in logout', async () => {
+    vi.useFakeTimers()
+    const existing = photo({ id: 'photo-1', status: 'published' })
+    const adminSession = session()
+    const wrapper = mount(AdminApp, {
+      attachTo: document.body,
+      props: {
+        session: adminSession,
+        photoApi: photoApi([existing]),
+        uploadApi: idleUploadApi(),
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-refresh]').trigger('click')
+    await flushPromises()
+
+    const notice = wrapper.get('[data-success-notification]')
+    await notice.trigger('mouseenter')
+    adminSession.status.value = 'reauth-required'
+    await flushPromises()
+    await wrapper.get('[data-testid="reauth-logout"]').trigger('click')
+    await flushPromises()
+
+    expect(adminSession.status.value).toBe('anonymous')
+    expect(wrapper.find('[data-success-notifications]').exists()).toBe(false)
+
+    vi.advanceTimersByTime(10_000)
+    adminSession.status.value = 'authenticated'
+    adminSession.csrfToken.value = 'next-session-csrf-token'
+    await flushPromises()
+
+    expect(wrapper.get('[data-success-notifications]')
+      .findAll('[data-success-notification]')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('does not surface an upload completion from a logged-out session', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:pending-upload')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const completion = deferred<AdminPhoto>()
+    const adminSession = session()
+    const uploads: AdminUploadApiClient = {
+      uploadPhoto: vi.fn(() => completion.promise),
+    }
+    const wrapper = mount(AdminApp, {
+      props: { session: adminSession, photoApi: photoApi([]), uploadApi: uploads },
+    })
+    await flushPromises()
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['photo'], 'pending.jpg', { type: 'image/jpeg' })],
+    })
+    await input.trigger('change')
+    expect(uploads.uploadPhoto).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('.admin-toolbar button').trigger('click')
+    await flushPromises()
+    completion.resolve(photo({ id: 'late-photo', status: 'published' }))
+    await flushPromises()
+
+    expect(adminSession.status.value).toBe('anonymous')
+    expect(wrapper.find('[data-success-notifications]').exists()).toBe(false)
+
+    adminSession.status.value = 'authenticated'
+    adminSession.csrfToken.value = 'next-session-csrf-token'
+    await flushPromises()
+
+    expect(wrapper.get('[data-success-notifications]')
+      .findAll('[data-success-notification]')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('does not surface a refresh completion while reauthentication is required', async () => {
+    const existing = photo({ id: 'photo-1', status: 'published' })
+    const completion = deferred<readonly AdminPhoto[]>()
+    const adminSession = session()
+    const photos = photoApi([existing])
+    vi.mocked(photos.listPhotos)
+      .mockResolvedValueOnce([existing])
+      .mockImplementationOnce(() => completion.promise)
+    const wrapper = mount(AdminApp, {
+      props: { session: adminSession, photoApi: photos, uploadApi: idleUploadApi() },
+    })
+    await flushPromises()
+    await wrapper.get('[data-refresh]').trigger('click')
+
+    adminSession.status.value = 'reauth-required'
+    await flushPromises()
+    completion.resolve([existing])
+    await flushPromises()
+
+    expect(wrapper.get('[data-success-notifications]')
+      .findAll('[data-success-notification]')).toHaveLength(0)
+
+    adminSession.status.value = 'authenticated'
+    adminSession.csrfToken.value = 'next-session-csrf-token'
+    await flushPromises()
+
+    expect(wrapper.get('[data-success-notifications]')
+      .findAll('[data-success-notification]')).toHaveLength(0)
     wrapper.unmount()
   })
 

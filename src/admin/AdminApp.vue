@@ -33,6 +33,8 @@ const successNotifications = useAdminSuccessNotifications();
 let refreshNoticeId = 0;
 
 function showUploadCompleted(completion: UploadBatchCompletion): void {
+  if (session.status.value !== "authenticated") return;
+
   successNotifications.show(
     `upload-${completion.batchId}`,
     `${completion.count} 张照片上传完成`,
@@ -40,6 +42,8 @@ function showUploadCompleted(completion: UploadBatchCompletion): void {
 }
 
 function showRefreshCompleted(count: number): void {
+  if (session.status.value !== "authenticated") return;
+
   successNotifications.show(
     `refresh-${++refreshNoticeId}`,
     `刷新成功 · 共 ${count} 张`,
@@ -84,6 +88,12 @@ onMounted(() => session.initialize());
 watch(
   () => session.status.value,
   (status) => {
+    if (status === "anonymous") {
+      for (const item of successNotifications.items.value) {
+        successNotifications.dismiss(item.id);
+      }
+      return;
+    }
     if (status === "authenticated" && photoLibrary.status.value === "idle") {
       void photoLibrary.load();
     }
