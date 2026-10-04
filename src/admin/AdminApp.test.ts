@@ -393,7 +393,9 @@ describe('AdminApp integration', () => {
     const completion = deferred<AdminPhoto>()
     const adminSession = session()
     const uploads: AdminUploadApiClient = {
-      uploadPhoto: vi.fn(() => completion.promise),
+      uploadPhoto: vi.fn()
+        .mockImplementationOnce(() => completion.promise)
+        .mockResolvedValueOnce(photo({ id: 'new-session-photo', status: 'published' })),
     }
     const wrapper = mount(AdminApp, {
       props: { session: adminSession, photoApi: photoApi([]), uploadApi: uploads },
@@ -409,18 +411,33 @@ describe('AdminApp integration', () => {
 
     await wrapper.get('.admin-toolbar button').trigger('click')
     await flushPromises()
-    completion.resolve(photo({ id: 'late-photo', status: 'published' }))
-    await flushPromises()
 
     expect(adminSession.status.value).toBe('anonymous')
     expect(wrapper.find('[data-success-notifications]').exists()).toBe(false)
 
-    adminSession.status.value = 'authenticated'
-    adminSession.csrfToken.value = 'next-session-csrf-token'
+    await wrapper.get('input[name="username"]').setValue('bob')
+    await wrapper.get('input[name="password"]').setValue('new-session-password')
+    await wrapper.get('.admin-login form').trigger('submit')
+    await flushPromises()
+    expect(adminSession.status.value).toBe('authenticated')
+
+    completion.resolve(photo({ id: 'late-photo', status: 'published' }))
     await flushPromises()
 
     expect(wrapper.get('[data-success-notifications]')
       .findAll('[data-success-notification]')).toHaveLength(0)
+
+    const nextInput = wrapper.get('input[type="file"]')
+    Object.defineProperty(nextInput.element, 'files', {
+      configurable: true,
+      value: [new File(['new'], 'new-session.jpg', { type: 'image/jpeg' })],
+    })
+    await nextInput.trigger('change')
+    await flushPromises()
+
+    expect(uploads.uploadPhoto).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-success-notifications]').text())
+      .toContain('1 张照片上传完成')
     wrapper.unmount()
   })
 

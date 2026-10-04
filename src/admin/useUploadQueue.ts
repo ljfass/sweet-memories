@@ -276,6 +276,10 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
   }
 
   watch(options.sessionStatus, (nextStatus) => {
+    if (nextStatus === 'anonymous') {
+      batches.clear()
+      batchByItemId.clear()
+    }
     if (nextStatus === 'reauth-required' || nextStatus === 'anonymous') {
       pauseForAuthentication()
     } else if (nextStatus === 'authenticated' && authenticationPaused) {

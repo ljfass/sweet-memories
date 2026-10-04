@@ -437,6 +437,46 @@ describe('useUploadQueue', () => {
     expect(controlled.calls[2]).toMatchObject({ requestId: firstRequestId, csrfToken: 'fresh-csrf' })
   })
 
+  it('expires pending batch notices across anonymous session boundaries', async () => {
+    const controlled = controlledApi()
+    const sessionStatus = ref<AdminSessionStatus>('authenticated')
+    const csrfToken = ref<string | null>('first-session-csrf')
+    const uploaded = vi.fn()
+    const completed = vi.fn()
+    const queue = createQueue(controlled.api, {
+      status: sessionStatus,
+      csrfToken,
+      onUploaded: uploaded,
+      onBatchCompleted: completed,
+    })
+    queue.add([file('old-session.jpg')])
+    await flushPromises()
+
+    sessionStatus.value = 'anonymous'
+    csrfToken.value = null
+    await nextTick()
+    csrfToken.value = 'second-session-csrf'
+    sessionStatus.value = 'authenticated'
+    await nextTick()
+
+    controlled.calls[0]?.result.resolve(photo('old-session'))
+    await flushPromises()
+
+    expect(queue.items.value[0]).toMatchObject({ status: 'succeeded', photo: photo('old-session') })
+    expect(queue.status.value).toBe('complete')
+    expect(uploaded).toHaveBeenCalledWith(photo('old-session'))
+    expect(completed).not.toHaveBeenCalled()
+
+    queue.add([file('new-session.jpg')])
+    await flushPromises()
+    controlled.calls[1]?.result.resolve(photo('new-session'))
+    await flushPromises()
+
+    expect(uploaded).toHaveBeenCalledWith(photo('new-session'))
+    expect(completed).toHaveBeenCalledTimes(1)
+    expect(completed).toHaveBeenCalledWith({ batchId: 2, count: 1 })
+  })
+
   it('does not treat an empty queue during the initial anonymous check as a paused upload', async () => {
     const controlled = controlledApi()
     const sessionStatus = ref<AdminSessionStatus>('checking')
