@@ -15,6 +15,107 @@ const items: readonly AdminSuccessNotification[] = [
   { id: 2, key: 'photo:2', message: '上传已完成' },
 ]
 
+function normalizePrelude(prelude: string): string {
+  return prelude.replace(/\s+/g, ' ').trim()
+}
+
+function closingBraceIndex(source: string, openingBraceIndex: number): number {
+  let depth = 1
+  let quote: '"' | "'" | null = null
+
+  for (let index = openingBraceIndex + 1; index < source.length; index += 1) {
+    const character = source[index]
+    if (quote) {
+      if (character === quote && source[index - 1] !== '\\') quote = null
+      continue
+    }
+    if (character === '"' || character === "'") {
+      quote = character
+    } else if (character === '{') {
+      depth += 1
+    } else if (character === '}') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+
+  throw new Error('Unclosed CSS block')
+}
+
+function blocksFor(
+  source: string,
+  matchesPrelude: (prelude: string) => boolean,
+): string[] {
+  const uncommentedSource = source.replace(/\/\*[\s\S]*?\*\//g, '')
+  const matchingBodies: string[] = []
+  let cursor = 0
+
+  while (cursor < uncommentedSource.length) {
+    const openingBraceIndex = uncommentedSource.indexOf('{', cursor)
+    if (openingBraceIndex === -1) break
+
+    const prelude = normalizePrelude(uncommentedSource.slice(cursor, openingBraceIndex))
+    const closingIndex = closingBraceIndex(uncommentedSource, openingBraceIndex)
+    if (matchesPrelude(prelude)) {
+      matchingBodies.push(uncommentedSource.slice(openingBraceIndex + 1, closingIndex))
+    }
+    cursor = closingIndex + 1
+  }
+
+  return matchingBodies
+}
+
+function blockFor(source: string, prelude: string): string {
+  const normalizedPrelude = normalizePrelude(prelude)
+  const matchingBodies = blocksFor(source, (candidate) => candidate === normalizedPrelude)
+  if (matchingBodies.length !== 1) {
+    throw new Error(`Expected one ${prelude} block, received ${matchingBodies.length}`)
+  }
+  return matchingBodies[0]!
+}
+
+function mediaBody(source: string, condition: string): string {
+  return blockFor(source, `@media ${condition}`)
+}
+
+function declarationsFor(source: string, selector: string): Map<string, string> {
+  const normalizedSelector = normalizePrelude(selector)
+  const bodies = blocksFor(source, (prelude) => (
+    !prelude.startsWith('@')
+    && prelude.split(',').some((candidate) => normalizePrelude(candidate) === normalizedSelector)
+  ))
+  if (bodies.length === 0) throw new Error(`CSS rule not found: ${selector}`)
+
+  const declarations = new Map<string, string>()
+  for (const body of bodies) {
+    for (const declaration of body.split(';')) {
+      const separatorIndex = declaration.indexOf(':')
+      if (separatorIndex === -1) continue
+
+      const property = declaration.slice(0, separatorIndex).trim()
+      const value = declaration.slice(separatorIndex + 1).trim()
+      if (property && value) declarations.set(property, value)
+    }
+  }
+
+  return declarations
+}
+
+function assertDeclarations(
+  declarations: ReadonlyMap<string, string>,
+  selector: string,
+  expected: Readonly<Record<string, string>>,
+): void {
+  for (const [property, expectedValue] of Object.entries(expected)) {
+    const actualValue = declarations.get(property)
+    if (actualValue !== expectedValue) {
+      throw new Error(
+        `${selector} expected ${property}: ${expectedValue}, received ${actualValue ?? '<missing>'}`,
+      )
+    }
+  }
+}
+
 describe('AdminSuccessNotifications', () => {
   it('renders a polite status with named icons without stealing focus', () => {
     const input = document.createElement('input')
@@ -160,17 +261,92 @@ describe('AdminSuccessNotifications', () => {
 describe('admin success notification styles', () => {
   const css = readFileSync('src/styles/admin.css', 'utf8')
 
+  it('parses declarations independently of order and keeps the final override', () => {
+    const declarations = declarationsFor(`
+      .sample {
+        right: 24px;
+        position: fixed;
+        top: 30px;
+      }
+
+      .other { top: 80px; }
+
+      .sample {
+        top: 24px;
+      }
+    `, '.sample')
+
+    expect(Object.fromEntries(declarations)).toEqual({
+      right: '24px',
+      position: 'fixed',
+      top: '24px',
+    })
+  })
+
+  it('reports a missing required declaration', () => {
+    expect(() => assertDeclarations(
+      new Map([['position', 'fixed']]),
+      '.sample',
+      { position: 'fixed', top: '24px' },
+    )).toThrow('.sample expected top: 24px, received <missing>')
+  })
+
   it('keeps the desktop layer fixed, bounded, wrapping, and outside document flow', () => {
-    expect(css).toMatch(/\.admin-success-notifications\s*{[^}]*position:\s*fixed;[^}]*z-index:\s*60;[^}]*top:\s*24px;[^}]*right:\s*24px;/s)
-    expect(css).toMatch(/\.admin-success-notifications\s*{[^}]*width:\s*min\(360px, calc\(100vw - 32px\)\);[^}]*gap:\s*8px;[^}]*pointer-events:\s*none;/s)
-    expect(css).toMatch(/\.admin-success-notification\s*{[^}]*grid-template-columns:\s*20px minmax\(0, 1fr\) 32px;[^}]*border-radius:\s*7px;[^}]*pointer-events:\s*auto;/s)
-    expect(css).toMatch(/\.admin-success-notification-message\s*{[^}]*overflow-wrap:\s*anywhere;/s)
+    assertDeclarations(declarationsFor(css, '.admin-success-notifications'), '.admin-success-notifications', {
+      position: 'fixed',
+      'z-index': '60',
+      top: '24px',
+      right: '24px',
+      width: 'min(360px, calc(100vw - 32px))',
+      gap: '8px',
+      'pointer-events': 'none',
+    })
+    assertDeclarations(declarationsFor(css, '.admin-success-notification'), '.admin-success-notification', {
+      'grid-template-columns': '20px minmax(0, 1fr) 32px',
+      'border-radius': '7px',
+      'pointer-events': 'auto',
+    })
+    assertDeclarations(
+      declarationsFor(css, '.admin-success-notification-message'),
+      '.admin-success-notification-message',
+      { 'overflow-wrap': 'anywhere' },
+    )
   })
 
   it('uses the mobile safe area and removes notification motion when requested', () => {
-    expect(css).toMatch(/@media \(max-width:\s*720px\)\s*{[\s\S]*?\.admin-success-notifications\s*{[^}]*top:\s*calc\(64px \+ env\(safe-area-inset-top, 0px\)\);[^}]*right:\s*12px;[^}]*left:\s*12px;[^}]*width:\s*auto;/)
-    expect(css).toMatch(/\[data-suspended="true"\][^{]*{[^}]*pointer-events:\s*none;/s)
-    expect(css).toMatch(/@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*?\.admin-success-notification-(?:enter|leave)-active[^{]*{[^}]*transition:\s*none;/)
-    expect(css).toMatch(/@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*?\.admin-success-notification-(?:enter|leave)-(?:from|to)[^{]*{[^}]*transform:\s*none;/)
+    const mobileCss = mediaBody(css, '(max-width: 720px)')
+    assertDeclarations(
+      declarationsFor(mobileCss, '.admin-success-notifications'),
+      '@media (max-width: 720px) .admin-success-notifications',
+      {
+        top: 'calc(64px + env(safe-area-inset-top, 0px))',
+        right: '12px',
+        left: '12px',
+        width: 'auto',
+      },
+    )
+    assertDeclarations(
+      declarationsFor(css, '.admin-success-notifications[data-suspended="true"] .admin-success-notification'),
+      '.admin-success-notifications[data-suspended="true"] .admin-success-notification',
+      { 'pointer-events': 'none' },
+    )
+
+    const reducedMotionCss = mediaBody(css, '(prefers-reduced-motion: reduce)')
+    for (const selector of [
+      '.admin-success-notification-enter-active',
+      '.admin-success-notification-leave-active',
+    ]) {
+      assertDeclarations(declarationsFor(reducedMotionCss, selector), selector, {
+        transition: 'none',
+      })
+    }
+    for (const selector of [
+      '.admin-success-notification-enter-from',
+      '.admin-success-notification-leave-to',
+    ]) {
+      assertDeclarations(declarationsFor(reducedMotionCss, selector), selector, {
+        transform: 'none',
+      })
+    }
   })
 })
