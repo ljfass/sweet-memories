@@ -183,11 +183,12 @@ describe('useUploadQueue', () => {
     expect(completed).not.toHaveBeenCalled()
   })
 
-  it('does not report a batch containing an oversized file', async () => {
+  it('never reports an oversized batch and still completes a later batch', async () => {
     const controlled = controlledApi()
     const completed = vi.fn()
     const queue = createQueue(controlled.api, { onBatchCompleted: completed })
-    queue.add([file('valid.jpg'), file('oversized.jpg', 10 * MEBIBYTE + 1)])
+    const oversized = file('oversized.jpg', 10 * MEBIBYTE + 1)
+    queue.add([file('valid.jpg'), oversized])
     await flushPromises()
 
     controlled.calls[0]?.result.resolve(photo('valid'))
@@ -195,6 +196,22 @@ describe('useUploadQueue', () => {
 
     expect(queue.items.value[1]).toMatchObject({ status: 'failed', errorCode: 'file-too-large' })
     expect(completed).not.toHaveBeenCalled()
+
+    Object.defineProperty(oversized, 'size', { configurable: true, value: 32 })
+    queue.retry(queue.items.value[1]!.id)
+    await flushPromises()
+    controlled.calls[1]?.result.resolve(photo('oversized-retried'))
+    await flushPromises()
+
+    expect(completed).not.toHaveBeenCalled()
+
+    queue.add([file('later.jpg')])
+    await flushPromises()
+    controlled.calls[2]?.result.resolve(photo('later'))
+    await flushPromises()
+
+    expect(completed).toHaveBeenCalledTimes(1)
+    expect(completed).toHaveBeenCalledWith({ batchId: 2, count: 1 })
   })
 
   it('accepts at most ten files per selection and prechecks each 10 MiB boundary', async () => {

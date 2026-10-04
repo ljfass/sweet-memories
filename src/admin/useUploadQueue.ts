@@ -211,6 +211,7 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
       const itemIds = new Set(additions.map((item) => item.id))
       batches.set(batchId, { id: batchId, itemIds, count: additions.length })
       for (const itemId of itemIds) batchByItemId.set(itemId, batchId)
+      if (additions.some((item) => item.errorCode === 'file-too-large')) forgetBatch(batchId)
     }
     items.value = [...items.value, ...additions]
     schedule()
