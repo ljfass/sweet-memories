@@ -170,8 +170,7 @@ export function usePhotoLibrary(
 
     const preserveContent = status.value === 'ready'
     isRefreshing.value = true
-    let currentPromise: Promise<boolean>
-    currentPromise = loadPhotos(preserveContent).finally(() => {
+    const currentPromise = loadPhotos(preserveContent).finally(() => {
       if (refreshPromise !== currentPromise) return
       isRefreshing.value = false
       refreshPromise = null
