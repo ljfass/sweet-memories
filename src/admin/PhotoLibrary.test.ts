@@ -63,7 +63,7 @@ function library(overrides: Partial<PhotoLibraryState> = {}): PhotoLibraryState 
     photos: ref([photo]), status: ref('ready'), selectedId,
     isRefreshing: ref(false),
     isMigrationPending: computed(() => false), uploadsDisabled: computed(() => false),
-    load: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined),
+    load: vi.fn(async () => undefined), refresh: vi.fn(async () => true),
     select: vi.fn((id) => { selectedId.value = id }), draftFor: vi.fn(() => draft), updateDraft: vi.fn(),
     isDirty: vi.fn(() => false), hasConflict: vi.fn(() => false),
     isSaving: vi.fn(() => false), messageFor: vi.fn(() => ''),
@@ -197,8 +197,38 @@ describe('PhotoLibrary', () => {
     observer.setIntersecting(false)
     await nextTick()
     await wrapper.get('[data-mobile-floating-actions] [data-refresh]').trigger('click')
+    await flushPromises()
 
     expect(state.refresh).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('refresh-success')).toEqual([[1], [1]])
+  })
+
+  it('emits the merged photo count after a user refresh is accepted', async () => {
+    const state = library()
+    vi.mocked(state.refresh).mockImplementationOnce(async () => {
+      state.photos.value = [photo, secondPhoto]
+      return true
+    })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    expect(wrapper.emitted('refresh-success')).toBeUndefined()
+    await wrapper.get('[data-refresh]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('refresh-success')).toEqual([[2]])
+  })
+
+  it('does not emit refresh success when the requested refresh is not accepted', async () => {
+    const state = library({ refresh: vi.fn(async () => false) })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    await flushPromises()
+    expect(wrapper.emitted('refresh-success')).toBeUndefined()
+
+    await wrapper.get('[data-refresh]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('refresh-success')).toBeUndefined()
   })
 
   it('hides the floating actions while the mobile photo editor is open', async () => {

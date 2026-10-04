@@ -134,7 +134,7 @@ export interface PhotoLibraryState {
   readonly isMigrationPending: ComputedRef<boolean>
   readonly uploadsDisabled: ComputedRef<boolean>
   load(): Promise<void>
-  refresh(): Promise<void>
+  refresh(): Promise<boolean>
   select(id: string | null): void
   draftFor(id: string): PhotoDraft
   updateDraft(id: string, patch: Partial<PhotoDraft>): void

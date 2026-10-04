@@ -15,6 +15,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'mobile-modal-change': [open: boolean]
   'modal-change': [open: boolean]
+  'refresh-success': [count: number]
 }>()
 
 const deleteCandidate = ref<AdminPhoto | null>(null)
@@ -113,9 +114,10 @@ function openPhotoPicker(): void {
   uploadInput.value?.click()
 }
 
-function refreshPhotos(): void {
+async function refreshPhotos(): Promise<void> {
   if (props.library.isRefreshing.value) return
-  void props.library.refresh()
+  const accepted = await props.library.refresh()
+  if (accepted) emit('refresh-success', props.library.photos.value.length)
 }
 
 function addSelectedFiles(event: Event): void {

@@ -66,7 +66,7 @@ describe('usePhotoLibrary', () => {
     expect(library.photos.value).toHaveLength(1)
 
     pending.resolve([photo({ title: '刷新后的照片', version: 2 })])
-    await refreshing
+    await expect(refreshing).resolves.toBe(true)
 
     expect(library.isRefreshing.value).toBe(false)
     expect(library.status.value).toBe('ready')
@@ -83,10 +83,11 @@ describe('usePhotoLibrary', () => {
     const first = library.refresh()
     const second = library.refresh()
 
+    expect(second).toBe(first)
     expect(api.listPhotos).toHaveBeenCalledTimes(2)
     expect(library.isRefreshing.value).toBe(true)
     pending.resolve([photo()])
-    await Promise.all([first, second])
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true])
     expect(library.isRefreshing.value).toBe(false)
   })
 
@@ -96,7 +97,7 @@ describe('usePhotoLibrary', () => {
     await library.load()
     vi.mocked(api.listPhotos).mockRejectedValueOnce(new AdminApiError('unavailable', 'private'))
 
-    await library.refresh()
+    await expect(library.refresh()).resolves.toBe(false)
 
     expect(library.status.value).toBe('ready')
     expect(library.photos.value).toHaveLength(1)
@@ -294,6 +295,44 @@ describe('usePhotoLibrary', () => {
     await oldLoad
 
     expect(library.photos.value[0]).toMatchObject({ title: '最新响应', version: 3 })
+  })
+
+  it('reports an initial refresh as stale when a newer load replaces its generation', async () => {
+    const older = deferred<readonly AdminPhoto[]>()
+    const newer = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    vi.mocked(api.listPhotos)
+      .mockReset()
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise)
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+
+    const oldRefresh = library.refresh()
+    const newLoad = library.load()
+    newer.resolve([photo({ title: '最新响应', version: 3 })])
+    await newLoad
+    older.resolve([photo({ title: '过期响应', version: 1 })])
+
+    await expect(oldRefresh).resolves.toBe(false)
+    expect(library.photos.value[0]).toMatchObject({ title: '最新响应', version: 3 })
+  })
+
+  it('reports an in-place refresh as stale when a newer load replaces its generation', async () => {
+    const older = deferred<readonly AdminPhoto[]>()
+    const api = fakeApi()
+    const library = usePhotoLibrary(api, ref('csrf-token'))
+    await library.load()
+    vi.mocked(api.listPhotos)
+      .mockImplementationOnce(() => older.promise)
+      .mockResolvedValueOnce([photo({ title: '最新响应', version: 3 })])
+
+    const oldRefresh = library.refresh()
+    await library.load()
+    older.resolve([photo({ title: '过期响应', version: 1 })])
+
+    await expect(oldRefresh).resolves.toBe(false)
+    expect(library.photos.value[0]).toMatchObject({ title: '最新响应', version: 3 })
+    expect(library.isRefreshing.value).toBe(false)
   })
 
   it('does not let a pending save response replace a newer refreshed version', async () => {

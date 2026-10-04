@@ -73,7 +73,7 @@ export function usePhotoLibrary(
   const uploadsDisabled = computed(() => isMigrationPending.value)
   let loadGeneration = 0
   let uploadRevision = 0
-  let refreshPromise: Promise<void> | null = null
+  let refreshPromise: Promise<boolean> | null = null
   const localUploads = new Map<string, { readonly photo: AdminPhoto; readonly revision: number }>()
 
   function setError(id: string, text: string): void {
@@ -142,29 +142,35 @@ export function usePhotoLibrary(
     }
   }
 
-  async function load(preserveContent = false): Promise<void> {
+  async function loadPhotos(preserveContent: boolean): Promise<boolean> {
     const generation = ++loadGeneration
     const uploadsAtRequestStart = uploadRevision
     messages.delete('library')
     if (!preserveContent) status.value = 'loading'
     try {
       const nextPhotos = await api.listPhotos()
-      if (generation !== loadGeneration) return
+      if (generation !== loadGeneration) return false
       synchronize(nextPhotos, undefined, uploadsAtRequestStart)
       status.value = 'ready'
+      return true
     } catch (error) {
-      if (generation !== loadGeneration) return
+      if (generation !== loadGeneration) return false
       if (!preserveContent) status.value = 'error'
       setError('library', safeActionMessage(error, 'load'))
+      return false
     }
   }
 
-  function refresh(): Promise<void> {
+  async function load(): Promise<void> {
+    await loadPhotos(false)
+  }
+
+  function refresh(): Promise<boolean> {
     if (refreshPromise !== null) return refreshPromise
-    if (status.value !== 'ready') return load()
+    if (status.value !== 'ready') return loadPhotos(false)
 
     isRefreshing.value = true
-    refreshPromise = load(true).finally(() => {
+    refreshPromise = loadPhotos(true).finally(() => {
       isRefreshing.value = false
       refreshPromise = null
     })
