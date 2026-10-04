@@ -894,6 +894,90 @@
   width: auto;
 }
 
+.admin-success-notifications {
+  position: fixed;
+  z-index: 60;
+  top: 24px;
+  right: 24px;
+  display: grid;
+  width: min(360px, calc(100vw - 32px));
+  gap: 8px;
+  pointer-events: none;
+}
+
+.admin-success-notification {
+  display: grid;
+  align-items: start;
+  grid-template-columns: 20px minmax(0, 1fr) 32px;
+  min-width: 0;
+  padding: 10px 9px 10px 12px;
+  border: 1px solid #b8d6c8;
+  border-radius: 7px;
+  color: var(--admin-success);
+  background: var(--admin-paper);
+  box-shadow: 0 8px 22px rgb(45 41 44 / 12%);
+  gap: 9px;
+  pointer-events: auto;
+}
+
+.admin-success-notification:focus-visible {
+  outline: 3px solid var(--admin-teal);
+  outline-offset: 2px;
+}
+
+.admin-success-notification-icon {
+  margin-top: 2px;
+}
+
+.admin-success-notification-message {
+  min-width: 0;
+  margin: 0;
+  color: var(--admin-text);
+  font-size: 0.9rem;
+  font-weight: 650;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.admin-success-notification-dismiss {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--admin-muted);
+  background: transparent;
+  cursor: pointer;
+  place-items: center;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+.admin-success-notification-dismiss:hover:not(:disabled) {
+  color: var(--admin-text);
+  background: rgb(45 41 44 / 7%);
+}
+
+.admin-success-notification-dismiss:focus-visible {
+  outline: 3px solid var(--admin-teal);
+  outline-offset: 1px;
+}
+
+.admin-success-notifications[data-suspended="true"] .admin-success-notification {
+  pointer-events: none;
+}
+
+.admin-success-notification-enter-active,
+.admin-success-notification-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.admin-success-notification-enter-from,
+.admin-success-notification-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
 @media (max-width: 560px) {
   .admin-login-panel,
   .admin-dialog {
@@ -934,6 +1018,13 @@
 }
 
 @media (max-width: 720px) {
+  .admin-success-notifications {
+    top: calc(64px + env(safe-area-inset-top, 0px));
+    right: 12px;
+    left: 12px;
+    width: auto;
+  }
+
   .admin-workspace {
     width: min(100% - 24px, 1180px);
     padding-top: 16px;
@@ -1079,5 +1170,15 @@
   .admin-icon-button,
   .admin-photo-card button {
     transition: none;
+  }
+
+  .admin-success-notification-enter-active,
+  .admin-success-notification-leave-active {
+    transition: none;
+  }
+
+  .admin-success-notification-enter-from,
+  .admin-success-notification-leave-to {
+    transform: none;
   }
 }
