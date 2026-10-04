@@ -6,6 +6,7 @@ import type {
   AdminPhoto,
   AdminSessionStatus,
   AdminUploadApiClient,
+  UploadBatchCompletion,
   UploadQueueState,
 } from './types'
 import { useUploadQueue } from './useUploadQueue'
@@ -88,6 +89,7 @@ function createQueue(
     readonly status?: Ref<AdminSessionStatus>
     readonly csrfToken?: Ref<string | null>
     readonly onUploaded?: (uploaded: AdminPhoto) => void
+    readonly onBatchCompleted?: (completion: UploadBatchCompletion) => void
   } = {},
 ): UploadQueueState {
   let sequence = 0
@@ -99,10 +101,102 @@ function createQueue(
     createObjectUrl: (selectedFile) => `blob:${selectedFile.name}`,
     revokeObjectUrl: vi.fn(),
     onUploaded: overrides.onUploaded,
+    onBatchCompleted: overrides.onBatchCompleted,
   })
 }
 
 describe('useUploadQueue', () => {
+  it('reports a completed multi-file batch once and keeps its successful items', async () => {
+    const controlled = controlledApi()
+    const completed = vi.fn()
+    const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+    queue.add([file('first.jpg'), file('second.jpg')])
+    await flushPromises()
+
+    controlled.calls[0]?.result.resolve(photo('first'))
+    await flushPromises()
+    expect(completed).not.toHaveBeenCalled()
+
+    controlled.calls[1]?.result.resolve(photo('second'))
+    await flushPromises()
+
+    expect(completed).toHaveBeenCalledTimes(1)
+    expect(completed).toHaveBeenCalledWith({ batchId: 1, count: 2 })
+    expect(queue.items.value).toHaveLength(2)
+    expect(queue.items.value.every((item) => item.status === 'succeeded')).toBe(true)
+  })
+
+  it('assigns an increasing batch ID to each file selection', async () => {
+    const controlled = controlledApi()
+    const completed = vi.fn()
+    const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+    queue.add([file('first.jpg')])
+    await flushPromises()
+    controlled.calls[0]?.result.resolve(photo('first'))
+    await flushPromises()
+
+    queue.add([file('second.jpg')])
+    await flushPromises()
+    controlled.calls[1]?.result.resolve(photo('second'))
+    await flushPromises()
+
+    expect(completed.mock.calls).toEqual([
+      [{ batchId: 1, count: 1 }],
+      [{ batchId: 2, count: 1 }],
+    ])
+  })
+
+  it('reports a failed batch only after its failed item is retried successfully', async () => {
+    const controlled = controlledApi()
+    const completed = vi.fn()
+    const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+    queue.add([file('first.jpg'), file('second.jpg')])
+    await flushPromises()
+
+    controlled.calls[0]?.result.reject(new AdminApiError('unavailable', 'temporary'))
+    controlled.calls[1]?.result.resolve(photo('second'))
+    await flushPromises()
+    expect(completed).not.toHaveBeenCalled()
+
+    queue.retry(queue.items.value[0]!.id)
+    await flushPromises()
+    controlled.calls[2]?.result.resolve(photo('first'))
+    await flushPromises()
+
+    expect(completed).toHaveBeenCalledTimes(1)
+    expect(completed).toHaveBeenCalledWith({ batchId: 1, count: 2 })
+  })
+
+  it('cancels batch completion when an unfinished item is removed', async () => {
+    const controlled = controlledApi()
+    const completed = vi.fn()
+    const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+    queue.add([file('first.jpg'), file('second.jpg')])
+    await flushPromises()
+    const firstId = queue.items.value[0]!.id
+
+    queue.remove(firstId)
+    controlled.calls[0]?.result.resolve(photo('late-first'))
+    controlled.calls[1]?.result.resolve(photo('second'))
+    await flushPromises()
+
+    expect(completed).not.toHaveBeenCalled()
+  })
+
+  it('does not report a batch containing an oversized file', async () => {
+    const controlled = controlledApi()
+    const completed = vi.fn()
+    const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+    queue.add([file('valid.jpg'), file('oversized.jpg', 10 * MEBIBYTE + 1)])
+    await flushPromises()
+
+    controlled.calls[0]?.result.resolve(photo('valid'))
+    await flushPromises()
+
+    expect(queue.items.value[1]).toMatchObject({ status: 'failed', errorCode: 'file-too-large' })
+    expect(completed).not.toHaveBeenCalled()
+  })
+
   it('accepts at most ten files per selection and prechecks each 10 MiB boundary', async () => {
     const controlled = controlledApi()
     const queue = createQueue(controlled.api)

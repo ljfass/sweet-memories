@@ -112,6 +112,11 @@ export interface UploadQueueItem {
   readonly hasUnrecognizedExtension: boolean
 }
 
+export interface UploadBatchCompletion {
+  readonly batchId: number
+  readonly count: number
+}
+
 export interface UploadQueueState {
   readonly items: Ref<readonly UploadQueueItem[]>
   readonly status: Ref<'idle' | 'uploading' | 'paused-auth' | 'ready-to-resume' | 'complete'>

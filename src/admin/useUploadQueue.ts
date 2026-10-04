@@ -4,6 +4,7 @@ import type {
   AdminPhoto,
   AdminSessionStatus,
   AdminUploadApiClient,
+  UploadBatchCompletion,
   UploadErrorCode,
   UploadQueueItem,
   UploadQueueState,
@@ -19,9 +20,16 @@ export interface UploadQueueOptions {
   readonly sessionStatus: Ref<AdminSessionStatus>
   readonly csrfToken: Ref<string | null>
   readonly onUploaded?: (photo: AdminPhoto) => void
+  readonly onBatchCompleted?: (completion: UploadBatchCompletion) => void
   readonly createId?: () => string
   readonly createObjectUrl?: (file: File) => string
   readonly revokeObjectUrl?: (url: string) => void
+}
+
+interface UploadBatch {
+  readonly id: number
+  readonly itemIds: ReadonlySet<string>
+  readonly count: number
 }
 
 function uploadErrorCode(error: unknown): UploadErrorCode {
@@ -47,7 +55,10 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
   let activeCount = 0
   let authenticationPaused = false
   let disposed = false
+  let nextBatchId = 0
   const attemptGenerations = new Map<string, number>()
+  const batchByItemId = new Map<string, number>()
+  const batches = new Map<number, UploadBatch>()
   const activeUploads = new Map<string, {
     readonly generation: number
     readonly controller: AbortController
@@ -55,6 +66,27 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
 
   function replaceItem(id: string, patch: Partial<UploadQueueItem>): void {
     items.value = items.value.map((item) => item.id === id ? { ...item, ...patch } : item)
+  }
+
+  function forgetBatch(batchId: number): void {
+    const batch = batches.get(batchId)
+    if (batch === undefined) return
+    for (const itemId of batch.itemIds) {
+      if (batchByItemId.get(itemId) === batchId) batchByItemId.delete(itemId)
+    }
+    batches.delete(batchId)
+  }
+
+  function maybeCompleteBatch(itemId: string): void {
+    const batchId = batchByItemId.get(itemId)
+    if (batchId === undefined) return
+    const batch = batches.get(batchId)
+    if (batch === undefined) return
+    const completed = [...batch.itemIds].every((batchItemId) =>
+      items.value.some((item) => item.id === batchItemId && item.status === 'succeeded'))
+    if (!completed) return
+    forgetBatch(batchId)
+    options.onBatchCompleted?.({ batchId: batch.id, count: batch.count })
   }
 
   function updateQueueStatus(): void {
@@ -137,6 +169,7 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
         photo: uploaded,
       })
       options.onUploaded?.(uploaded)
+      maybeCompleteBatch(item.id)
     } catch (error) {
       if (!isCurrentAttempt()) return
       if (error instanceof AdminApiError && error.kind === 'unauthorized') {
@@ -173,6 +206,12 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
         hasUnrecognizedExtension: !RECOGNIZED_EXTENSION.test(file.name),
       }
     })
+    if (additions.length > 0) {
+      const batchId = ++nextBatchId
+      const itemIds = new Set(additions.map((item) => item.id))
+      batches.set(batchId, { id: batchId, itemIds, count: additions.length })
+      for (const itemId of itemIds) batchByItemId.set(itemId, batchId)
+    }
     items.value = [...items.value, ...additions]
     schedule()
   }
@@ -195,6 +234,8 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
   function remove(id: string): void {
     const item = items.value.find((candidate) => candidate.id === id)
     if (item === undefined) return
+    const batchId = batchByItemId.get(id)
+    if (batchId !== undefined) forgetBatch(batchId)
     attemptGenerations.set(id, (attemptGenerations.get(id) ?? 0) + 1)
     activeUploads.get(id)?.controller.abort()
     items.value = items.value.filter((candidate) => candidate.id !== id)
