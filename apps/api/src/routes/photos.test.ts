@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createSessionService, type SessionService } from '../auth/session-service.js';
 import { buildApp } from '../app.js';
+import type { InputInspection } from '../media/inspect-input.js';
 import type { ProcessPhotoOptions, ProcessedPhotoManifest } from '../media/processor.js';
 import { ProcessingQueue } from '../media/processing-queue.js';
 import { MediaStorage } from '../media/storage.js';
@@ -152,6 +153,7 @@ function seedAsset(
 
 interface ContextOptions {
   readonly captureLogs?: boolean;
+  readonly inspectInput?: () => Promise<InputInspection>;
   readonly processPhoto?: (options: ProcessPhotoOptions) => Promise<ProcessedPhotoManifest>;
   readonly processingQueue?: ProcessingQueue;
   readonly statfs?: (path: string) => Promise<{ bavail: bigint; bsize: bigint }>;
@@ -213,13 +215,13 @@ async function createContext(options: ContextOptions = {}): Promise<TestContext>
     }),
     processingQueue: options.processingQueue ?? new ProcessingQueue(),
     statfs: options.statfs ?? (async () => ({ bavail: MIN_FREE_BYTES, bsize: 1n })),
-    inspectInput: async () => ({
+    inspectInput: options.inspectInput ?? (async () => ({
       width: 800,
       height: 600,
       kind: 'jpeg',
       mime: 'image/jpeg',
       takenDate: '2026-09-01',
-    }),
+    })),
     processPhoto: options.processPhoto ?? fakeProcessPhoto,
     heifInfoPath: '/configured/heif-info',
     heifConvertPath: '/configured/heif-convert',
@@ -555,6 +557,62 @@ describe('POST /api/admin/photos', () => {
     const visible = `${first.body}\n${second.body}`;
     expect(visible).not.toMatch(/private-original|different-secret|filename|requestId|staging|\/var\//i);
   });
+
+  it('uses a canonical browser file date only when image metadata has no capture date', async () => {
+    const { app, db, cookie, csrf } = await createContext({
+      inspectInput: async () => ({
+        width: 800,
+        height: 600,
+        kind: 'jpeg',
+        mime: 'image/jpeg',
+        takenDate: null,
+      }),
+    });
+    await enableUploads(db);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/admin/photos',
+      headers: {
+        origin: publicOrigin,
+        cookie,
+        'x-csrf-token': csrf,
+        'idempotency-key': requestId,
+        'x-photo-file-date': '2025-10-15',
+        'content-type': validFile.contentType,
+      },
+      payload: validFile.body,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().photo.capturedDate).toBe('2025-10-15');
+  });
+
+  it.each(['2025-02-29', '2025-2-09', '0000-01-01'])(
+    'rejects a noncanonical browser file date before consuming the upload: %s',
+    async (fileDate) => {
+      const { app, db, cookie, csrf } = await createContext();
+      await enableUploads(db);
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/admin/photos',
+        headers: {
+          origin: publicOrigin,
+          cookie,
+          'x-csrf-token': csrf,
+          'idempotency-key': requestId,
+          'x-photo-file-date': fileDate,
+          'content-type': validFile.contentType,
+        },
+        payload: validFile.body,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: { code: 'INVALID_FILE_DATE', message: '图片文件日期无效' },
+      });
+      expect(photoCountFor(db)).toBe(0);
+    },
+  );
 
   it('returns 423 before consuming multipart while uploads are disabled', async () => {
     const { app, db, cookie, csrf } = await createContext();

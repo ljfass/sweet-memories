@@ -225,7 +225,10 @@ describe('AdminApi', () => {
         return request as unknown as XMLHttpRequest
       },
     })
-    const selectedFile = new File(['photo bytes'], 'private-family.jpg', { type: 'image/jpeg' })
+    const selectedFile = new File(['photo bytes'], 'private-family.jpg', {
+      type: 'image/jpeg',
+      lastModified: new Date(2025, 9, 15, 12).getTime(),
+    })
     const progress = vi.fn()
     const requestId = '0195c681-9c63-7db0-8000-000000000101'
 
@@ -247,6 +250,7 @@ describe('AdminApi', () => {
     expect(request.timeout).toBeGreaterThan(0)
     expect(request.requestHeaders.get('x-csrf-token')).toBe('csrf-token')
     expect(request.requestHeaders.get('idempotency-key')).toBe(requestId)
+    expect(request.requestHeaders.get('x-photo-file-date')).toBe('2025-10-15')
     expect(request.requestHeaders.has('origin')).toBe(false)
     expect(request.requestHeaders.has('content-type')).toBe(false)
     expect(request.body).toBeInstanceOf(FormData)

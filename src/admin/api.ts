@@ -24,6 +24,18 @@ const MAX_ADMIN_PHOTOS = 1_000
 const MAX_UPLOAD_RESPONSE_CHARACTERS = 1024 * 1024
 const UPLOAD_TIMEOUT_MILLISECONDS = 120_000
 
+function fileCalendarDate(file: File): string | null {
+  const date = new Date(file.lastModified)
+  if (!Number.isFinite(date.getTime())) return null
+  const year = date.getFullYear()
+  if (year < 1 || year > 9999) return null
+  return [
+    String(year).padStart(4, '0'),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-')
+}
+
 export type AdminApiErrorKind =
   | 'credentials'
   | 'rate-limited'
@@ -503,6 +515,8 @@ export class AdminApi implements AdminApiClient, AdminPhotoApiClient, AdminUploa
         request.timeout = UPLOAD_TIMEOUT_MILLISECONDS
         request.setRequestHeader('x-csrf-token', csrfToken)
         request.setRequestHeader('idempotency-key', requestId)
+        const fileDate = fileCalendarDate(file)
+        if (fileDate !== null) request.setRequestHeader('x-photo-file-date', fileDate)
       } catch {
         finish({ error: new AdminApiError('unavailable', '服务暂时不可用，请稍后重试') })
         return

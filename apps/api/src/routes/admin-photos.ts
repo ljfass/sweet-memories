@@ -80,6 +80,25 @@ function idempotencyKey(request: FastifyRequest): string {
   return value;
 }
 
+function photoFileDate(request: FastifyRequest): string | undefined {
+  const value = request.headers['x-photo-file-date'];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    throw new ApiHttpError(400, 'INVALID_FILE_DATE', '图片文件日期无效');
+  }
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+  if (
+    value.startsWith('0000-')
+    || !Number.isFinite(timestamp)
+    || new Date(timestamp).toISOString().slice(0, 10) !== value
+  ) {
+    throw new ApiHttpError(400, 'INVALID_FILE_DATE', '图片文件日期无效');
+  }
+  return value;
+}
+
 function photoUploadStream(app: FastifyInstance, request: FastifyRequest): Readable {
   const parsed = (async function* () {
     if (!request.isMultipart()) {
@@ -183,7 +202,9 @@ export function registerAdminPhotoRoutes(
     requireExactOrigin(request, dependencies.publicOrigin);
     requireCsrf(request, dependencies.sessionService, authenticated.session);
     const requestId = idempotencyKey(request);
+    const fileDate = photoFileDate(request);
     const result = await dependencies.uploadPhotoService.upload({
+      fileDate,
       requestId,
       stream: photoUploadStream(app, request),
     });

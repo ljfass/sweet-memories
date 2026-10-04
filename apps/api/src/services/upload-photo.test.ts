@@ -448,6 +448,34 @@ describe('upload metadata and persisted manifest', () => {
     expect(result.photo.title).toBe('2026年9月1日的成长瞬间');
   });
 
+  it('uses the browser file date when EXIF is absent but never overrides EXIF', async () => {
+    enableUploads();
+    const withoutExif = createService({
+      inspectInput: async () => inputInspection(null),
+      createPhotoId: () => firstPhotoId,
+    });
+
+    const fallback = await withoutExif.upload({
+      requestId: firstRequestId,
+      fileDate: '2025-10-15',
+      stream: Readable.from(Buffer.from('iphone browser image without exif')),
+    });
+
+    expect(fallback.photo.capturedDate).toBe('2025-10-15');
+
+    const withExif = createService({
+      inspectInput: async () => inputInspection('2024-02-29'),
+      createPhotoId: () => secondPhotoId,
+    });
+    const preferred = await withExif.upload({
+      requestId: secondRequestId,
+      fileDate: '2025-10-15',
+      stream: Readable.from(Buffer.from('iphone browser image with exif')),
+    });
+
+    expect(preferred.photo.capturedDate).toBe('2024-02-29');
+  });
+
   it('inserts the photo and every generated asset in one SQLite transaction', async () => {
     enableUploads();
     const service = createService();

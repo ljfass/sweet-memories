@@ -44,6 +44,7 @@ type StatFileSystem = (
 ) => Promise<{ readonly bavail: bigint; readonly bsize: bigint }>;
 
 export interface UploadPhotoInput {
+  readonly fileDate?: string;
   readonly requestId: string;
   readonly stream: Readable;
 }
@@ -386,7 +387,7 @@ class SqliteUploadPhotoService implements UploadPhotoService {
         if (!(createdAt instanceof Date) || !Number.isFinite(createdAt.getTime())) {
           throw new Error('Invalid clock value');
         }
-        const capturedDate = inspection.takenDate ?? uploadDate;
+        const capturedDate = inspection.takenDate ?? input.fileDate ?? uploadDate;
         let photo: AdminPhotoDto;
         try {
           photo = insertPhoto(this.options.db, {
