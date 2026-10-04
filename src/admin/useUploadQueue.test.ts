@@ -89,7 +89,7 @@ function createQueue(
     readonly status?: Ref<AdminSessionStatus>
     readonly csrfToken?: Ref<string | null>
     readonly onUploaded?: (uploaded: AdminPhoto) => void
-    readonly onBatchCompleted?: (completion: UploadBatchCompletion) => void
+    readonly onBatchCompleted?: (completion: UploadBatchCompletion) => void | Promise<void>
   } = {},
 ): UploadQueueState {
   let sequence = 0
@@ -129,23 +129,57 @@ describe('useUploadQueue', () => {
   it('keeps an upload successful when its batch completion observer throws', async () => {
     const controlled = controlledApi()
     const completed = vi.fn(() => {
-      throw new Error('observer failed')
+      throw new Error('private observer detail')
     })
-    const queue = createQueue(controlled.api, { onBatchCompleted: completed })
-    queue.add([file('first.jpg')])
-    await flushPromises()
+    const logError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+      queue.add([file('first.jpg')])
+      await flushPromises()
 
-    controlled.calls[0]?.result.resolve(photo('first'))
-    await flushPromises()
+      controlled.calls[0]?.result.resolve(photo('first'))
+      await flushPromises()
 
-    expect(completed).toHaveBeenCalledTimes(1)
-    expect(queue.items.value[0]).toMatchObject({
-      status: 'succeeded',
-      progress: 100,
-      errorCode: null,
-      photo: photo('first'),
+      expect(completed).toHaveBeenCalledTimes(1)
+      expect(queue.items.value[0]).toMatchObject({
+        status: 'succeeded',
+        progress: 100,
+        errorCode: null,
+        photo: photo('first'),
+      })
+      expect(queue.status.value).toBe('complete')
+      expect(logError.mock.calls).toEqual([['上传批次完成通知失败']])
+    } finally {
+      logError.mockRestore()
+    }
+  })
+
+  it('contains an async batch completion observer rejection', async () => {
+    const controlled = controlledApi()
+    const completed = vi.fn(async () => {
+      throw new Error('private observer detail')
     })
-    expect(queue.status.value).toBe('complete')
+    const logError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const queue = createQueue(controlled.api, { onBatchCompleted: completed })
+      queue.add([file('first.jpg')])
+      await flushPromises()
+
+      controlled.calls[0]?.result.resolve(photo('first'))
+      await flushPromises()
+
+      expect(completed).toHaveBeenCalledTimes(1)
+      expect(queue.items.value[0]).toMatchObject({
+        status: 'succeeded',
+        progress: 100,
+        errorCode: null,
+        photo: photo('first'),
+      })
+      expect(queue.status.value).toBe('complete')
+      expect(logError.mock.calls).toEqual([['上传批次完成通知失败']])
+    } finally {
+      logError.mockRestore()
+    }
   })
 
   it('isolates concurrently pending batches that complete out of order', async () => {

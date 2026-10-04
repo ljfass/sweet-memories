@@ -20,7 +20,7 @@ export interface UploadQueueOptions {
   readonly sessionStatus: Ref<AdminSessionStatus>
   readonly csrfToken: Ref<string | null>
   readonly onUploaded?: (photo: AdminPhoto) => void
-  readonly onBatchCompleted?: (completion: UploadBatchCompletion) => void
+  readonly onBatchCompleted?: (completion: UploadBatchCompletion) => void | Promise<void>
   readonly createId?: () => string
   readonly createObjectUrl?: (file: File) => string
   readonly revokeObjectUrl?: (url: string) => void
@@ -77,6 +77,17 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
     batches.delete(batchId)
   }
 
+  function runBatchCompletionObserver(completion: UploadBatchCompletion): void {
+    if (options.onBatchCompleted === undefined) return
+    const reportFailure = () => console.error('上传批次完成通知失败')
+    try {
+      const result = options.onBatchCompleted(completion)
+      void Promise.resolve(result).catch(reportFailure)
+    } catch {
+      reportFailure()
+    }
+  }
+
   function maybeCompleteBatch(itemId: string): void {
     const batchId = batchByItemId.get(itemId)
     if (batchId === undefined) return
@@ -86,11 +97,7 @@ export function useUploadQueue(options: UploadQueueOptions): UploadQueueState {
       items.value.some((item) => item.id === batchItemId && item.status === 'succeeded'))
     if (!completed) return
     forgetBatch(batchId)
-    try {
-      options.onBatchCompleted?.({ batchId: batch.id, count: batch.count })
-    } catch {
-      // Completion observers cannot change the finalized upload outcome.
-    }
+    runBatchCompletionObserver({ batchId: batch.id, count: batch.count })
   }
 
   function updateQueueStatus(): void {
