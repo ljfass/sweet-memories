@@ -564,6 +564,7 @@
   display: grid;
   min-width: 0;
   gap: 12px;
+  scroll-margin-top: 72px;
 }
 
 .admin-photo-year-heading {
@@ -585,6 +586,117 @@
   font-family: var(--admin-serif);
   font-size: 1rem;
   letter-spacing: 0;
+}
+
+.admin-year-nav,
+.admin-mobile-year-nav {
+  position: fixed;
+  z-index: 35;
+  right: 20px;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 160px);
+  max-height: calc(100dvh - 160px);
+  padding: 6px;
+  border: 1px solid rgb(245 196 208 / 75%);
+  border-radius: 18px;
+  background: rgb(255 253 253 / 94%);
+  box-shadow: 0 8px 24px rgb(45 41 44 / 12%), 0 2px 6px rgb(0 0 0 / 4%);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.admin-year-nav-list,
+.admin-mobile-year-nav-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  gap: 4px;
+}
+
+.admin-year-nav-item,
+.admin-mobile-year-nav-item {
+  display: flex;
+  margin: 0;
+  padding: 0;
+}
+
+.admin-year-nav-button,
+.admin-mobile-year-nav-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 12px 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--admin-text, #2d292c);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.15s ease, color 0.2s ease;
+}
+
+.admin-year-nav-button:hover:not(:disabled),
+.admin-mobile-year-nav-button:hover:not(:disabled) {
+  border-color: rgb(245 196 208 / 60%);
+  background: rgb(255 247 249);
+  color: #8a2846;
+}
+
+.admin-year-nav-button:active,
+.admin-mobile-year-nav-button:active {
+  transform: scale(0.96);
+}
+
+.admin-year-nav-marker,
+.admin-mobile-year-nav-marker {
+  width: 12px;
+  height: 3px;
+  flex: 0 0 12px;
+  border-radius: 2px;
+  background: var(--admin-sun, #efa95a);
+  transition: width 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.admin-year-nav-button:hover:not(:disabled) .admin-year-nav-marker,
+.admin-mobile-year-nav-button:hover:not(:disabled) .admin-mobile-year-nav-marker {
+  width: 16px;
+  background: #ff9800;
+}
+
+.admin-year-nav-label,
+.admin-mobile-year-nav-label {
+  letter-spacing: 0.02em;
+}
+
+.admin-year-nav-button.is-active,
+.admin-mobile-year-nav-button.is-active {
+  border-color: rgb(245 196 208 / 90%);
+  background: rgb(255 244 246);
+  color: #8a2846;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgb(239 169 90 / 20%);
+}
+
+.admin-year-nav-button.is-active .admin-year-nav-marker,
+.admin-mobile-year-nav-button.is-active .admin-mobile-year-nav-marker {
+  width: 16px;
+  background: #ff9800;
+  box-shadow: 0 1px 4px rgb(255 152 0 / 40%);
 }
 
 .admin-photo-section-grid {
@@ -691,6 +803,7 @@
 }
 
 .admin-photo-editor {
+  z-index: 40;
   padding: 16px;
 }
 
@@ -900,6 +1013,7 @@
   top: 24px;
   right: 24px;
   display: grid;
+  justify-items: end;
   width: min(360px, calc(100vw - 32px));
   gap: 8px;
   pointer-events: none;
@@ -909,6 +1023,8 @@
   display: grid;
   align-items: start;
   grid-template-columns: 20px minmax(0, 1fr) 32px;
+  width: fit-content;
+  max-width: 100%;
   min-width: 0;
   padding: 10px 9px 10px 12px;
   border: 1px solid #b8d6c8;
@@ -1022,6 +1138,7 @@
     top: calc(64px + env(safe-area-inset-top, 0px));
     right: 12px;
     left: 12px;
+    justify-items: center;
     width: auto;
   }
 
@@ -1071,6 +1188,98 @@
   .admin-mobile-floating-actions .admin-icon-button {
     width: 44px;
     padding: 0;
+  }
+
+  .admin-mobile-year-nav {
+    position: fixed;
+    z-index: 35;
+    right: calc(6px + env(safe-area-inset-right, 0px));
+    bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 160px);
+    max-height: calc(100dvh - 160px);
+    padding: 5px;
+    border: 1px solid rgb(245 196 208 / 75%);
+    border-radius: 16px;
+    background: rgb(255 253 253 / 94%);
+    box-shadow: 0 8px 24px rgb(45 41 44 / 14%), 0 2px 6px rgb(0 0 0 / 4%);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .admin-mobile-year-nav-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    gap: 4px;
+  }
+
+  .admin-mobile-year-nav-item {
+    display: flex;
+    margin: 0;
+    padding: 0;
+  }
+
+  .admin-mobile-year-nav-button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 36px;
+    padding: 6px 10px 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--admin-text, #2d292c);
+    font-size: 0.8rem;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.15s ease, color 0.2s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .admin-mobile-year-nav-button:active {
+    transform: scale(0.95);
+  }
+
+  .admin-mobile-year-nav-marker {
+    width: 10px;
+    height: 3px;
+    flex: 0 0 10px;
+    border-radius: 2px;
+    background: var(--admin-sun, #efa95a);
+    transition: width 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .admin-mobile-year-nav-label {
+    letter-spacing: 0.02em;
+  }
+
+  .admin-mobile-year-nav-button.is-active {
+    border-color: rgb(245 196 208 / 90%);
+    background: rgb(255 244 246);
+    color: #8a2846;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgb(239 169 90 / 20%);
+  }
+
+  .admin-mobile-year-nav-button.is-active .admin-mobile-year-nav-marker {
+    width: 14px;
+    background: #ff9800;
+    box-shadow: 0 1px 4px rgb(255 152 0 / 40%);
   }
 
   .admin-library-actions .admin-primary-button,
@@ -1168,7 +1377,11 @@
   .admin-primary-button,
   .admin-secondary-button,
   .admin-icon-button,
-  .admin-photo-card button {
+  .admin-photo-card button,
+  .admin-year-nav-button,
+  .admin-year-nav-marker,
+  .admin-mobile-year-nav-button,
+  .admin-mobile-year-nav-marker {
     transition: none;
   }
 

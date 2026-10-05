@@ -69,20 +69,99 @@ const photoSections = computed<PhotoSection[]>(() => {
   return sections
 })
 
+const activeYearSectionKey = ref<string | null>(null)
+const isScrolledPastActionBar = ref(false)
+const showYearNav = computed(() =>
+  isScrolledPastActionBar.value
+  && !isMobileEditorOpen.value
+  && !isDeleteDialogOpen.value
+  && photoSections.value.length > 0)
+
+function formatYearNavLabel(section: PhotoSection): string {
+  if (section.group === 'undated') return '待补充'
+  return `${section.group} 年`
+}
+
+function updateActiveYearOnScroll(): void {
+  if (photoSections.value.length === 0) return
+  const sections = libraryRoot.value?.querySelectorAll<HTMLElement>('[data-photo-year-section]')
+  if (!sections || sections.length === 0) return
+
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    const scrollBottom = (window.innerHeight ?? 0) + (window.scrollY ?? 0)
+    const totalHeight = document.documentElement.scrollHeight
+    if (totalHeight > 0 && scrollBottom >= totalHeight - 40) {
+      const lastSection = photoSections.value.at(-1)
+      if (lastSection) {
+        activeYearSectionKey.value = lastSection.key
+        return
+      }
+    }
+  }
+
+  let currentKey = photoSections.value[0]?.key ?? null
+  for (const section of sections) {
+    const rect = section.getBoundingClientRect()
+    if (rect.top <= 140) {
+      currentKey = section.dataset.photoYearSection ?? currentKey
+    } else {
+      break
+    }
+  }
+  if (currentKey !== null) {
+    activeYearSectionKey.value = currentKey
+  }
+}
+
+function scrollToYearSection(key: string): void {
+  activeYearSectionKey.value = key
+  const target = libraryRoot.value?.querySelector<HTMLElement>(`[data-photo-year-section="${key}"]`)
+  if (!target) return
+
+  const prefersReduced = typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+  if (typeof target.scrollIntoView === 'function') {
+    target.scrollIntoView({
+      behavior: prefersReduced ? 'auto' : 'smooth',
+      block: 'start',
+    })
+  }
+}
+
+watch(photoSections, (sections) => {
+  if (sections.length === 0) {
+    activeYearSectionKey.value = null
+  } else if (!sections.some((section) => section.key === activeYearSectionKey.value)) {
+    activeYearSectionKey.value = sections[0]?.key ?? null
+  }
+}, { immediate: true })
+
 function updateViewport(event: MediaQueryListEvent): void {
   isMobile.value = event.matches
 }
 
 onMounted(() => mobileMedia?.addEventListener('change', updateViewport))
 onMounted(() => {
+  if (typeof window !== 'undefined') {
+    window.addEventListener('scroll', updateActiveYearOnScroll, { passive: true })
+  }
+})
+onMounted(() => {
   if (typeof IntersectionObserver === 'undefined' || actionBar.value === null) return
   actionObserver = new IntersectionObserver(([entry]) => {
-    showFloatingActions.value = isMobile.value && entry?.isIntersecting === false
+    const isPast = entry?.isIntersecting === false
+    isScrolledPastActionBar.value = isPast
+    showFloatingActions.value = isMobile.value && isPast
   })
   actionObserver.observe(actionBar.value)
 })
 onBeforeUnmount(() => {
   mobileMedia?.removeEventListener('change', updateViewport)
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('scroll', updateActiveYearOnScroll)
+  }
   actionObserver?.disconnect()
   actionObserver = null
   if (isMobileEditorOpen.value) emit('mobile-modal-change', false)
@@ -559,6 +638,42 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
         />
       </button>
     </div>
+
+    <nav
+      v-if="showYearNav"
+      class="admin-year-nav admin-mobile-year-nav"
+      data-year-nav
+      data-mobile-year-nav
+      aria-label="年份快捷导航"
+      :inert="isAnyPhotoModalOpen"
+      :aria-hidden="isAnyPhotoModalOpen ? 'true' : 'false'"
+    >
+      <ul class="admin-year-nav-list admin-mobile-year-nav-list">
+        <li
+          v-for="section in photoSections"
+          :key="section.key"
+          class="admin-year-nav-item admin-mobile-year-nav-item"
+        >
+          <button
+            type="button"
+            class="admin-year-nav-button admin-mobile-year-nav-button"
+            :class="{ 'is-active': activeYearSectionKey === section.key }"
+            :data-year-nav-target="section.key"
+            :aria-label="`跳转到 ${section.label}`"
+            :title="section.label"
+            @click="scrollToYearSection(section.key)"
+          >
+            <span
+              class="admin-year-nav-marker admin-mobile-year-nav-marker"
+              aria-hidden="true"
+            />
+            <span class="admin-year-nav-label admin-mobile-year-nav-label">
+              {{ formatYearNavLabel(section) }}
+            </span>
+          </button>
+        </li>
+      </ul>
+    </nav>
 
     <DeletePhotoDialog
       v-if="deleteCandidate !== null"

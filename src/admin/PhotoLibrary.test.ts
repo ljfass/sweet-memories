@@ -102,9 +102,9 @@ function installIntersectionObserver(): {
 }
 
 function useViewport(matches: boolean): void {
-  vi.stubGlobal('matchMedia', vi.fn(() => ({
-    matches,
-    media: '(max-width: 720px)',
+  vi.stubGlobal('matchMedia', vi.fn((query?: string) => ({
+    matches: query?.includes('reduce') ? false : matches,
+    media: query ?? '(max-width: 720px)',
     onchange: null,
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
@@ -185,6 +185,303 @@ describe('PhotoLibrary', () => {
 
     wrapper.unmount()
     expect(observer.disconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows mobile year quick nav when scrolling down and navigates to year sections on click', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const photos = [
+      photoRecord('p1', '2026 照片', '2026-05-20'),
+      photoRecord('p2', '2025 照片', '2025-08-15'),
+    ]
+    const state = library({ photos: ref(photos) })
+    const scrollMock = vi.fn()
+    window.HTMLElement.prototype.scrollIntoView = scrollMock
+
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    expect(wrapper.find('[data-mobile-year-nav]').exists()).toBe(false)
+
+    observer.setIntersecting(false)
+    await nextTick()
+
+    const nav = wrapper.get('[data-mobile-year-nav]')
+    expect(nav.attributes('aria-label')).toBe('年份快捷导航')
+
+    const buttons = nav.findAll('.admin-mobile-year-nav-button')
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0]?.text()).toContain('2026 年')
+    expect(buttons[1]?.text()).toContain('2025 年')
+    expect(buttons[0]?.classes()).toContain('is-active')
+
+    await buttons[1]?.trigger('click')
+    await nextTick()
+
+    expect(scrollMock).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(buttons[1]?.classes()).toContain('is-active')
+
+    observer.setIntersecting(true)
+    await nextTick()
+    expect(wrapper.find('[data-mobile-year-nav]').exists()).toBe(false)
+  })
+
+  it('hides mobile year quick nav when mobile photo editor is open', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const wrapper = mount(PhotoLibrary, { props: { library: library() } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+    expect(wrapper.find('[data-mobile-year-nav]').exists()).toBe(true)
+
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-mobile-year-nav]').exists()).toBe(false)
+
+    await wrapper.get('[aria-label="返回照片库"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-mobile-year-nav]').exists()).toBe(true)
+  })
+
+  it('tracks active year as mobile browser scrolls through different year sections', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const photos = [
+      photoRecord('p1', '2026 照片', '2026-05-20'),
+      photoRecord('p2', '2025 照片', '2025-08-15'),
+    ]
+    const state = library({ photos: ref(photos) })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+
+    const buttons = wrapper.findAll('.admin-mobile-year-nav-button')
+    expect(buttons[0]?.classes()).toContain('is-active')
+
+    const sections = wrapper.findAll('[data-photo-year-section]')
+    const sec0 = sections[0]?.element as HTMLElement
+    const sec1 = sections[1]?.element as HTMLElement
+    vi.spyOn(sec0, 'getBoundingClientRect').mockReturnValue({
+      top: -300, bottom: -50, left: 0, right: 390, width: 390, height: 250, x: 0, y: -300, toJSON: () => ({}),
+    })
+    vi.spyOn(sec1, 'getBoundingClientRect').mockReturnValue({
+      top: 60, bottom: 400, left: 0, right: 390, width: 390, height: 340, x: 0, y: 60, toJSON: () => ({}),
+    })
+
+    window.dispatchEvent(new Event('scroll'))
+    await nextTick()
+
+    const scrolledButtons = wrapper.findAll('.admin-mobile-year-nav-button')
+    expect(scrolledButtons[1]?.classes()).toContain('is-active')
+  })
+
+  it('snaps active year to the last section when scrolling reaches bottom in mobile browser', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const photos = [
+      photoRecord('p1', '2026 照片', '2026-05-20'),
+      photoRecord('p2', '2025 照片', '2025-08-15'),
+    ]
+    const state = library({ photos: ref(photos) })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+
+    const initialButtons = wrapper.findAll('.admin-mobile-year-nav-button')
+    expect(initialButtons[0]?.classes()).toContain('is-active')
+
+    Object.defineProperty(window, 'innerHeight', { value: 600, configurable: true })
+    Object.defineProperty(window, 'scrollY', { value: 1400, configurable: true })
+    Object.defineProperty(document.documentElement, 'scrollHeight', {
+      value: 2000,
+      configurable: true,
+    })
+
+    window.dispatchEvent(new Event('scroll'))
+    await nextTick()
+
+    const bottomButtons = wrapper.findAll('.admin-mobile-year-nav-button')
+    expect(bottomButtons[1]?.classes()).toContain('is-active')
+  })
+
+  it('supports mobile browser reduced motion mode with instant auto scrolling', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query?: string) => ({
+      matches: true,
+      media: query ?? '(max-width: 720px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    })))
+    const observer = installIntersectionObserver()
+    const photos = [
+      photoRecord('p1', '2026 照片', '2026-05-20'),
+      photoRecord('p2', '2025 照片', '2025-08-15'),
+    ]
+    const state = library({ photos: ref(photos) })
+    const scrollMock = vi.fn()
+    window.HTMLElement.prototype.scrollIntoView = scrollMock
+
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+    observer.setIntersecting(false)
+    await nextTick()
+
+    const buttons = wrapper.findAll('.admin-mobile-year-nav-button')
+    await buttons[1]?.trigger('click')
+    await nextTick()
+
+    expect(scrollMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' })
+  })
+
+  it('keeps year nav visible across viewport change to desktop when scrolled down', async () => {
+    let changeHandler: (event: MediaQueryListEvent) => void = () => undefined
+    vi.stubGlobal('matchMedia', vi.fn((query?: string) => ({
+      matches: !query?.includes('reduce'),
+      media: query ?? '(max-width: 720px)',
+      onchange: null,
+      addEventListener: vi.fn((event: string, handler: (e: MediaQueryListEvent) => void) => {
+        if (event === 'change') changeHandler = handler
+      }),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    })))
+    const observer = installIntersectionObserver()
+    const wrapper = mount(PhotoLibrary, { props: { library: library() } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(true)
+    expect(wrapper.find('[data-mobile-floating-actions]').exists()).toBe(true)
+
+    changeHandler({ matches: false } as MediaQueryListEvent)
+    await nextTick()
+
+    expect(wrapper.find('[data-mobile-floating-actions]').exists()).toBe(false)
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(true)
+
+    observer.setIntersecting(true)
+    await nextTick()
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(false)
+  })
+
+  it('shows year quick nav on desktop when scrolling down and navigates on click', async () => {
+    useViewport(false)
+    const observer = installIntersectionObserver()
+    const photos = [
+      photoRecord('p1', '2026 照片', '2026-05-20'),
+      photoRecord('p2', '2025 照片', '2025-08-15'),
+    ]
+    const state = library({ photos: ref(photos) })
+    const scrollMock = vi.fn()
+    window.HTMLElement.prototype.scrollIntoView = scrollMock
+
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(false)
+
+    observer.setIntersecting(false)
+    await nextTick()
+
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(true)
+    expect(wrapper.find('[data-mobile-floating-actions]').exists()).toBe(false)
+
+    const buttons = wrapper.findAll('.admin-year-nav-button')
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0]?.text()).toContain('2026 年')
+    expect(buttons[1]?.text()).toContain('2025 年')
+    expect(buttons[0]?.classes()).toContain('is-active')
+
+    await buttons[1]?.trigger('click')
+    await nextTick()
+
+    expect(scrollMock).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    const updatedButtons = wrapper.findAll('.admin-year-nav-button')
+    expect(updatedButtons[1]?.classes()).toContain('is-active')
+
+    observer.setIntersecting(true)
+    await nextTick()
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(false)
+  })
+
+  it('tracks active year on desktop when scrolling through sections', async () => {
+    useViewport(false)
+    const observer = installIntersectionObserver()
+    const photos = [
+      photoRecord('p1', '2026 照片', '2026-05-20'),
+      photoRecord('p2', '2025 照片', '2025-08-15'),
+    ]
+    const state = library({ photos: ref(photos) })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+
+    const sections = wrapper.findAll('[data-photo-year-section]')
+    const sec0 = sections[0]?.element as HTMLElement
+    const sec1 = sections[1]?.element as HTMLElement
+    vi.spyOn(sec0, 'getBoundingClientRect').mockReturnValue({
+      top: -400, bottom: -100, left: 0, right: 1200, width: 1200, height: 300, x: 0, y: -400, toJSON: () => ({}),
+    })
+    vi.spyOn(sec1, 'getBoundingClientRect').mockReturnValue({
+      top: 50, bottom: 600, left: 0, right: 1200, width: 1200, height: 550, x: 0, y: 50, toJSON: () => ({}),
+    })
+
+    window.dispatchEvent(new Event('scroll'))
+    await nextTick()
+
+    const buttons = wrapper.findAll('.admin-year-nav-button')
+    expect(buttons[1]?.classes()).toContain('is-active')
+  })
+
+  it('keeps year quick nav visible on desktop when photo editor is open', async () => {
+    useViewport(false)
+    const observer = installIntersectionObserver()
+    const state = library()
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(true)
+
+    await wrapper.get('[data-photo-id="photo-1"] button').trigger('click')
+    await nextTick()
+
+    // 桌面端编辑面板展开时，年份快捷导航依然保持显示，固定在右下方红框位置
+    expect(wrapper.find('.admin-photo-editor').exists()).toBe(true)
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(true)
+
+    const buttons = wrapper.findAll('.admin-year-nav-button')
+    expect(buttons.length).toBeGreaterThan(0)
+
+    await wrapper.get('[aria-label="返回照片库"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.admin-photo-editor').exists()).toBe(false)
+    expect(wrapper.find('[data-year-nav]').exists()).toBe(true)
+  })
+
+  it('labels missing date photos as undated in mobile browser year nav', async () => {
+    useViewport(true)
+    const observer = installIntersectionObserver()
+    const photos = [
+      photoRecord('p1', '日期待补充照片', null),
+    ]
+    const state = library({ photos: ref(photos) })
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+
+    const nav = wrapper.get('[data-mobile-year-nav]')
+    const button = nav.get('.admin-mobile-year-nav-button')
+    expect(button.text()).toContain('待补充')
+    expect(button.attributes('aria-label')).toBe('跳转到 待补充日期')
   })
 
   it('uses the same refresh action for the floating and original controls', async () => {

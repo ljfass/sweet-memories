@@ -640,6 +640,24 @@ describe('AdminApp integration', () => {
     expect(adminCss).toMatch(
       /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-library-actions\s*\{[^}]*position:\s*static;/,
     )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-mobile-year-nav\s*\{[^}]*position:\s*fixed;[^}]*right:\s*calc\(6px \+ env\(safe-area-inset-right, 0px\)\);[^}]*bottom:\s*calc\(24px \+ env\(safe-area-inset-bottom, 0px\)\);/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-mobile-year-nav\s*\{[^}]*touch-action:\s*manipulation;/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-mobile-year-nav-button\s*\{[^}]*touch-action:\s*manipulation;/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-photo-year-section\s*\{[^}]*scroll-margin-top:\s*72px;/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-year-nav,\s*\.admin-mobile-year-nav\s*\{[^}]*position:\s*fixed;[^}]*right:\s*20px;[^}]*bottom:\s*24px;/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-year-nav-button,\s*\.admin-mobile-year-nav-button\s*\{[^}]*cursor:\s*pointer;/,
+    )
     expect(adminCss).toContain('@media (prefers-reduced-motion: reduce)')
   })
 

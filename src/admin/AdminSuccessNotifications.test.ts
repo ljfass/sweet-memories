@@ -297,6 +297,7 @@ describe('admin success notification styles', () => {
       'z-index': '60',
       top: '24px',
       right: '24px',
+      'justify-items': 'end',
       width: 'min(360px, calc(100vw - 32px))',
       gap: '8px',
       'pointer-events': 'none',
@@ -305,6 +306,8 @@ describe('admin success notification styles', () => {
       'grid-template-columns': '20px minmax(0, 1fr) 32px',
       'border-radius': '7px',
       'pointer-events': 'auto',
+      width: 'fit-content',
+      'max-width': '100%',
     })
     assertDeclarations(
       declarationsFor(css, '.admin-success-notification-message'),
@@ -322,6 +325,7 @@ describe('admin success notification styles', () => {
         top: 'calc(64px + env(safe-area-inset-top, 0px))',
         right: '12px',
         left: '12px',
+        'justify-items': 'center',
         width: 'auto',
       },
     )
