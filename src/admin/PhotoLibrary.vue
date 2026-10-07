@@ -314,7 +314,7 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
         :aria-hidden="isMobileEditorOpen ? 'true' : undefined"
       >
         <button
-          class="admin-primary-button admin-upload-button"
+          class="admin-primary-button admin-upload-button admin-sparkle-button"
           type="button"
           data-upload
           :disabled="library.uploadsDisabled.value"
@@ -326,6 +326,20 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
             aria-hidden="true"
           />
           上传照片
+          <span
+            v-for="star in 6"
+            :key="star"
+            :class="['admin-sparkle-star', `admin-sparkle-star-${star}`]"
+            data-sparkle-star
+            aria-hidden="true"
+          >
+            <svg
+              viewBox="0 0 784.11 815.53"
+              focusable="false"
+            >
+              <path d="M392.05 0c-20.9,210.08 -184.06,378.41 -392.05,407.78 207.96,29.37 371.12,197.68 392.05,407.74 20.93,-210.06 184.09,-378.37 392.05,-407.74 -207.98,-29.38 -371.16,-197.69 -392.06,-407.78z" />
+            </svg>
+          </span>
         </button>
         <input
           v-if="uploadQueue !== undefined"
@@ -339,18 +353,21 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
           @change="addSelectedFiles"
         >
         <button
-          class="admin-secondary-button"
+          class="admin-secondary-button admin-refresh-button"
           type="button"
           data-refresh
           :disabled="library.isRefreshing.value"
           :aria-label="library.isRefreshing.value ? '正在刷新照片' : '刷新照片列表'"
           @click="refreshPhotos"
         >
-          <RefreshCw
-            :size="18"
-            aria-hidden="true"
-          />
-          刷新
+          <span class="admin-refresh-content">
+            <RefreshCw
+              class="admin-refresh-icon"
+              :size="18"
+              aria-hidden="true"
+            />
+            刷新
+          </span>
         </button>
       </div>
 

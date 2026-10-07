@@ -601,6 +601,8 @@ describe('AdminApp integration', () => {
     expect(wrapper.get('.admin-toolbar h1').text()).toBe('相册管理')
     expect(wrapper.get('#photo-library-title > span:first-child').text()).toBe('成长相册')
     expect(wrapper.get('[data-photo-count]').text()).toBe('共 1 张')
+    expect(wrapper.get('.admin-logout-button').text()).toBe('关上日记本')
+    expect(wrapper.find('.admin-logout-button svg').exists()).toBe(false)
   })
 
   it('defines the approved little-journal color tokens', () => {
@@ -707,6 +709,54 @@ describe('AdminApp integration', () => {
     )
     expect(adminCss).toMatch(
       /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor \.admin-icon-button,[\s\S]*\.admin-photo-editor \.admin-editor-back\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/,
+    )
+  })
+
+  it('styles mobile top-right toolbar action with a clean compact pill button without icons', () => {
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-toolbar-actions \.admin-logout-button\s*\{[^}]*height:\s*32px[^}]*min-height:\s*32px[^}]*border-radius:\s*16px/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-toolbar-actions \.admin-logout-button\s*\{[^}]*border-radius:\s*20px[^}]*color:\s*#8a2846/,
+    )
+  })
+
+  it('keeps the upload sparkle hover in the berry theme and only on precise pointers', () => {
+    expect(adminCss).toMatch(
+      /\.admin-sparkle-button\s*\{[^}]*position:\s*relative[^}]*border:\s*2px solid var\(--admin-berry\)/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-sparkle-star\s*\{[^}]*color:\s*var\(--admin-berry\)[^}]*opacity:\s*0/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(hover:\s*hover\)\s*and\s*\(pointer:\s*fine\)\s*\{\s*\.admin-sparkle-button:hover:not\(:disabled\)\s*\{[^}]*background:\s*transparent[^}]*color:\s*var\(--admin-berry\)/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.admin-sparkle-star\s*\{\s*transition:\s*none/,
+    )
+  })
+
+  it('implements layered curtain reveal interaction on the refresh button for precise pointers', () => {
+    expect(adminCss).toMatch(
+      /\.admin-refresh-button\s*\{[^}]*position:\s*relative[^}]*border:\s*2px solid var\(--admin-berry\)/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-refresh-button::before\s*\{[^}]*background-color:\s*var\(--admin-canvas\)[^}]*transform:\s*scaleY\(1\)/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-refresh-button::after\s*\{[^}]*background-color:\s*var\(--admin-canvas\)[^}]*transform:\s*scaleY\(1\)/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(hover:\s*hover\)\s*and\s*\(pointer:\s*fine\)[\s\S]*\.admin-refresh-button:hover:not\(:disabled\)::before\s*\{[^}]*transform:\s*translateY\(-25px\)[^}]*height:\s*0/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(hover:\s*hover\)\s*and\s*\(pointer:\s*fine\)[\s\S]*\.admin-refresh-button:hover:not\(:disabled\)::after\s*\{[^}]*transform:\s*scaleX\(0\)[^}]*transition-delay:\s*0\.15s/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(hover:\s*hover\)\s*and\s*\(pointer:\s*fine\)[\s\S]*\.admin-refresh-button:hover:not\(:disabled\)\s*\.admin-refresh-icon\s*\{[^}]*transform:\s*rotate\(180deg\)/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.admin-refresh-button,[\s\S]*\.admin-refresh-icon\s*\{[^}]*transition:\s*none;[^}]*transform:\s*none;/,
     )
   })
 

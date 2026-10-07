@@ -604,6 +604,31 @@ describe('PhotoLibrary', () => {
     expect(wrapper.find('.baby-loading-container').exists()).toBe(false)
   })
 
+  it('decorates the main upload button with six hidden sparkle stars', () => {
+    const wrapper = mount(PhotoLibrary, { props: { library: library() } })
+    const upload = wrapper.get('.admin-library-actions [data-upload]')
+    const stars = upload.findAll('[data-sparkle-star]')
+
+    expect(upload.classes()).toContain('admin-sparkle-button')
+    expect(upload.text()).toBe('上传照片')
+    expect(stars).toHaveLength(6)
+    stars.forEach((star, index) => {
+      expect(star.classes()).toContain(`admin-sparkle-star-${index + 1}`)
+      expect(star.attributes('aria-hidden')).toBe('true')
+    })
+  })
+
+  it('decorates the main refresh button with layered content wrapper and refresh icon', () => {
+    const wrapper = mount(PhotoLibrary, { props: { library: library() } })
+    const refresh = wrapper.get('.admin-library-actions [data-refresh]')
+    const icon = refresh.get('.admin-refresh-icon')
+
+    expect(refresh.classes()).toContain('admin-refresh-button')
+    expect(refresh.text()).toBe('刷新')
+    expect(refresh.find('.admin-refresh-content').exists()).toBe(true)
+    expect(icon.attributes('aria-hidden')).toBe('true')
+  })
+
   it('opens a bounded photo picker and passes selected File objects to the real queue', async () => {
     const state = uploadQueue()
     const wrapper = mount(PhotoLibrary, { props: { library: library(), uploadQueue: state } })

@@ -163,9 +163,11 @@ watch(
           <div class="admin-toolbar-actions">
             <!-- <span class="admin-username">{{ session.username.value }}</span> -->
             <button
-              class="admin-secondary-button"
+              class="admin-secondary-button admin-logout-button"
               type="button"
               :disabled="isLoggingOut"
+              aria-label="关上日记本"
+              title="关上日记本"
               @click="logout"
             >
               关上日记本
