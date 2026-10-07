@@ -253,7 +253,7 @@ printf '%s\n' "$UPLOAD_STATUS"
 [[ "$UPLOAD_STATUS" == *'图片上传：已禁用'* ]]
 ```
 
-`migration check-ready` 会按 `captured_date ASC, created_at ASC, id ASC` 核验固定五张记录、日期、文字、媒体摘要和顺序。准备阶段的成功标准是 readiness 通过且显示“图片上传：已禁用”；此时不要手工执行 `migration activate` 或开启上传。
+`migration check-ready` 会核验固定五张记录、日期、文字和媒体摘要。管理员修改拍摄日期后，公开相册仍按 `captured_date ASC, created_at ASC, id ASC` 动态排序，但固定五张不要求保持初次迁移时的相对顺序。准备阶段的成功标准是 readiness 通过且显示“图片上传：已禁用”；此时不要手工执行 `migration activate` 或开启上传。
 
 ## 5. 备份和异地下载
 
@@ -370,9 +370,9 @@ ssh production sudo /usr/local/sbin/manage-sweet-memories-api cli uploads disabl
 { "mode": "api" }
 ```
 
-按生产部署指南创建全新的激活 Tag。工作流必须依次成功：API activate（内部先关闭上传）、`migration check-ready`、`migration activate`、前端 activate、HTTPS 首页、`/api/photos`、五个固定 ID 顺序和同源 `/media/` 资源 2xx，最后才运行 `cli uploads enable`。
+按生产部署指南创建全新的激活 Tag。工作流必须依次成功：API activate（内部先关闭上传）、`migration check-ready`、`migration activate`、前端 activate、HTTPS 首页、`/api/photos`、五个固定 ID 唯一存在和同源 `/media/` 资源 2xx，最后才运行 `cli uploads enable`。
 
-固定旧照片 ID 的预期顺序是：
+必须存在且不能重复的固定旧照片 ID 是：
 
 1. `9a9a60f7-1edb-48ef-8ceb-5d9e188c2ab1`
 2. `58efb95e-2a98-45be-bbe4-acde6c34f7cd`

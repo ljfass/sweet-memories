@@ -444,17 +444,6 @@ function assertImportedDatabase(
     }
   }
   assertAssetRows(db, manifest);
-  if (requireReady) {
-    const ids = LEGACY_PHOTOS.map((photo) => photo.photoId);
-    const placeholders = ids.map(() => '?').join(', ');
-    const ordered = db.prepare(
-      `SELECT id FROM photos WHERE id IN (${placeholders})
-       ORDER BY captured_date ASC, created_at ASC, id ASC`,
-    ).all(...ids) as Array<{ id: string }>;
-    if (ordered.map((row) => row.id).join('\0') !== ids.join('\0')) {
-      throw new Error('迁移照片公开顺序不一致');
-    }
-  }
 }
 
 interface OwnedDirectory {

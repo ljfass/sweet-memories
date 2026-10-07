@@ -393,7 +393,7 @@ exec "$@"
     }
   })
 
-  it('checks HTTPS, public order, five legacy IDs, and first media before uploads', () => {
+  it('checks HTTPS, public order, five unique legacy IDs, and first media before uploads', () => {
     const steps = loadWorkflow().jobs.deploy.steps
     const health = stepById(steps, 'health-check').run ?? ''
     const enable = stepById(steps, 'enable-uploads')
@@ -410,6 +410,12 @@ exec "$@"
     expect(health).toContain('JSON.parse')
     expect(health).toContain('previous.capturedDate > current.capturedDate')
     for (const id of fixedIds) expect(health).toContain(id)
+    expect(health).toContain('const observedLegacyIds = new Set(')
+    expect(health).toContain('observedLegacyIds.size !== fixedIds.length')
+    expect(health).toContain('fixedIds.some((id) => !observedLegacyIds.has(id))')
+    expect(health).not.toContain(
+      'JSON.stringify(observedLegacyIds) !== JSON.stringify(fixedIds)',
+    )
     expect(health).toContain('photo.sources.fallback.url')
     expect(health).toContain('mediaUrl.origin !== siteOrigin')
     expect(health).toContain("mediaUrl.pathname.startsWith('/media/')")

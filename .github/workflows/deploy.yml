@@ -542,11 +542,16 @@ jobs:
               throw new Error('public API photos are not ordered by captured date');
             }
           }
-          const observedLegacyIds = photos
+          const observedLegacyMatches = photos
             .filter((photo) => fixedIds.includes(photo.id))
             .map((photo) => photo.id);
-          if (JSON.stringify(observedLegacyIds) !== JSON.stringify(fixedIds)) {
-            throw new Error('legacy photo IDs are missing, duplicated, or out of order');
+          const observedLegacyIds = new Set(observedLegacyMatches);
+          if (
+            observedLegacyMatches.length !== fixedIds.length
+            || observedLegacyIds.size !== fixedIds.length
+            || fixedIds.some((id) => !observedLegacyIds.has(id))
+          ) {
+            throw new Error('legacy photo IDs are missing or duplicated');
           }
           const photo = photos[0];
           if (

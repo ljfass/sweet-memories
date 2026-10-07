@@ -425,7 +425,7 @@ describe('legacy migration service', () => {
     }
   });
 
-  it('requires complete exact metadata, valid dates, expected ordering, and verified media', async () => {
+  it('requires complete exact metadata, valid dates, immutable fields, and verified media', async () => {
     const db = createDatabase();
     const options = migrationOptions(db);
     await importLegacyPhotos(options);
@@ -439,6 +439,18 @@ describe('legacy migration service', () => {
     db.prepare("UPDATE photos SET captured_date = '2024-01-02' WHERE request_id = 'legacy-photo-2'").run();
     db.prepare("UPDATE photos SET created_at = '1999-01-01T00:00:00.000Z' WHERE request_id = 'legacy-photo-5'").run();
     await expect(checkLegacyReadiness(options)).rejects.toThrow();
+  });
+
+  it('accepts canonical administrator date edits that reorder the legacy photos', async () => {
+    const db = createDatabase();
+    const options = migrationOptions(db);
+    await importLegacyPhotos(options);
+    datesReady(db);
+    db.prepare("UPDATE photos SET captured_date = '2024-02-01' WHERE request_id = 'legacy-photo-4'").run();
+    db.prepare("UPDATE photos SET captured_date = '2024-01-01' WHERE request_id = 'legacy-photo-5'").run();
+
+    await expect(checkLegacyReadiness(options)).resolves.toEqual({ ready: true, photoCount: 5 });
+    await expect(activateLegacyPhotos(options)).resolves.toEqual({ activated: 5 });
   });
 
   it('rejects stored metadata outside the canonical admin edit contract without activation', async () => {
