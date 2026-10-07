@@ -65,7 +65,7 @@ function clearDraftField(
           aria-hidden="true"
         />
       </button>
-      <div>
+      <div class="admin-photo-editor-title">
         <p class="admin-photo-editor-kicker">
           照片信息
         </p>
@@ -186,32 +186,38 @@ function clearDraftField(
         </button>
       </div>
 
-      <p
-        class="admin-form-message"
-        :class="{
-          'is-success': messageTone === 'success',
-          'is-error': messageTone === 'error',
-        }"
-        :role="messageTone === 'success' ? 'status' : undefined"
-        :data-save-success="messageTone === 'success' ? '' : undefined"
-        aria-live="polite"
+      <div
+        class="admin-editor-footer"
+        data-editor-footer
       >
-        <CircleCheck
-          v-if="messageTone === 'success'"
-          class="admin-form-message-icon"
-          :size="18"
-          aria-hidden="true"
-        />
-        <span>{{ message }}</span>
-      </p>
+        <p
+          class="admin-form-message"
+          :class="{
+            'is-success': messageTone === 'success',
+            'is-error': messageTone === 'error',
+            'is-empty': message === '',
+          }"
+          :role="messageTone === 'success' ? 'status' : undefined"
+          :data-save-success="messageTone === 'success' ? '' : undefined"
+          aria-live="polite"
+        >
+          <CircleCheck
+            v-if="messageTone === 'success'"
+            class="admin-form-message-icon"
+            :size="18"
+            aria-hidden="true"
+          />
+          <span>{{ message }}</span>
+        </p>
 
-      <button
-        class="admin-primary-button"
-        type="submit"
-        :disabled="saving"
-      >
-        {{ saving ? '正在保存' : '保存修改' }}
-      </button>
+        <button
+          class="admin-primary-button"
+          type="submit"
+          :disabled="saving"
+        >
+          {{ saving ? '正在保存' : '保存修改' }}
+        </button>
+      </div>
     </form>
   </aside>
 </template>

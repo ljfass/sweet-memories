@@ -628,10 +628,22 @@ describe('AdminApp integration', () => {
       /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor\s*\{[^}]*position:\s*fixed[^}]*height:\s*100dvh/,
     )
     expect(adminCss).toMatch(
-      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor\s*\{[^}]*padding:\s*0 16px calc\(28px \+ env\(safe-area-inset-bottom\)\);/,
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor\s*\{[^}]*padding:\s*0 16px 0;/,
+    )
+    expect(adminCss).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-editor-footer\s*\{[^}]*position:\s*sticky;[^}]*z-index:\s*2;[^}]*bottom:\s*0;[^}]*margin:\s*16px -16px 0;[^}]*padding:\s*12px 16px calc\(12px \+ env\(safe-area-inset-bottom, 0px\)\);[^}]*background:\s*var\(--admin-paper\);/,
     )
     expect(adminCss).toMatch(
       /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-photo-editor-header\s*\{[^}]*position:\s*sticky;[^}]*z-index:\s*2;[^}]*top:\s*0;[^}]*margin:\s*0 -16px 16px;[^}]*padding:\s*calc\(12px \+ env\(safe-area-inset-top, 0px\)\) 16px 12px;[^}]*background:\s*var\(--admin-paper\);/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-photo-editor-header\s*\{[^}]*grid-template-columns:\s*1fr var\(--admin-control-size\);/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-photo-editor-title\s*\{[^}]*text-align:\s*left;/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-editor-back\s*\{[^}]*display:\s*none;/,
     )
     expect(adminCss).toMatch(
       /@media\s*\(max-width:\s*720px\)[\s\S]*\.admin-mobile-floating-actions\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*45;[^}]*top:\s*calc\(12px \+ env\(safe-area-inset-top, 0px\)\);[^}]*right:\s*12px;[^}]*background:\s*rgb\(255 253 253 \/ 98%\);/,
@@ -655,7 +667,10 @@ describe('AdminApp integration', () => {
       /\.admin-photo-year-section\s*\{[^}]*scroll-margin-top:\s*72px;/,
     )
     expect(adminCss).toMatch(
-      /\.admin-year-nav,\s*\.admin-mobile-year-nav\s*\{[^}]*position:\s*fixed;[^}]*right:\s*20px;[^}]*bottom:\s*24px;/,
+      /\.admin-year-nav,\s*\.admin-mobile-year-nav\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;[^}]*right:\s*20px;[^}]*bottom:\s*24px;/,
+    )
+    expect(adminCss).toMatch(
+      /\.admin-year-nav-handle\s*\{[^}]*cursor:\s*grab;/,
     )
     expect(adminCss).toMatch(
       /\.admin-year-nav-button,\s*\.admin-mobile-year-nav-button\s*\{[^}]*cursor:\s*pointer;/,

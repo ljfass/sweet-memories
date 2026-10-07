@@ -130,6 +130,97 @@ function scrollToYearSection(key: string): void {
   }
 }
 
+const yearNavRef = ref<HTMLElement | null>(null)
+const yearNavOffsetY = ref(0)
+const isDraggingYearNav = ref(false)
+let dragStartY = 0
+let dragInitialOffsetY = 0
+let hasDraggedNav = false
+let activePointerId: number | null = null
+let activePointerTarget: HTMLElement | null = null
+
+const yearNavStyle = computed(() => {
+  if (yearNavOffsetY.value === 0) return undefined
+  return {
+    transform: `translateY(${yearNavOffsetY.value}px)`,
+  }
+})
+
+function handleYearNavPointerDown(event: PointerEvent): void {
+  if (event.button !== 0) return
+
+  dragStartY = event.clientY
+  dragInitialOffsetY = yearNavOffsetY.value
+  hasDraggedNav = false
+  isDraggingYearNav.value = true
+
+  const target = event.currentTarget as HTMLElement | null
+  activePointerTarget = target
+  activePointerId = event.pointerId
+  try {
+    target?.setPointerCapture?.(event.pointerId)
+  } catch {
+    // ignore
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pointermove', handleYearNavPointerMove)
+    window.addEventListener('pointerup', handleYearNavPointerUp)
+    window.addEventListener('pointercancel', handleYearNavPointerUp)
+  }
+}
+
+function handleYearNavPointerMove(event: PointerEvent): void {
+  if (!isDraggingYearNav.value) return
+
+  const deltaY = event.clientY - dragStartY
+  if (!hasDraggedNav && Math.abs(deltaY) > 3) {
+    hasDraggedNav = true
+  }
+
+  if (hasDraggedNav) {
+    const navEl = yearNavRef.value
+    const navHeight = navEl?.offsetHeight ?? 120
+    const windowHeight = typeof window !== 'undefined' ? window.innerHeight : 800
+
+    const minTranslateY = -(windowHeight - 24 - navHeight - 60)
+    const maxTranslateY = 14
+
+    const targetOffset = dragInitialOffsetY + deltaY
+    yearNavOffsetY.value = Math.max(minTranslateY, Math.min(maxTranslateY, targetOffset))
+  }
+}
+
+function handleYearNavPointerUp(): void {
+  if (!isDraggingYearNav.value) return
+  isDraggingYearNav.value = false
+
+  try {
+    if (activePointerId !== null) {
+      activePointerTarget?.releasePointerCapture?.(activePointerId)
+    }
+  } catch {
+    // ignore
+  }
+  activePointerTarget = null
+  activePointerId = null
+
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pointermove', handleYearNavPointerMove)
+    window.removeEventListener('pointerup', handleYearNavPointerUp)
+    window.removeEventListener('pointercancel', handleYearNavPointerUp)
+  }
+}
+
+function handleYearButtonClick(event: MouseEvent, sectionKey: string): void {
+  if (hasDraggedNav) {
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
+  scrollToYearSection(sectionKey)
+}
+
 watch(photoSections, (sections) => {
   if (sections.length === 0) {
     activeYearSectionKey.value = null
@@ -161,6 +252,9 @@ onBeforeUnmount(() => {
   mobileMedia?.removeEventListener('change', updateViewport)
   if (typeof window !== 'undefined') {
     window.removeEventListener('scroll', updateActiveYearOnScroll)
+    window.removeEventListener('pointermove', handleYearNavPointerMove)
+    window.removeEventListener('pointerup', handleYearNavPointerUp)
+    window.removeEventListener('pointercancel', handleYearNavPointerUp)
   }
   actionObserver?.disconnect()
   actionObserver = null
@@ -658,13 +752,30 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
 
     <nav
       v-if="showYearNav"
+      ref="yearNavRef"
       class="admin-year-nav admin-mobile-year-nav"
+      :class="{ 'is-dragging': isDraggingYearNav }"
       data-year-nav
       data-mobile-year-nav
       aria-label="年份快捷导航"
       :inert="isAnyPhotoModalOpen"
       :aria-hidden="isAnyPhotoModalOpen ? 'true' : 'false'"
+      :style="yearNavStyle"
+      @pointerdown="handleYearNavPointerDown"
     >
+      <div
+        class="admin-year-nav-handle"
+        data-year-nav-handle
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="按住可上下拖动"
+        title="按住可上下拖动"
+      >
+        <span
+          class="admin-year-nav-handle-bar"
+          aria-hidden="true"
+        />
+      </div>
       <ul class="admin-year-nav-list admin-mobile-year-nav-list">
         <li
           v-for="section in photoSections"
@@ -678,7 +789,7 @@ function handleMobileEditorKeydown(event: KeyboardEvent): void {
             :data-year-nav-target="section.key"
             :aria-label="`跳转到 ${section.label}`"
             :title="section.label"
-            @click="scrollToYearSection(section.key)"
+            @click="handleYearButtonClick($event, section.key)"
           >
             <span
               class="admin-year-nav-marker admin-mobile-year-nav-marker"

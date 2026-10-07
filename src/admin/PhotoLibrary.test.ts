@@ -466,6 +466,42 @@ describe('PhotoLibrary', () => {
     expect(wrapper.find('[data-year-nav]').exists()).toBe(true)
   })
 
+  it('allows dragging year quick nav vertically with mouse without triggering button click', async () => {
+    useViewport(false)
+    const observer = installIntersectionObserver()
+    const photos = [
+      photoRecord('p1', '2026 照片', '2026-05-20'),
+      photoRecord('p2', '2025 照片', '2025-08-15'),
+    ]
+    const state = library({ photos: ref(photos) })
+    const scrollMock = vi.fn()
+    window.HTMLElement.prototype.scrollIntoView = scrollMock
+    const wrapper = mount(PhotoLibrary, { props: { library: state } })
+
+    observer.setIntersecting(false)
+    await nextTick()
+
+    const nav = wrapper.get('[data-year-nav]')
+    expect(wrapper.find('[data-year-nav-handle]').exists()).toBe(true)
+
+    await nav.trigger('pointerdown', { button: 0, clientY: 500, pointerId: 1 })
+    expect(nav.classes()).toContain('is-dragging')
+
+    window.dispatchEvent(new PointerEvent('pointermove', { clientY: 420 }))
+    await nextTick()
+
+    expect(nav.attributes('style')).toContain('translateY(-80px)')
+
+    window.dispatchEvent(new PointerEvent('pointerup', { clientY: 420 }))
+    await nextTick()
+    expect(nav.classes()).not.toContain('is-dragging')
+    expect(nav.attributes('style')).toContain('translateY(-80px)')
+
+    const buttons = wrapper.findAll('.admin-year-nav-button')
+    await buttons[1]?.trigger('click')
+    expect(scrollMock).not.toHaveBeenCalled()
+  })
+
   it('labels missing date photos as undated in mobile browser year nav', async () => {
     useViewport(true)
     const observer = installIntersectionObserver()

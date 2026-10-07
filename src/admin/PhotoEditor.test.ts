@@ -24,6 +24,10 @@ describe('PhotoEditor', () => {
       },
     })
 
+    expect(wrapper.find('.admin-photo-editor-title').exists()).toBe(true)
+    const footer = wrapper.get('[data-editor-footer]')
+    expect(footer.find('button[type="submit"]').text()).toBe('保存修改')
+    expect(footer.find('.admin-form-message').exists()).toBe(true)
     expect(wrapper.get('.admin-photo-editor-kicker').text()).toBe('照片信息')
     expect(wrapper.get('.admin-photo-editor-header h2').text()).toBe('记录这张照片')
     const mountFrame = wrapper.get('.admin-editor-mount')
